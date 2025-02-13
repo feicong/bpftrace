@@ -22,7 +22,6 @@ RUN apk add --update \
   git \
   libbpf-dev \
   libelf-static \
-  libpcap-dev \
   libc6-compat \
   linux-headers \
   llvm18-dev \
@@ -50,3 +49,12 @@ RUN sed -i 's/libzstd_shared/libzstd_static/g' /usr/lib/llvm18/lib/cmake/llvm/LL
 # it's a symlink for /usr/lib/cmake/clangXX/ which is only created when the
 # latest clang is installed. To fix this, create the symlink manually.
 RUN ln -s 'clang18' /usr/lib/cmake/clang
+
+RUN cd /tmp && \
+    wget https://www.tcpdump.org/release/libpcap-1.10.5.tar.xz && \
+    tar xf libpcap-1.10.5.tar.xz && \
+    cd libpcap-1.10.5 && \
+    ./configure CFLAGS="-fPIC" CXXFLAGS="-fPIC" && \
+    make && \
+    make install && \
+    rm -rf /tmp/libpcap-1.10.5*
