@@ -282,7 +282,7 @@ void IRBuilderBPF::CreateMemsetBPF(Value *ptr, Value *val, uint32_t size)
     // to maintain these semantics.
     //
     // Also note we are avoiding a call to CreateProbeRead(), as it wraps
-    // calls to probe read helpers with the -kk error reporting feature.
+    // calls to probe read helpers with the -k error reporting feature.
     // The call here will always fail and we want it that way. So avoid
     // reporting errors to the user.
     auto probe_read_id = libbpf::BPF_FUNC_probe_read_kernel;
@@ -319,7 +319,7 @@ void IRBuilderBPF::CreateMemcpyBPF(Value *dst, Value *src, uint32_t size)
 {
   if (size > 512 && bpftrace_.feature_->has_helper_probe_read_kernel()) {
     // Note we are avoiding a call to CreateProbeRead(), as it wraps
-    // calls to probe read helpers with the -kk error reporting feature.
+    // calls to probe read helpers with the -k error reporting feature.
     //
     // Errors are not ever expected, as memcpy should only be used when
     // you're sure src and dst are both in BPF memory.
@@ -1707,7 +1707,7 @@ Value *IRBuilderBPF::CreateStrcontains(Value *val1,
   std::optional<std::string> literal2 = ValToString(val2);
 
   if (literal1 && literal2) {
-    std::string s1 = literal1.value();
+    const std::string &s1 = literal1.value();
     std::string s2 = literal2.value();
     s2 = s2.substr(0, s2.size() - 1);
     std::size_t position = s1.find(s2);

@@ -9,6 +9,8 @@ and this project adheres to
 ## Unreleased
 
 #### Breaking Changes
+- Remove '-kk' command line opt, surface some BPF errors by default, and make '-k' surface probe read errors
+  - [#3784](https://github.com/bpftrace/bpftrace/pull/3784)
 #### Added
 - `offsetof()` now supports sub fields e.g. `offsetof(struct Foo, bar.a.b);`
   - [#3761](https://github.com/bpftrace/bpftrace/pull/3761)
@@ -16,8 +18,13 @@ and this project adheres to
   - [#3656](https://github.com/bpftrace/bpftrace/pull/3656)
 - `len` now also accepts `ustack` and `kstack` as arguments
   - [#3769](https://github.com/bpftrace/bpftrace/pull/3769)
-- `blazesym` can now be used for kernel address symbolication, if configured & built with `USE_BLAZESYM`
+- `blazesym` will be used for kernel address symbolication if found during build
   - [#3760](https://github.com/bpftrace/bpftrace/pull/3760)
+  - [#3787](https://github.com/bpftrace/bpftrace/pull/3787)
+- Published aarch64 appimage builds from master
+  - [#3795](https://github.com/bpftrace/bpftrace/pull/3795)
+- Add ability to cast int to an enum
+  - [#3812](https://github.com/bpftrace/bpftrace/pull/3812)
 #### Changed
 - `probe` builtin is now represented as a string type
   - [#3638](https://github.com/bpftrace/bpftrace/pull/3638)
@@ -27,6 +34,8 @@ and this project adheres to
   - [#3713](https://github.com/bpftrace/bpftrace/pull/3713)
 - Add feature check for castable map reads
   - [#3752](https://github.com/bpftrace/bpftrace/pull/3752)
+- Increase default values for max_bpf_progs and max_probes
+  - [#3808](https://github.com/bpftrace/bpftrace/pull/3808)
 #### Deprecated
 #### Removed
 #### Fixed
@@ -40,6 +49,8 @@ and this project adheres to
   - [#3715](https://github.com/bpftrace/bpftrace/pull/3715)
 - Fix ternary expression to accept all types
   - [#3765](https://github.com/bpftrace/bpftrace/pull/3765)
+- Fix feature detection for tracing program types
+  - [#3805](https://github.com/bpftrace/bpftrace/pull/3805)
 #### Security
 #### Docs
 #### Tools

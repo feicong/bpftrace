@@ -355,7 +355,7 @@ TEST(semantic_analyser, builtin_functions)
   test("kprobe:f { kstack(1) }");
   test("kprobe:f { ustack(1) }");
   test("kprobe:f { cat(\"/proc/uptime\") }");
-  test("uprobe:/bin/bash:main { uaddr(\"glob_asciirange\") }");
+  test("uprobe:/bin/sh:main { uaddr(\"glob_asciirange\") }");
   test("kprobe:f { cgroupid(\"/sys/fs/cgroup/unified/mycg\"); }");
   test("kprobe:f { macaddr(0xffff) }");
   test("kprobe:f { nsecs() }");
@@ -1436,15 +1436,15 @@ TEST(semantic_analyser, call_kaddr)
 
 TEST(semantic_analyser, call_uaddr)
 {
-  test("u:/bin/bash:main { uaddr(\"github.com/golang/glog.severityName\"); }");
-  test("uprobe:/bin/bash:main { uaddr(\"glob_asciirange\"); }");
-  test("u:/bin/bash:main,u:/bin/bash:readline { uaddr(\"glob_asciirange\"); }");
-  test("uprobe:/bin/bash:main { @x = uaddr(\"glob_asciirange\"); }");
-  test("uprobe:/bin/bash:main { uaddr(); }", 1);
-  test("uprobe:/bin/bash:main { uaddr(123); }", 1);
-  test("uprobe:/bin/bash:main { uaddr(\"?\"); }", 1);
-  test("uprobe:/bin/bash:main { $str = \"glob_asciirange\"; uaddr($str); }", 1);
-  test("uprobe:/bin/bash:main { @str = \"glob_asciirange\"; uaddr(@str); }", 1);
+  test("u:/bin/sh:main { uaddr(\"github.com/golang/glog.severityName\"); }");
+  test("uprobe:/bin/sh:main { uaddr(\"glob_asciirange\"); }");
+  test("u:/bin/sh:main,u:/bin/sh:readline { uaddr(\"glob_asciirange\"); }");
+  test("uprobe:/bin/sh:main { @x = uaddr(\"glob_asciirange\"); }");
+  test("uprobe:/bin/sh:main { uaddr(); }", 1);
+  test("uprobe:/bin/sh:main { uaddr(123); }", 1);
+  test("uprobe:/bin/sh:main { uaddr(\"?\"); }", 1);
+  test("uprobe:/bin/sh:main { $str = \"glob_asciirange\"; uaddr($str); }", 1);
+  test("uprobe:/bin/sh:main { @str = \"glob_asciirange\"; uaddr(@str); }", 1);
 
   test("k:f { uaddr(\"A\"); }", 1);
   test("i:s:1 { uaddr(\"A\"); }", 1);
@@ -1452,7 +1452,7 @@ TEST(semantic_analyser, call_uaddr)
   // The C struct parser should set the is_signed flag on signed types
   BPFtrace bpftrace;
   Driver driver(bpftrace);
-  std::string prog = "uprobe:/bin/bash:main {"
+  std::string prog = "uprobe:/bin/sh:main {"
                      "$a = uaddr(\"12345_1\");"
                      "$b = uaddr(\"12345_2\");"
                      "$c = uaddr(\"12345_4\");"
@@ -2856,6 +2856,33 @@ kprobe:f { $x = (uint8)1; printf("%s", $x) }
 )");
 }
 
+TEST(semantic_analyser, enum_casts)
+{
+  test("enum named { a = 1, b } kprobe:f { print((enum named)1); }");
+  // We can't detect this issue because the cast expr is not a literal
+  test("enum named { a = 1, b } kprobe:f { $x = 3; print((enum named)$x); }");
+
+  test_error("enum named { a = 1, b } kprobe:f { print((enum named)3); }", R"(
+stdin:1:36-56: ERROR: Enum: named doesn't contain a variant value of 3
+enum named { a = 1, b } kprobe:f { print((enum named)3); }
+                                   ~~~~~~~~~~~~~~~~~~~~
+)");
+
+  test_error("enum Foo { a = 1, b } kprobe:f { print((enum Bar)1); }", R"(
+stdin:1:34-51: ERROR: Unknown enum: Bar
+enum Foo { a = 1, b } kprobe:f { print((enum Bar)1); }
+                                 ~~~~~~~~~~~~~~~~~
+)");
+
+  test_error("enum named { a = 1, b } kprobe:f { $a = \"str\"; print((enum "
+             "named)$a); }",
+             R"(
+stdin:1:48-67: ERROR: Cannot cast from "string[4]" to "enum named"
+enum named { a = 1, b } kprobe:f { $a = "str"; print((enum named)$a); }
+                                               ~~~~~~~~~~~~~~~~~~~
+)");
+}
+
 TEST(semantic_analyser, signed_int_comparison_warnings)
 {
   bool invert = true;
@@ -3776,7 +3803,7 @@ TEST(semantic_analyser, call_path)
   test("kprobe:f { $k = path( arg0 ) }", 1);
   test("kretprobe:f{ $k = path( \"abc\" ) }", 1);
   test("tracepoint:category:event { $k = path( -100 ) }", 1);
-  test("uprobe:/bin/bash:f { $k = path( arg0 ) }", 1);
+  test("uprobe:/bin/sh:f { $k = path( arg0 ) }", 1);
   test("BEGIN { $k = path( 1 ) }", 1);
   test("END { $k = path( 1 ) }", 1);
 }

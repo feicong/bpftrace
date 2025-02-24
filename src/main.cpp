@@ -107,8 +107,7 @@ void usage(std::ostream& out)
   out << "    --unsafe       allow unsafe/destructive functionality" << std::endl;
   out << "    -q             keep messages quiet" << std::endl;
   out << "    --info         Print information about kernel BPF support" << std::endl;
-  out << "    -k             emit a warning when a bpf helper returns an error (except read functions)" << std::endl;
-  out << "    -kk            check all bpf helper functions" << std::endl;
+  out << "    -k             emit a warning when probe read helpers return an error" << std::endl;
   out << "    -V, --version  bpftrace version" << std::endl;
   out << "    --no-warnings  disable all warning messages" << std::endl;
   out << std::endl;
@@ -130,10 +129,10 @@ void usage(std::ostream& out)
   out << "    BPFTRACE_KERNEL_SOURCE            [default: /lib/modules/$(uname -r)] kernel headers directory" << std::endl;
   out << "    BPFTRACE_LAZY_SYMBOLICATION       [default: 0] symbolicate lazily/on-demand" << std::endl;
   out << "    BPFTRACE_LOG_SIZE                 [default: 1000000] log size in bytes" << std::endl;
-  out << "    BPFTRACE_MAX_BPF_PROGS            [default: 512] max number of generated BPF programs" << std::endl;
+  out << "    BPFTRACE_MAX_BPF_PROGS            [default: 1024] max number of generated BPF programs" << std::endl;
   out << "    BPFTRACE_MAX_CAT_BYTES            [default: 10k] maximum bytes read by cat builtin" << std::endl;
   out << "    BPFTRACE_MAX_MAP_KEYS             [default: 4096] max keys in a map" << std::endl;
-  out << "    BPFTRACE_MAX_PROBES               [default: 512] max number of probes" << std::endl;
+  out << "    BPFTRACE_MAX_PROBES               [default: 1024] max number of probes" << std::endl;
   out << "    BPFTRACE_MAX_STRLEN               [default: 1024] bytes on BPF stack per str()" << std::endl;
   out << "    BPFTRACE_MAX_TYPE_RES_ITERATIONS  [default: 0] number of levels of nested field accesses for tracepoint args" << std::endl;
   out << "    BPFTRACE_PERF_RB_PAGES            [default: 64] pages per CPU to allocate for ring buffer" << std::endl;
@@ -339,7 +338,7 @@ static void parse_env(BPFtrace& bpftrace)
   });
 
   get_bool_env_var("BPFTRACE_USE_BLAZESYM", [&](bool x) {
-#ifndef USE_BLAZESYM
+#ifndef HAVE_BLAZESYM
     if (x) {
       LOG(ERROR) << "BPFTRACE_USE_BLAZESYM requires blazesym support enabled "
                     "during build.";
@@ -457,7 +456,8 @@ struct Args {
   bool listing = false;
   bool safe_mode = true;
   bool usdt_file_activation = false;
-  int helper_check_level = 0;
+  int helper_check_level = 1;
+  bool no_warnings = false;
   TestMode test_mode = TestMode::UNSET;
   std::string script;
   std::string search;
@@ -521,6 +521,7 @@ Args parse_args(int argc, char* argv[])
   };
 
   int c;
+  bool has_k = false;
   while ((c = getopt_long(argc, argv, short_options, long_options, nullptr)) !=
          -1) {
     switch (c) {
@@ -537,6 +538,8 @@ Args parse_args(int argc, char* argv[])
         break;
       case Options::NO_WARNING: // --no-warnings
         DISABLE_LOG(WARNING);
+        args.no_warnings = true;
+        args.helper_check_level = 0;
         break;
       case Options::TEST: // --test
         if (std::strcmp(optarg, "codegen") == 0)
@@ -626,11 +629,16 @@ Args parse_args(int argc, char* argv[])
         std::cout << "bpftrace " << BPFTRACE_VERSION << std::endl;
         exit(0);
       case 'k':
-        args.helper_check_level++;
-        if (args.helper_check_level >= 3) {
-          usage(std::cerr);
+        if (has_k) {
+          LOG(ERROR) << "USAGE: -kk has been deprecated. Use a single -k for "
+                        "runtime warnings for errors in map "
+                        "lookups and probe reads.";
           exit(1);
         }
+        if (!args.no_warnings) {
+          args.helper_check_level = 2;
+        }
+        has_k = true;
         break;
       default:
         usage(std::cerr);
@@ -650,8 +658,9 @@ Args parse_args(int argc, char* argv[])
   }
 
   // Difficult to serialize flex generated types
-  if (args.helper_check_level && args.build_mode == BuildMode::AHEAD_OF_TIME) {
-    LOG(ERROR) << "Cannot use -k[k] with --aot";
+  if (args.helper_check_level == 2 &&
+      args.build_mode == BuildMode::AHEAD_OF_TIME) {
+    LOG(ERROR) << "Cannot use -k with --aot";
     exit(1);
   }
 
