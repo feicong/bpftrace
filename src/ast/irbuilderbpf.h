@@ -15,12 +15,6 @@
 #define CREATE_ATOMIC_RMW(op, ptr, val, align, order)                          \
   CreateAtomicRMW((op), (ptr), (val), MaybeAlign((align)), (order))
 
-#if LLVM_VERSION_MAJOR >= 15
-#define GET_PTR_TY() getPtrTy()
-#else
-#define GET_PTR_TY() getInt8PtrTy()
-#endif
-
 namespace bpftrace {
 namespace ast {
 
@@ -129,15 +123,7 @@ public:
   Value *CreateStrcontains(Value *val1,
                            uint64_t str1_size,
                            Value *val2,
-                           uint64_t str2_size,
-                           bool inverse);
-  Value *CreateIntegerArrayCmpUnrolled(Value *ctx,
-                                       Value *val1,
-                                       Value *val2,
-                                       const SizedType &val1_type,
-                                       const SizedType &val2_type,
-                                       const bool inverse,
-                                       const location &loc);
+                           uint64_t str2_size);
   Value *CreateIntegerArrayCmp(Value *ctx,
                                Value *val1,
                                Value *val2,

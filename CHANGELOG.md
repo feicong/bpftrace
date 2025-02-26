@@ -25,6 +25,8 @@ and this project adheres to
   - [#3795](https://github.com/bpftrace/bpftrace/pull/3795)
 - Add ability to cast int to an enum
   - [#3812](https://github.com/bpftrace/bpftrace/pull/3812)
+- Added warning when strcontains() is used on strings that are too big and may cause verifier issues
+  - [#3811](https://github.com/bpftrace/bpftrace/pull/3811)
 #### Changed
 - `probe` builtin is now represented as a string type
   - [#3638](https://github.com/bpftrace/bpftrace/pull/3638)
@@ -38,6 +40,8 @@ and this project adheres to
   - [#3808](https://github.com/bpftrace/bpftrace/pull/3808)
 #### Deprecated
 #### Removed
+- Drop support for LLVM 14 and 15
+  - [#3825](https://github.com/bpftrace/bpftrace/pull/3825)
 #### Fixed
 - Fix json output for none type
   - [#3692](https://github.com/bpftrace/bpftrace/pull/3692)
@@ -51,6 +55,8 @@ and this project adheres to
   - [#3765](https://github.com/bpftrace/bpftrace/pull/3765)
 - Fix feature detection for tracing program types
   - [#3805](https://github.com/bpftrace/bpftrace/pull/3805)
+- Fix strcontains() correctness bug where matches could be lost if both strings are non-literal
+  - [#3811](https://github.com/bpftrace/bpftrace/pull/3811)
 #### Security
 #### Docs
 #### Tools
