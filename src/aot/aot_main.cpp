@@ -2,6 +2,7 @@
 #include <fstream>
 #include <getopt.h>
 #include <iostream>
+#include <string>
 
 #include "aot.h"
 #include "bpftrace.h"
@@ -28,7 +29,6 @@ void usage(std::ostream& out, std::string_view filename)
   out << "    -V, --version  bpftrace version" << std::endl;
   out << std::endl;
   // clang-format on
-  return;
 }
 
 std::unique_ptr<Output> prepare_output(const std::string& output_file,
@@ -68,9 +68,25 @@ int main(int argc, char* argv[])
   // TODO: which other options from `bpftrace` should be included?
   const char* const short_opts = "d:f:hVo:qv";
   option long_opts[] = {
-    option{ "help", no_argument, nullptr, 'h' },
-    option{ "version", no_argument, nullptr, 'V' },
-    option{ nullptr, 0, nullptr, 0 }, // Must be last
+    option{
+        .name = "help",
+        .has_arg = no_argument,
+        .flag = nullptr,
+        .val = 'h',
+    },
+    option{
+        .name = "version",
+        .has_arg = no_argument,
+        .flag = nullptr,
+        .val = 'V',
+    },
+    // Must be last
+    option{
+        .name = nullptr,
+        .has_arg = 0,
+        .flag = nullptr,
+        .val = 0,
+    },
   };
 
   std::filesystem::path p(argv[0]);
@@ -101,11 +117,11 @@ int main(int argc, char* argv[])
         bt_verbose = true;
         break;
       case 'd':
-        if (std::strcmp(optarg, "libbpf") == 0)
+        if (std::string(optarg) == "libbpf")
           bt_debug.insert(DebugStage::Libbpf);
-        else if (std::strcmp(optarg, "verifier") == 0)
+        else if (std::string(optarg) == "verifier")
           bt_debug.insert(DebugStage::Verifier);
-        else if (std::strcmp(optarg, "all") == 0) {
+        else if (std::string(optarg) == "all") {
           bt_debug.insert({ DebugStage::Libbpf, DebugStage::Verifier });
         } else {
           LOG(ERROR) << "USAGE: invalid option for -d: " << optarg;

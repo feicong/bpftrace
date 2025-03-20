@@ -1,12 +1,11 @@
 #pragma once
 
-#include "struct.h"
-#include "types.h"
-
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
+
+#include "struct.h"
+#include "types.h"
 
 #ifdef HAVE_LIBLLDB
 #include <lldb/API/SBDebugger.h>
@@ -63,13 +62,13 @@ private:
 
 #else // HAVE_LIBLLDB
 
-#include "log.h"
-
 namespace bpftrace {
 class BPFtrace;
 
 class Dwarf {
 public:
+  Dwarf() = delete;
+
   static std::unique_ptr<Dwarf> GetFromBinary(BPFtrace *bpftrace
                                               __attribute__((unused)),
                                               std::string file_path_
@@ -110,9 +109,6 @@ public:
   void resolve_fields(const SizedType &type __attribute__((unused)))
   {
   }
-
-private:
-  Dwarf() = delete;
 };
 
 } // namespace bpftrace

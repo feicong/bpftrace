@@ -1,14 +1,11 @@
-
+#include "ast/attachpoint_parser.h"
 #include "ast/passes/codegen_llvm.h"
 #include "ast/passes/field_analyser.h"
 #include "ast/passes/resource_analyser.h"
 #include "ast/passes/semantic_analyser.h"
-
 #include "bpftrace.h"
-#include "clang_parser.h"
 #include "driver.h"
 #include "mocks.h"
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 namespace bpftrace::test::probe {
@@ -22,29 +19,22 @@ using bpftrace::ast::Probe;
 void gen_bytecode(const std::string &input, std::stringstream &out)
 {
   auto bpftrace = get_mock_bpftrace();
-  Driver driver(*bpftrace);
+  ast::ASTContext ast("stdin", input);
 
-  ASSERT_EQ(driver.parse_str(input), 0);
-
-  ast::FieldAnalyser fields(driver.ctx, *bpftrace);
-  EXPECT_EQ(fields.analyse(), 0);
-
-  ClangParser clang;
-  clang.parse(driver.ctx.root, *bpftrace);
-
-  ast::SemanticAnalyser semantics(driver.ctx, *bpftrace);
-  ASSERT_EQ(semantics.analyse(), 0);
-
-  ast::ResourceAnalyser resource_analyser(driver.ctx, *bpftrace);
-  auto resources_optional = resource_analyser.analyse();
-  ASSERT_TRUE(resources_optional.has_value());
-  // clang-tidy doesn't recognize ASSERT_*() as execution terminating
-  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-  bpftrace->resources = resources_optional.value();
-
-  ast::CodegenLLVM codegen(driver.ctx, *bpftrace);
-  codegen.generate_ir();
-  codegen.DumpIR(out);
+  // N.B. No macro or tracepoint expansion.
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put<BPFtrace>(*bpftrace)
+                .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateFieldAnalyserPass())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateResourcePass())
+                .add(ast::AllCompilePasses())
+                .run();
+  ASSERT_TRUE(ok && ast.diagnostics().ok());
+  auto &obj = ok->get<ast::BpfObject>();
+  out.write(obj.data.data(), obj.data.size());
 }
 
 void compare_bytecode(const std::string &input1, const std::string &input2)

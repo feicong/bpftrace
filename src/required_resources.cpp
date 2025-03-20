@@ -1,5 +1,3 @@
-#include "required_resources.h"
-
 #include <cereal/archives/binary.hpp>
 #include <cereal/types/map.hpp>
 #include <cereal/types/memory.hpp>
@@ -9,9 +7,8 @@
 #include <cereal/types/unordered_set.hpp>
 #include <cereal/types/vector.hpp>
 
-#include "bpftrace.h"
-#include "log.h"
-#include "utils.h"
+#include "required_resources.h"
+#include "util/io.h"
 
 namespace bpftrace {
 
@@ -29,8 +26,8 @@ void RequiredResources::load_state(std::istream &in)
 
 void RequiredResources::load_state(const uint8_t *ptr, size_t len)
 {
-  auto addr = const_cast<uint8_t *>(ptr);
-  Membuf mbuf(addr, addr + len);
+  auto *addr = const_cast<uint8_t *>(ptr);
+  util::Membuf mbuf(addr, addr + len);
   std::istream istream(&mbuf);
   cereal::BinaryInputArchive archive(istream);
   archive(*this);

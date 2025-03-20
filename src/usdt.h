@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+namespace bpftrace {
+
 struct usdt_probe_entry {
   std::string path;
   std::string provider;
@@ -13,7 +15,7 @@ struct usdt_probe_entry {
   int num_locations;
 };
 
-typedef std::vector<usdt_probe_entry> usdt_probe_list;
+using usdt_probe_list = std::vector<usdt_probe_entry>;
 
 // Note this class is fully static because bcc_usdt_foreach takes a function
 // pointer callback without a context variable. So we must keep global state.
@@ -21,7 +23,7 @@ class USDTHelper {
 public:
   virtual ~USDTHelper() = default;
 
-  virtual std::optional<usdt_probe_entry> find(int pid,
+  virtual std::optional<usdt_probe_entry> find(std::optional<int> pid,
                                                const std::string &target,
                                                const std::string &provider,
                                                const std::string &name);
@@ -33,3 +35,5 @@ private:
   static void read_probes_for_pid(int pid, bool print_error = true);
   static void read_probes_for_path(const std::string &path);
 };
+
+} // namespace bpftrace

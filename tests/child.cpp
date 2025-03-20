@@ -1,21 +1,18 @@
 #include <csignal>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <system_error>
-
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
+#include <system_error>
 
 #include "child.h"
 #include "childhelper.h"
-#include "utils.h"
+#include "gmock/gmock-matchers.h"
+#include "gtest/gtest.h"
 
 namespace bpftrace::test::child {
 
@@ -152,7 +149,7 @@ TEST_F(childproc, stop_cont)
     FAIL() << "kill(SIGSTOP)";
 
   waitpid(child->pid(), &status, WUNTRACED);
-  if (!(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP))
+  if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP)
     FAIL() << "! WIFSTOPPED";
 
   EXPECT_TRUE(child->is_alive());
@@ -226,7 +223,7 @@ TEST_F(childproc, multi_exec_match)
 
   // Create directory for test
   std::string tmpdir = "/tmp/bpftrace-test-child-XXXXXX";
-  ASSERT_NE(::mkdtemp(&tmpdir[0]), nullptr);
+  ASSERT_NE(::mkdtemp(tmpdir.data()), nullptr);
 
   // Create fixture directories
   const auto path = std::filesystem::path(tmpdir);
@@ -255,7 +252,7 @@ TEST_F(childproc, multi_exec_match)
   }
 
   // Set ENV
-  auto old_path = ::getenv("PATH");
+  auto *old_path = ::getenv("PATH");
   auto new_path = usr_bin.native(); // copy
   new_path += ":";
   new_path += symlink_bin.c_str();

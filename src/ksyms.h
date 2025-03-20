@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
+
+#include "config.h"
 
 namespace bpftrace {
 class Config;
@@ -10,7 +13,6 @@ class Ksyms {
 public:
   Ksyms(const Config &config);
   ~Ksyms();
-
   Ksyms(Ksyms &) = delete;
   Ksyms &operator=(const Ksyms &) = delete;
 
@@ -23,8 +25,8 @@ private:
 #ifdef HAVE_BLAZESYM
   struct blaze_symbolizer *symbolizer_{ nullptr };
 
-  std::optional<std::string> resolve_blazesym_int(uint64_t addr,
-                                                  bool show_offset);
+  std::optional<std::string> resolve_blazesym_impl(uint64_t addr,
+                                                   bool show_offset);
   std::string resolve_blazesym(uint64_t addr, bool show_offset);
 #endif
 

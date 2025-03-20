@@ -3,6 +3,7 @@
 #include <istream>
 #include <set>
 
+#include "ast/pass_manager.h"
 #include "ast/visitor.h"
 #include "bpftrace.h"
 
@@ -12,11 +13,6 @@ namespace ast {
 
 class TracepointArgsVisitor : public Visitor<TracepointArgsVisitor> {
 public:
-  explicit TracepointArgsVisitor(ASTContext &ctx)
-      : Visitor<TracepointArgsVisitor>(ctx)
-  {
-  }
-
   using Visitor<TracepointArgsVisitor>::visit;
   void visit(Builtin &builtin)
   {
@@ -68,5 +64,7 @@ protected:
                                            const std::string &event_name,
                                            BPFtrace &bpftrace);
 };
+
+ast::Pass CreateParseTracepointFormatPass();
 
 } // namespace bpftrace

@@ -4,17 +4,13 @@
 
 #include "ast/visitor.h"
 
-namespace bpftrace {
-namespace ast {
+namespace bpftrace::ast {
 
 class Printer : public Visitor<Printer> {
 public:
-  explicit Printer(ASTContext &ctx, std::ostream &out)
-      : Visitor<Printer>(ctx), out_(out)
+  explicit Printer(std::ostream &out) : out_(out)
   {
   }
-
-  void print();
 
   using Visitor<Printer>::visit;
   void visit(Integer &integer);
@@ -27,6 +23,7 @@ public:
   void visit(Sizeof &szof);
   void visit(Offsetof &offof);
   void visit(Map &map);
+  void visit(MapDeclStatement &decl);
   void visit(Variable &var);
   void visit(Binop &binop);
   void visit(Unop &unop);
@@ -52,13 +49,11 @@ public:
   void visit(Subprog &subprog);
   void visit(Program &program);
 
-  int depth_ = -1;
-
 private:
   std::ostream &out_;
+  int depth_ = 0;
 
   std::string type(const SizedType &ty);
 };
 
-} // namespace ast
-} // namespace bpftrace
+} // namespace bpftrace::ast

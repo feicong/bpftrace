@@ -1,8 +1,10 @@
 #pragma once
 
-#include <string>
+#include <optional>
+#include <variant>
 
 #include "ast/ast.h"
+#include "ast/context.h"
 
 namespace bpftrace::ast {
 
@@ -24,10 +26,6 @@ namespace bpftrace::ast {
 template <typename Impl, typename R = void>
 class Visitor {
 public:
-  Visitor(ASTContext &ctx) : ctx_(ctx)
-  {
-  }
-
   // See above; specific replace methods may be defined.
   template <typename T>
   T *replace(T *node, [[maybe_unused]] R *result)
@@ -85,6 +83,10 @@ public:
   R visit(Offsetof &ofof)
   {
     return visitAndReplace(&ofof.expr);
+  }
+  R visit(MapDeclStatement &decl __attribute__((__unused__)))
+  {
+    return default_value();
   }
   R visit(Map &map)
   {
@@ -198,6 +200,7 @@ public:
   R visit(Block &block)
   {
     visitImpl(block.stmts);
+    visitAndReplace(&block.expr);
     return default_value();
   }
   R visit(Subprog &subprog)
@@ -208,9 +211,11 @@ public:
   }
   R visit(Program &program)
   {
+    // This order is important
     visitImpl(program.functions);
-    visitImpl(program.probes);
     visitAndReplace(&program.config);
+    visitImpl(program.map_decls);
+    visitImpl(program.probes);
     return default_value();
   }
 
@@ -273,13 +278,6 @@ public:
     return default_value();
   }
 
-private:
-  template <typename T>
-  R visitImpl(T &t)
-  {
-    Impl *impl = static_cast<Impl *>(this);
-    return impl->visit(t);
-  }
   template <typename T>
   R visitAndReplace(T **t)
   {
@@ -293,12 +291,6 @@ private:
       impl->visit(orig);
       *t = impl->replace(orig, nullptr);
       return default_value();
-    }
-  }
-  R default_value()
-  {
-    if constexpr (!std::is_void_v<R>) {
-      return R();
     }
   }
 
@@ -343,7 +335,8 @@ private:
                               ArrayAccess *,
                               Cast *,
                               Tuple *,
-                              Ternary *>(expr);
+                              Ternary *,
+                              Block *>(expr);
   }
   R visitAndReplace(Statement **stmt)
   {
@@ -353,7 +346,6 @@ private:
                               AssignMapStatement *,
                               AssignVarStatement *,
                               AssignConfigVarStatement *,
-                              Block *,
                               If *,
                               Unroll *,
                               Jump *,
@@ -362,8 +354,19 @@ private:
                               Config *>(stmt);
   }
 
-protected:
-  ASTContext &ctx_;
+private:
+  template <typename T>
+  R visitImpl(T &t)
+  {
+    Impl *impl = static_cast<Impl *>(this);
+    return impl->visit(t);
+  }
+  R default_value()
+  {
+    if constexpr (!std::is_void_v<R>) {
+      return R();
+    }
+  }
 };
 
 } // namespace bpftrace::ast

@@ -1,16 +1,15 @@
-#include "usdt.h"
-#include "log.h"
-#include "utils.h"
-
-#include <csignal>
-
 #include <algorithm>
-#include <iostream>
+#include <bcc/bcc_elf.h>
+#include <bcc/bcc_usdt.h>
+#include <csignal>
 #include <unordered_map>
 #include <unordered_set>
 
-#include <bcc/bcc_elf.h>
-#include <bcc/bcc_usdt.h>
+#include "log.h"
+#include "usdt.h"
+#include "util/system.h"
+
+namespace bpftrace {
 
 static std::unordered_set<std::string> path_cache;
 static std::unordered_set<int> pid_cache;
@@ -50,15 +49,15 @@ static void cache_current_pid_paths(int pid)
   current_pid_paths.clear();
 }
 
-std::optional<usdt_probe_entry> USDTHelper::find(int pid,
+std::optional<usdt_probe_entry> USDTHelper::find(std::optional<int> pid,
                                                  const std::string &target,
                                                  const std::string &provider,
                                                  const std::string &name)
 {
   usdt_probe_list probes;
-  if (pid > 0) {
-    read_probes_for_pid(pid);
-    for (auto const &path : usdt_pid_to_paths_cache[pid]) {
+  if (pid.has_value()) {
+    read_probes_for_pid(*pid);
+    for (auto const &path : usdt_pid_to_paths_cache[*pid]) {
       probes.insert(probes.end(),
                     usdt_provider_cache[path][provider].begin(),
                     usdt_provider_cache[path][provider].end());
@@ -68,11 +67,11 @@ std::optional<usdt_probe_entry> USDTHelper::find(int pid,
     probes = usdt_provider_cache[target][provider];
   }
 
-  auto it = std::find_if(probes.begin(),
-                         probes.end(),
-                         [&name](const usdt_probe_entry &e) {
-                           return e.name == name;
-                         });
+  auto it = std::ranges::find_if(probes,
+
+                                 [&name](const usdt_probe_entry &e) {
+                                   return e.name == name;
+                                 });
   if (it != probes.end()) {
     return *it;
   } else {
@@ -98,7 +97,7 @@ usdt_probe_list USDTHelper::probes_for_pid(int pid, bool print_error)
 usdt_probe_list USDTHelper::probes_for_all_pids()
 {
   usdt_probe_list probes;
-  for (int pid : bpftrace::get_all_running_pids()) {
+  for (int pid : util::get_all_running_pids()) {
     for (auto &probe : probes_for_pid(pid, false)) {
       probes.push_back(std::move(probe));
     }
@@ -121,34 +120,30 @@ usdt_probe_list USDTHelper::probes_for_path(const std::string &path)
 
 void USDTHelper::read_probes_for_pid(int pid, bool print_error)
 {
-  if (pid_cache.count(pid))
+  if (pid_cache.contains(pid))
     return;
 
-  if (pid > 0) {
-    void *ctx = bcc_usdt_new_frompid(pid, nullptr);
-    if (ctx == nullptr) {
-      if (print_error) {
-        LOG(ERROR) << "failed to initialize usdt context for pid: " << pid;
+  void *ctx = bcc_usdt_new_frompid(pid, nullptr);
+  if (ctx == nullptr) {
+    if (print_error) {
+      LOG(ERROR) << "failed to initialize usdt context for pid: " << pid;
 
-        if (kill(pid, 0) == -1 && errno == ESRCH)
-          LOG(ERROR) << "hint: process not running";
-      }
-
-      return;
+      if (kill(pid, 0) == -1 && errno == ESRCH)
+        LOG(ERROR) << "hint: process not running";
     }
-    bcc_usdt_foreach(ctx, usdt_probe_each);
-    bcc_usdt_close(ctx);
-    cache_current_pid_paths(pid);
 
-    pid_cache.emplace(pid);
-  } else {
-    LOG(ERROR) << "a pid must be specified to list USDT probes by PID";
+    return;
   }
+  bcc_usdt_foreach(ctx, usdt_probe_each);
+  bcc_usdt_close(ctx);
+  cache_current_pid_paths(pid);
+
+  pid_cache.emplace(pid);
 }
 
 void USDTHelper::read_probes_for_path(const std::string &path)
 {
-  if (path_cache.count(path))
+  if (path_cache.contains(path))
     return;
 
   void *ctx = bcc_usdt_new_frompath(path.c_str());
@@ -161,3 +156,5 @@ void USDTHelper::read_probes_for_path(const std::string &path)
 
   path_cache.emplace(path);
 }
+
+} // namespace bpftrace

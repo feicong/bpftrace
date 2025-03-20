@@ -2,7 +2,6 @@
 
 #include "btf.h"
 #include "kfuncs.h"
-#include <memory>
 #include <optional>
 #include <string>
 
@@ -59,14 +58,13 @@ class BPFfeature;
 
 class BPFnofeature {
 public:
-  BPFnofeature() : kprobe_multi_(false), uprobe_multi_(false)
-  {
-  }
-  int parse(const char* optarg);
+  BPFnofeature() = default;
+  int parse(const char* str);
 
 protected:
-  bool kprobe_multi_;
-  bool uprobe_multi_;
+  bool kprobe_multi_{ false };
+  bool kprobe_session_{ false };
+  bool uprobe_multi_{ false };
   friend class BPFfeature;
 };
 
@@ -95,6 +93,7 @@ public:
   bool has_d_path();
   bool has_uprobe_refcnt();
   bool has_kprobe_multi();
+  bool has_kprobe_session();
   bool has_uprobe_multi();
   bool has_fentry();
   bool has_skb_output();
@@ -105,7 +104,7 @@ public:
 
   bool has_kernel_func(Kfunc kfunc);
 
-  std::string report(void);
+  std::string report();
 
   DEFINE_MAP_TEST(array, libbpf::BPF_MAP_TYPE_ARRAY);
   DEFINE_MAP_TEST(hash, libbpf::BPF_MAP_TYPE_HASH);
@@ -139,6 +138,7 @@ protected:
   std::optional<bool> has_map_batch_;
   std::optional<bool> has_uprobe_refcnt_;
   std::optional<bool> has_kprobe_multi_;
+  std::optional<bool> has_kprobe_session_;
   std::optional<bool> has_uprobe_multi_;
   std::optional<bool> has_skb_output_;
   std::optional<bool> has_prog_fentry_;

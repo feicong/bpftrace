@@ -1,22 +1,82 @@
-#include "resource_analyser.h"
 
 #include <algorithm>
 
 #include "ast/async_event_types.h"
 #include "ast/codegen_helper.h"
+#include "ast/passes/resource_analyser.h"
+#include "ast/visitor.h"
 #include "bpftrace.h"
-#include "globalvars.h"
 #include "log.h"
+#include "required_resources.h"
 #include "struct.h"
+
+namespace libbpf {
+#include "libbpf/bpf.h"
+} // namespace libbpf
 
 namespace bpftrace::ast {
 
 namespace {
 
+// Resource analysis pass on AST
+//
+// This pass collects information on what runtime resources a script needs.
+// For example, how many maps to create, what sizes the keys and values are,
+// all the async printf argument types, etc.
+//
+// TODO(danobi): Note that while complete resource collection in this pass is
+// the goal, there are still places where the goal is not yet realized. For
+// example the helper error metadata is still being collected during codegen.
+class ResourceAnalyser : public Visitor<ResourceAnalyser> {
+public:
+  ResourceAnalyser(BPFtrace &bpftrace);
+
+  using Visitor<ResourceAnalyser>::visit;
+  void visit(Probe &probe);
+  void visit(Subprog &subprog);
+  void visit(Builtin &builtin);
+  void visit(Call &call);
+  void visit(Map &map);
+  void visit(MapDeclStatement &decl);
+  void visit(Tuple &tuple);
+  void visit(For &f);
+  void visit(Ternary &ternary);
+  void visit(AssignMapStatement &assignment);
+  void visit(AssignVarStatement &assignment);
+  void visit(VarDeclStatement &decl);
+
+  // This will move the compute resources value, it should be called only
+  // after the top-level visit.
+  RequiredResources resources();
+
+private:
+  // Determines whether the given function uses userspace symbol resolution.
+  // This is used later for loading the symbol table into memory.
+  bool uses_usym_table(const std::string &fun);
+
+  bool exceeds_stack_limit(size_t size);
+
+  void maybe_allocate_map_key_buffer(const Map &map);
+
+  void update_map_info(Map &map);
+  void update_variable_info(Variable &var);
+
+  RequiredResources resources_;
+  BPFtrace &bpftrace_;
+  // Current probe we're analysing
+  Probe *probe_{ nullptr };
+  std::unordered_map<std::string, std::pair<libbpf::bpf_map_type, int>>
+      map_decls_;
+
+  int next_map_id_ = 0;
+};
+
+} // namespace
+
 // This helper differs from SemanticAnalyser::single_provider_type() in that
 // for situations where a single probetype is required we assume the AST is
 // well formed.
-ProbeType single_provider_type_postsema(Probe *probe)
+static ProbeType single_provider_type_postsema(Probe *probe)
 {
   if (!probe->attach_points.empty()) {
     return probetype(probe->attach_points.at(0)->provider);
@@ -25,33 +85,18 @@ ProbeType single_provider_type_postsema(Probe *probe)
   return ProbeType::invalid;
 }
 
-std::string get_literal_string(Expression &expr)
+static std::string get_literal_string(Expression &expr)
 {
-  String &str = static_cast<String &>(expr);
+  auto &str = static_cast<String &>(expr);
   return str.str;
 }
 
-} // namespace
-
-ResourceAnalyser::ResourceAnalyser(ASTContext &ctx,
-                                   BPFtrace &bpftrace,
-                                   std::ostream &out)
-    : Visitor<ResourceAnalyser>(ctx),
-      bpftrace_(bpftrace),
-      out_(out),
-      probe_(nullptr)
+ResourceAnalyser::ResourceAnalyser(BPFtrace &bpftrace) : bpftrace_(bpftrace)
 {
 }
 
-std::optional<RequiredResources> ResourceAnalyser::analyse()
+RequiredResources ResourceAnalyser::resources()
 {
-  visit(ctx_.root);
-
-  if (!err_.str().empty()) {
-    out_ << err_.str();
-    return std::nullopt;
-  }
-
   if (resources_.max_fmtstring_args_size > 0) {
     resources_.needed_global_vars.insert(
         bpftrace::globalvars::GlobalVar::FMT_STRINGS_BUFFER);
@@ -105,7 +150,7 @@ std::optional<RequiredResources> ResourceAnalyser::analyse()
         bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
   }
 
-  return std::optional{ std::move(resources_) };
+  return std::move(resources_);
 }
 
 void ResourceAnalyser::visit(Probe &probe)
@@ -179,12 +224,12 @@ void ResourceAnalyser::visit(Call &call)
     if (call.func == "printf") {
       if (probe_ != nullptr &&
           single_provider_type_postsema(probe_) == ProbeType::iter) {
-        resources_.bpf_print_fmts.push_back(fmtstr);
+        resources_.bpf_print_fmts.emplace_back(fmtstr);
       } else {
         resources_.printf_args.emplace_back(fmtstr, tuple->fields);
       }
     } else if (call.func == "debugf") {
-      resources_.bpf_print_fmts.push_back(fmtstr);
+      resources_.bpf_print_fmts.emplace_back(fmtstr);
     } else if (call.func == "system") {
       resources_.system_args.emplace_back(fmtstr, tuple->fields);
     } else {
@@ -203,8 +248,8 @@ void ResourceAnalyser::visit(Call &call)
     int bits = static_cast<Integer *>(call.vargs.at(1))->n;
 
     if (map_info.hist_bits_arg.has_value() && *map_info.hist_bits_arg != bits) {
-      LOG(ERROR, call.loc, err_) << "Different bits in a single hist, had "
-                                 << *map_info.hist_bits_arg << " now " << bits;
+      call.addError() << "Different bits in a single hist, had "
+                      << *map_info.hist_bits_arg << " now " << bits;
     } else {
       map_info.hist_bits_arg = bits;
     }
@@ -212,9 +257,9 @@ void ResourceAnalyser::visit(Call &call)
     Expression &min_arg = *call.vargs.at(1);
     Expression &max_arg = *call.vargs.at(2);
     Expression &step_arg = *call.vargs.at(3);
-    Integer &min = static_cast<Integer &>(min_arg);
-    Integer &max = static_cast<Integer &>(max_arg);
-    Integer &step = static_cast<Integer &>(step_arg);
+    auto &min = static_cast<Integer &>(min_arg);
+    auto &max = static_cast<Integer &>(max_arg);
+    auto &step = static_cast<Integer &>(step_arg);
 
     auto args = LinearHistogramArgs{
       .min = min.n,
@@ -225,16 +270,15 @@ void ResourceAnalyser::visit(Call &call)
     auto &map_info = resources_.maps_info[call.map->ident];
 
     if (map_info.lhist_args.has_value() && *map_info.lhist_args != args) {
-      LOG(ERROR, call.loc, err_)
-          << "Different lhist bounds in a single map unsupported";
+      call.addError() << "Different lhist bounds in a single map unsupported";
     } else {
       map_info.lhist_args = args;
     }
   } else if (call.func == "time") {
-    if (call.vargs.size() > 0)
+    if (!call.vargs.empty())
       resources_.time_args.push_back(get_literal_string(*call.vargs.at(0)));
     else
-      resources_.time_args.push_back("%H:%M:%S\n");
+      resources_.time_args.emplace_back("%H:%M:%S\n");
   } else if (call.func == "strftime") {
     resources_.strftime_args.push_back(get_literal_string(*call.vargs.at(0)));
   } else if (call.func == "print") {
@@ -265,13 +309,13 @@ void ResourceAnalyser::visit(Call &call)
       resources_.cgroup_path_args.push_back(
           get_literal_string(*call.vargs.at(1)));
     else
-      resources_.cgroup_path_args.push_back("*");
+      resources_.cgroup_path_args.emplace_back("*");
   } else if (call.func == "skboutput") {
     auto &file_arg = *call.vargs.at(0);
-    String &file = static_cast<String &>(file_arg);
+    auto &file = static_cast<String &>(file_arg);
 
     auto &offset_arg = *call.vargs.at(3);
-    Integer &offset = static_cast<Integer &>(offset_arg);
+    auto &offset = static_cast<Integer &>(offset_arg);
 
     resources_.skboutput_args_.emplace_back(file.str, offset.n);
     resources_.needs_perf_event_map = true;
@@ -295,7 +339,7 @@ void ResourceAnalyser::visit(Call &call)
   }
 
   if (call.func == "str" || call.func == "buf" || call.func == "path") {
-    const auto max_strlen = bpftrace_.config_.get(ConfigKeyInt::max_strlen);
+    const auto max_strlen = bpftrace_.config_->get(ConfigKeyInt::max_strlen);
     if (exceeds_stack_limit(max_strlen))
       resources_.str_buffers++;
   }
@@ -359,6 +403,18 @@ void ResourceAnalyser::visit(Call &call)
     // and symbols resolved even when unavailable at resolution time
     resources_.probes_using_usym.insert(probe_);
   }
+}
+
+void ResourceAnalyser::visit(MapDeclStatement &decl)
+{
+  Visitor<ResourceAnalyser>::visit(decl);
+
+  auto bpf_type = get_bpf_map_type(decl.bpf_type);
+  if (!bpf_type) {
+    LOG(BUG) << "No bpf type from string: " << decl.bpf_type;
+    return;
+  }
+  map_decls_.insert({ decl.ident, { *bpf_type, decl.max_entries } });
 }
 
 void ResourceAnalyser::visit(Map &map)
@@ -443,7 +499,7 @@ void ResourceAnalyser::visit(Ternary &ternary)
   // blow it up. So we need a scratch buffer for it.
 
   if (ternary.type.IsStringTy()) {
-    const auto max_strlen = bpftrace_.config_.get(ConfigKeyInt::max_strlen);
+    const auto max_strlen = bpftrace_.config_->get(ConfigKeyInt::max_strlen);
     if (exceeds_stack_limit(max_strlen))
       resources_.str_buffers++;
   }
@@ -479,7 +535,7 @@ void ResourceAnalyser::visit(VarDeclStatement &decl)
 
 bool ResourceAnalyser::exceeds_stack_limit(size_t size)
 {
-  return size > bpftrace_.config_.get(ConfigKeyInt::on_stack_limit);
+  return size > bpftrace_.config_->get(ConfigKeyInt::on_stack_limit);
 }
 
 bool ResourceAnalyser::uses_usym_table(const std::string &fun)
@@ -492,6 +548,25 @@ void ResourceAnalyser::update_map_info(Map &map)
   auto &map_info = resources_.maps_info[map.ident];
   map_info.value_type = map.type;
   map_info.key_type = map.key_type;
+
+  auto decl = map_decls_.find(map.ident);
+
+  // hist() and lhist() transparently create additional elements in whatever
+  // map they are assigned to. So even if the map looks like it has no keys,
+  // multiple keys are necessary.
+  if (map_info.key_type.IsNoneTy() && !map_info.value_type.IsHistTy() &&
+      !map_info.value_type.IsLhistTy()) {
+    map_info.max_entries = 1;
+    map_info.bpf_type = get_bpf_map_type(map_info.value_type,
+                                         map_info.key_type);
+  } else if (decl != map_decls_.end()) {
+    map_info.bpf_type = decl->second.first;
+    map_info.max_entries = decl->second.second;
+  } else {
+    map_info.bpf_type = get_bpf_map_type(map_info.value_type,
+                                         map_info.key_type);
+    map_info.max_entries = bpftrace_.config_->get(ConfigKeyInt::max_map_keys);
+  }
 }
 
 void ResourceAnalyser::maybe_allocate_map_key_buffer(const Map &map)
@@ -507,18 +582,13 @@ void ResourceAnalyser::maybe_allocate_map_key_buffer(const Map &map)
 
 Pass CreateResourcePass()
 {
-  auto fn = [](PassContext &ctx) {
-    ResourceAnalyser analyser(ctx.ast_ctx, ctx.b);
-    auto pass_result = analyser.analyse();
-
-    if (!pass_result.has_value())
-      return PassResult::Error("Resource", 1);
-    ctx.b.resources = pass_result.value();
-
-    return PassResult::Success();
+  auto fn = [](ASTContext &ast, BPFtrace &b) {
+    ResourceAnalyser analyser(b);
+    analyser.visit(ast.root);
+    b.resources = analyser.resources();
   };
 
-  return Pass("ResourceAnalyser", fn);
+  return Pass::create("ResourceAnalyser", fn);
 }
 
 } // namespace bpftrace::ast

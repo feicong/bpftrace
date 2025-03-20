@@ -15,6 +15,7 @@ Config::Config(bool has_cmd)
     { ConfigKeyBool::lazy_symbolication, { .value = false } },
     { ConfigKeyBool::probe_inline, { .value = false } },
     { ConfigKeyBool::print_maps_on_exit, { .value = true } },
+    { ConfigKeyBool::unstable_map_decl, { .value = false } },
 #ifndef HAVE_BLAZESYM
     { ConfigKeyBool::use_blazesym, { .value = false } },
 #else
@@ -31,6 +32,7 @@ Config::Config(bool has_cmd)
     { ConfigKeyInt::on_stack_limit, { .value = static_cast<uint64_t>(32) } },
     { ConfigKeyInt::perf_rb_pages, { .value = static_cast<uint64_t>(64) } },
     { ConfigKeyStackMode::default_, { .value = StackMode::bpftrace } },
+    { ConfigKeyString::license, { .value = std::string("GPL") } },
     { ConfigKeyString::str_trunc_trailer, { .value = std::string("..") } },
     { ConfigKeySymbolSource::default_,
       { .value =
@@ -53,11 +55,9 @@ Config::Config(bool has_cmd)
 
 bool Config::can_set(ConfigSource prevSource, ConfigSource source)
 {
-  if (prevSource == ConfigSource::default_ ||
-      (prevSource == ConfigSource::script && source == ConfigSource::env_var)) {
-    return true;
-  }
-  return false;
+  return prevSource == ConfigSource::default_ ||
+         (prevSource == ConfigSource::script &&
+          source == ConfigSource::env_var);
 }
 
 // /proc/sys/kernel/randomize_va_space >= 1
@@ -84,7 +84,7 @@ bool Config::is_aslr_enabled()
 std::map<std::string, StackMode> get_stack_mode_map()
 {
   std::map<std::string, StackMode> result;
-  for (auto &mode : STACK_MODE_NAME_MAP) {
+  for (const auto &mode : STACK_MODE_NAME_MAP) {
     result.emplace(mode.second, mode.first);
   }
   return result;
@@ -105,15 +105,15 @@ std::optional<ConfigKey> Config::get_config_key(const std::string &str,
 {
   std::string maybe_key = str;
   static const std::string prefix = "bpftrace_";
-  std::transform(maybe_key.begin(),
-                 maybe_key.end(),
-                 maybe_key.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
+  std::ranges::transform(maybe_key,
 
-  if (maybe_key.rfind(prefix, 0) == 0) {
+                         maybe_key.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+
+  if (maybe_key.starts_with(prefix)) {
     maybe_key = maybe_key.substr(prefix.length());
   }
-  if (ENV_ONLY.find(maybe_key) != ENV_ONLY.end()) {
+  if (ENV_ONLY.contains(maybe_key)) {
     err = maybe_key + " can only be set as an environment variable";
     return std::nullopt;
   }

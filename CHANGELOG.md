@@ -18,15 +18,24 @@ and this project adheres to
   - [#3656](https://github.com/bpftrace/bpftrace/pull/3656)
 - `len` now also accepts `ustack` and `kstack` as arguments
   - [#3769](https://github.com/bpftrace/bpftrace/pull/3769)
-- `blazesym` will be used for kernel address symbolication if found during build
+- `blazesym` will be used for address symbolication if found during build
   - [#3760](https://github.com/bpftrace/bpftrace/pull/3760)
   - [#3787](https://github.com/bpftrace/bpftrace/pull/3787)
+  - [#3884](https://github.com/bpftrace/bpftrace/pull/3884)
 - Published aarch64 appimage builds from master
   - [#3795](https://github.com/bpftrace/bpftrace/pull/3795)
 - Add ability to cast int to an enum
   - [#3812](https://github.com/bpftrace/bpftrace/pull/3812)
 - Added warning when strcontains() is used on strings that are too big and may cause verifier issues
   - [#3811](https://github.com/bpftrace/bpftrace/pull/3811)
+- Add support for LLVM 20
+  - [#3841](https://github.com/bpftrace/bpftrace/pull/3841)
+- Add simple block expressions
+  - [#3780](https://github.com/bpftrace/bpftrace/pull/3780)
+- Add map declaration syntax (behind an "unstable" config flag)
+  - [#3863](https://github.com/bpftrace/bpftrace/pull/3863)
+- Add license config to specify BPF license
+  - [#3905](https://github.com/bpftrace/bpftrace/pull/3905)
 #### Changed
 - `probe` builtin is now represented as a string type
   - [#3638](https://github.com/bpftrace/bpftrace/pull/3638)
@@ -38,6 +47,12 @@ and this project adheres to
   - [#3752](https://github.com/bpftrace/bpftrace/pull/3752)
 - Increase default values for max_bpf_progs and max_probes
   - [#3808](https://github.com/bpftrace/bpftrace/pull/3808)
+- `-p` CLI flag now applies to all probes (except BEGIN/END)
+  - [#3800](https://github.com/bpftrace/bpftrace/pull/3800)
+- Allow use of variables before they are assigned
+  - [#3832](https://github.com/bpftrace/bpftrace/pull/3832)
+- Introduce automatic session probes
+  - [#3772](https://github.com/bpftrace/bpftrace/pull/3772)
 #### Deprecated
 #### Removed
 - Drop support for LLVM 14 and 15
@@ -57,6 +72,8 @@ and this project adheres to
   - [#3805](https://github.com/bpftrace/bpftrace/pull/3805)
 - Fix strcontains() correctness bug where matches could be lost if both strings are non-literal
   - [#3811](https://github.com/bpftrace/bpftrace/pull/3811)
+- Fix str() bug where optional size parameter did not count towards NUL terminator
+  - [#3849](https://github.com/bpftrace/bpftrace/pull/3849)
 #### Security
 #### Docs
 #### Tools

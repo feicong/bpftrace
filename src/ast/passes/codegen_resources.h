@@ -1,13 +1,11 @@
 #pragma once
 
-#include <cstdint>
 #include <unordered_set>
 
 #include "ast/visitor.h"
 #include "config.h"
 
-namespace bpftrace {
-namespace ast {
+namespace bpftrace::ast {
 
 struct CodegenResources {
   bool needs_elapsed_map = false;
@@ -22,11 +20,11 @@ struct CodegenResources {
 // logic makes things easier to understand and maintain.
 class CodegenResourceAnalyser : public Visitor<CodegenResourceAnalyser> {
 public:
-  CodegenResourceAnalyser(ASTContext &ctx, const ::bpftrace::Config &config);
-  CodegenResources analyse();
+  CodegenResourceAnalyser(const ::bpftrace::Config &config);
+  CodegenResources analyse(Program &program);
 
   using Visitor<CodegenResourceAnalyser>::visit;
-  void visit(Builtin &map);
+  void visit(Builtin &builtin);
   void visit(Call &call);
 
 private:
@@ -34,5 +32,4 @@ private:
   CodegenResources resources_;
 };
 
-} // namespace ast
-} // namespace bpftrace
+} // namespace bpftrace::ast

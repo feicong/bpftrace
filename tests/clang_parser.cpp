@@ -1,14 +1,12 @@
-#include "clang_parser.h"
+#include <llvm/Config/llvm-config.h>
 
-#include <iostream>
-#include <utility>
-
+#include "ast/attachpoint_parser.h"
 #include "ast/passes/field_analyser.h"
 #include "bpftrace.h"
+#include "clang_parser.h"
 #include "driver.h"
 #include "struct.h"
 #include "gtest/gtest.h"
-#include <llvm/Config/llvm-config.h>
 
 namespace bpftrace::test::clang_parser {
 
@@ -20,14 +18,17 @@ static void parse(const std::string &input,
                   const std::string &probe = "kprobe:sys_read { 1 }")
 {
   auto extended_input = input + probe;
-  Driver driver(bpftrace);
-  ASSERT_EQ(driver.parse_str(extended_input), 0);
+  ast::ASTContext ast("stdin", extended_input);
 
-  ast::FieldAnalyser fields(driver.ctx, bpftrace);
-  EXPECT_EQ(fields.analyse(), 0);
-
-  ClangParser clang;
-  ASSERT_EQ(clang.parse(driver.ctx.root, bpftrace), result);
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bpftrace)
+                .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateFieldAnalyserPass())
+                .add(CreateClangPass())
+                .run();
+  ASSERT_EQ(ok && ast.diagnostics().ok(), result);
 }
 
 TEST(clang_parser, integers)
@@ -222,8 +223,8 @@ TEST(clang_parser, string_ptr)
   ASSERT_EQ(foo->fields.size(), 1U);
   ASSERT_TRUE(foo->HasField("str"));
 
-  auto &ty = foo->GetField("str").type;
-  auto *pointee = ty.GetPointeeTy();
+  const auto &ty = foo->GetField("str").type;
+  const auto *pointee = ty.GetPointeeTy();
   EXPECT_TRUE(pointee->IsIntTy());
   EXPECT_EQ(pointee->GetIntBitWidth(), 8 * sizeof(char));
   EXPECT_EQ(foo->GetField("str").offset, 0);
@@ -259,7 +260,7 @@ TEST(clang_parser, nested_struct_named)
   ASSERT_EQ(foo->fields.size(), 1U);
   ASSERT_TRUE(foo->HasField("bar"));
 
-  auto &bar = foo->GetField("bar");
+  const auto &bar = foo->GetField("bar");
   EXPECT_TRUE(bar.type.IsRecordTy());
   EXPECT_EQ(bar.type.GetName(), "struct Bar");
   EXPECT_EQ(bar.type.GetSize(), 4U);
@@ -279,7 +280,7 @@ TEST(clang_parser, nested_struct_ptr_named)
   ASSERT_EQ(foo->fields.size(), 1U);
   ASSERT_TRUE(foo->HasField("bar"));
 
-  auto &bar = foo->GetField("bar");
+  const auto &bar = foo->GetField("bar");
   EXPECT_TRUE(bar.type.IsPtrTy());
   EXPECT_TRUE(bar.type.GetPointeeTy()->IsRecordTy());
   EXPECT_EQ(bar.type.GetPointeeTy()->GetName(), "struct Bar");
@@ -327,12 +328,12 @@ TEST(clang_parser, nested_struct_no_type)
   EXPECT_EQ(baz->GetField("y").offset, 0);
 
   {
-    auto &bar_field = foo->GetField("bar");
+    const auto &bar_field = foo->GetField("bar");
     EXPECT_TRUE(bar_field.type.IsRecordTy());
     EXPECT_EQ(bar_field.type.GetSize(), sizeof(int));
     EXPECT_EQ(bar_field.offset, 0);
 
-    auto &baz_field = foo->GetField("baz");
+    const auto &baz_field = foo->GetField("baz");
     EXPECT_TRUE(baz_field.type.IsRecordTy());
     EXPECT_EQ(baz_field.type.GetSize(), sizeof(int));
     EXPECT_EQ(baz_field.offset, 4);
@@ -703,10 +704,9 @@ TEST_F(clang_parser_btf, btf)
   EXPECT_EQ(foo2_field.offset, 8);
 }
 
-TEST_F(clang_parser_btf, btf_arrays_multi_dim)
+// Disabled because BTF flattens multi-dimensional arrays #3082.
+TEST_F(clang_parser_btf, DISABLED_btf_arrays_multi_dim)
 {
-  GTEST_SKIP() << "BTF flattens multi-dimensional arrays #3082";
-
   BPFtrace bpftrace;
   bpftrace.parse_btf({});
   parse("struct Foo { struct Arrays a; };", bpftrace);

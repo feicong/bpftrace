@@ -1,25 +1,28 @@
 #include "bpfbytecode.h"
 #include "ast/passes/codegen_llvm.h"
+#include "ast/passes/parser.h"
 #include "ast/passes/semantic_analyser.h"
-#include "driver.h"
 #include "mocks.h"
-
 #include "gtest/gtest.h"
 
 namespace bpftrace::test::bpfbytecode {
 
-BpfBytecode codegen(std::string_view input)
+BpfBytecode codegen(const std::string &input)
 {
   auto bpftrace = get_mock_bpftrace();
 
-  Driver driver(*bpftrace);
-  EXPECT_EQ(driver.parse_str(input), 0);
+  ast::ASTContext ast("stdin", input);
 
-  ast::SemanticAnalyser semantics(driver.ctx, *bpftrace);
-  EXPECT_EQ(semantics.analyse(), 0);
-
-  ast::CodegenLLVM codegen(driver.ctx, *bpftrace);
-  return codegen.compile();
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put<BPFtrace>(*bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::AllCompilePasses())
+                .run();
+  EXPECT_TRUE(ok && ast.diagnostics().ok());
+  auto &output = ok->get<BpfBytecode>();
+  return std::move(output);
 }
 
 TEST(bpfbytecode, create_programs)

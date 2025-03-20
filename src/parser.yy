@@ -10,7 +10,7 @@
 %define define_location_comparison
 %define parse.assert
 %define parse.trace
-%expect 5
+%expect 4
 
 %define parse.error verbose
 
@@ -32,13 +32,16 @@ class Node;
 } // namespace ast
 } // namespace bpftrace
 #include "ast/ast.h"
+#include "ast/context.h"
 }
 
 %{
 #include <iostream>
 
 #include "driver.h"
-#include "lexer.h"
+#include "parser.tab.hh"
+
+YY_DECL;
 
 void yyerror(bpftrace::Driver &driver, const char *s);
 %}
@@ -136,6 +139,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 
 %type <ast::AttachPoint *> attach_point
 %type <ast::AttachPointList> attach_points
+%type <ast::Block *> block_expr
 %type <ast::Call *> call
 %type <ast::Sizeof *> sizeof_expr
 %type <ast::Offsetof *> offsetof_expr
@@ -147,12 +151,14 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %type <ast::SubprogArgList> subprog_args
 %type <ast::Integer *> int
 %type <ast::Map *> map
+%type <ast::MapDeclStatement *> map_decl_stmt
 %type <ast::PositionalParameter *> param
 %type <ast::Predicate *> pred
 %type <ast::Probe *> probe
 %type <std::pair<ast::ProbeList, ast::SubprogList>> probes_and_subprogs
 %type <ast::Config *> config
 %type <ast::Statement *> assign_stmt block_stmt expr_stmt if_stmt jump_stmt loop_stmt config_assign_stmt for_stmt
+%type <ast::MapDeclList> map_decl_list
 %type <ast::VarDeclStatement *> var_decl_stmt
 %type <ast::StatementList> block block_or_if stmt_list config_block config_assign_stmt_list
 %type <SizedType> type int_type pointer_type struct_type
@@ -180,8 +186,8 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %%
 
 program:
-                c_definitions config probes_and_subprogs END {
-                    driver.ctx.root = driver.ctx.make_node<ast::Program>($1, $2, std::move($3.second), std::move($3.first), @$);
+                c_definitions config map_decl_list probes_and_subprogs END {
+                    driver.ctx.root = driver.ctx.make_node<ast::Program>($1, $2, std::move($3), std::move($4.second), std::move($4.first), @$);
                 }
                 ;
 
@@ -320,23 +326,7 @@ probes_and_subprogs:
 probe:
                 attach_points pred block
                 {
-                  if (!driver.listing_)
-                    $$ = driver.ctx.make_node<ast::Probe>(std::move($1), $2, driver.ctx.make_node<ast::Block>(std::move($3), @3), @$);
-                  else
-                  {
-                    error(@$, "unexpected listing query format");
-                    YYERROR;
-                  }
-                }
-        |       attach_points END
-                {
-                  if (driver.listing_)
-                    $$ = driver.ctx.make_node<ast::Probe>(std::move($1), nullptr, driver.ctx.make_node<ast::Block>(ast::StatementList(), @$), @$);
-                  else
-                  {
-                    error(@$, "unexpected end of file, expected {");
-                    YYERROR;
-                  }
+                  $$ = driver.ctx.make_node<ast::Probe>(std::move($1), $2, driver.ctx.make_node<ast::Block>(std::move($3), @3), @$);
                 }
                 ;
 
@@ -478,6 +468,15 @@ assign_stmt:
                 }
         ;
 
+map_decl_list:
+                map_decl_list map_decl_stmt ";"      { $$ = std::move($1); $$.push_back($2); }
+        |        %empty                              { $$ = ast::MapDeclList{}; }
+        ;
+
+map_decl_stmt:
+                LET MAP ASSIGN IDENT LPAREN INT RPAREN { $$ = driver.ctx.make_node<ast::MapDeclStatement>($2, $4, $6, @$); }
+        ;
+
 var_decl_stmt:
                  LET var {  $$ = driver.ctx.make_node<ast::VarDeclStatement>($2, @$); }
         |        LET var COLON type {  $$ = driver.ctx.make_node<ast::VarDeclStatement>($2, $4, @$); }
@@ -525,13 +524,16 @@ tuple_access_expr:
                 postfix_expr DOT INT      { $$ = driver.ctx.make_node<ast::FieldAccess>($1, $3, @3); }
                 ;
 
-
+block_expr:
+                "{" stmt_list expr "}" { $$ = driver.ctx.make_node<ast::Block>(std::move($2), $3, @$); }
+                ;
 
 unary_expr:
                 unary_op cast_expr   { $$ = driver.ctx.make_node<ast::Unop>($1, $2, false, @1); }
         |       postfix_expr         { $$ = $1; }
         |       INCREMENT map_or_var { $$ = driver.ctx.make_node<ast::Unop>(ast::Operator::INCREMENT, $2, false, @1); }
         |       DECREMENT map_or_var { $$ = driver.ctx.make_node<ast::Unop>(ast::Operator::DECREMENT, $2, false, @1); }
+        |       block_expr           { $$ = $1; }
 /* errors */
         |       ident DECREMENT      { error(@1, "The -- operator must be applied to a map or variable"); YYERROR; }
         |       ident INCREMENT      { error(@1, "The ++ operator must be applied to a map or variable"); YYERROR; }
@@ -552,7 +554,6 @@ conditional_expr:
                 logical_or_expr                                  { $$ = $1; }
         |       logical_or_expr QUES expr COLON conditional_expr { $$ = driver.ctx.make_node<ast::Ternary>($1, $3, $5, @$); }
                 ;
-
 
 logical_or_expr:
                 logical_and_expr                     { $$ = $1; }

@@ -2,20 +2,12 @@
 
 #include <cctype>
 #include <iomanip>
-#include <regex>
 #include <sstream>
 
 #include "ast/ast.h"
 #include "struct.h"
 
 namespace bpftrace::ast {
-
-void Printer::print()
-{
-  ++depth_;
-  visit(ctx_.root);
-  --depth_;
-}
 
 std::string Printer::type(const SizedType &ty)
 {
@@ -144,6 +136,18 @@ void Printer::visit(Offsetof &offof)
   --depth_;
 }
 
+void Printer::visit(MapDeclStatement &decl)
+{
+  std::string indent(depth_, ' ');
+  out_ << indent << "map decl: " << decl.ident << std::endl;
+
+  ++depth_;
+  std::string indentType(depth_, ' ');
+  out_ << indentType << "bpf type: " << decl.bpf_type << std::endl;
+  out_ << indentType << "max entries: " << decl.max_entries << std::endl;
+  --depth_;
+}
+
 void Printer::visit(Map &map)
 {
   std::string indent(depth_, ' ');
@@ -202,7 +206,7 @@ void Printer::visit(FieldAccess &acc)
   visit(acc.expr);
   --depth_;
 
-  if (acc.field.size())
+  if (!acc.field.empty())
     out_ << indent << " " << acc.field << std::endl;
   else
     out_ << indent << " " << acc.index << std::endl;
@@ -444,7 +448,7 @@ void Printer::visit(Subprog &subprog)
 
 void Printer::visit(Program &program)
 {
-  if (program.c_definitions.size() > 0)
+  if (!program.c_definitions.empty())
     out_ << program.c_definitions << std::endl;
 
   std::string indent(depth_, ' ');
@@ -452,6 +456,10 @@ void Printer::visit(Program &program)
 
   ++depth_;
   visit(program.config);
+  --depth_;
+
+  ++depth_;
+  visit(program.map_decls);
   --depth_;
 
   ++depth_;

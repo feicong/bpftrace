@@ -1,22 +1,18 @@
 #pragma once
 
 #include <optional>
-#include <ostream>
 #include <sstream>
 #include <vector>
 
 #include "ast/ast.h"
+#include "ast/pass_manager.h"
 #include "bpftrace.h"
 
-namespace bpftrace {
-namespace ast {
+namespace bpftrace::ast {
 
 class AttachPointParser {
 public:
-  AttachPointParser(ASTContext &ctx,
-                    BPFtrace &bpftrace,
-                    std::ostream &sink,
-                    bool listing);
+  AttachPointParser(ASTContext &ctx, BPFtrace &bpftrace, bool listing);
   ~AttachPointParser() = default;
   int parse();
 
@@ -59,7 +55,6 @@ private:
 
   ASTContext &ctx_;
   BPFtrace &bpftrace_;
-  std::ostream &sink_;
   AttachPoint *ap_{ nullptr }; // Non-owning pointer
   std::stringstream errs_;
   std::vector<std::string> parts_;
@@ -67,5 +62,7 @@ private:
   bool listing_;
 };
 
-} // namespace ast
-} // namespace bpftrace
+// The attachpoints are expanded in their own separate pass.
+Pass CreateParseAttachpointsPass();
+
+} // namespace bpftrace::ast

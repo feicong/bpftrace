@@ -1,15 +1,17 @@
 #pragma once
 
 #include "types.h"
+
 #include <cstddef>
 #include <linux/types.h>
 #include <map>
 #include <optional>
-#include <regex>
 #include <set>
 #include <string>
 #include <unistd.h>
 #include <unordered_set>
+
+#include "ast/pass_manager.h"
 
 // Taken from libbpf
 #define BTF_INFO_ENC(kind, kind_flag, vlen)                                    \
@@ -58,7 +60,7 @@ public:
   };
   ~BTF();
 
-  bool has_data(void) const;
+  bool has_data() const;
   size_t objects_cnt() const
   {
     return btf_objects.size();
@@ -77,6 +79,7 @@ public:
 
   std::optional<Struct> resolve_args(const std::string& func,
                                      bool ret,
+                                     bool check_traceable,
                                      std::string& err);
   void resolve_fields(SizedType& type);
 
@@ -92,7 +95,7 @@ private:
                      std::optional<__u32> kind = std::nullopt) const;
   __s32 find_id_in_btf(struct btf* btf,
                        std::string_view name,
-                       std::optional<__u32> = std::nullopt) const;
+                       std::optional<__u32> kind = std::nullopt) const;
 
   std::string dump_defs_from_btf(const struct btf* btf,
                                  std::unordered_set<std::string>& types) const;
@@ -119,9 +122,11 @@ private:
   BPFtrace* bpftrace_ = nullptr;
 };
 
-inline bool BTF::has_data(void) const
+inline bool BTF::has_data() const
 {
   return state == OK;
 }
+
+ast::Pass CreateParseBTFPass();
 
 } // namespace bpftrace

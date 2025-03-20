@@ -1,28 +1,26 @@
 #pragma once
 
+#include <cereal/access.hpp>
 #include <map>
 #include <memory>
 #include <optional>
 
-#include <cereal/access.hpp>
-
 #include "ast/ast.h"
 #include "types.h"
-#include "utils.h"
+#include "util/hash.h"
 
 namespace bpftrace {
 
 static constexpr auto RETVAL_FIELD_NAME = "$retval";
 
 struct Bitfield {
-  Bitfield(size_t byte_offset, size_t bit_width);
+  Bitfield(size_t bit_offset, size_t bit_width);
   Bitfield(size_t read_bytes, size_t access_rshift, uint64_t mask)
       : read_bytes(read_bytes), access_rshift(access_rshift), mask(mask)
   {
   }
   Bitfield() // necessary for serialization
-  {
-  }
+      = default;
 
   bool operator==(const Bitfield &other) const;
   bool operator!=(const Bitfield &other) const;
@@ -135,8 +133,8 @@ struct hash<bpftrace::Struct> {
   size_t operator()(const bpftrace::Struct &s) const
   {
     size_t hash = std::hash<int>()(s.size);
-    for (auto &field : s.fields)
-      bpftrace::hash_combine(hash, field.type);
+    for (const auto &field : s.fields)
+      bpftrace::util::hash_combine(hash, field.type);
     return hash;
   }
 };

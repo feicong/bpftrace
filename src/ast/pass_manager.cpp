@@ -1,61 +1,76 @@
 #include "ast/pass_manager.h"
-
-#include <ostream>
-
-#include "ast/passes/printer.h"
-#include "bpftrace.h"
+#include "ast/context.h"
+#include "log.h"
+#include "util/result.h"
 
 namespace bpftrace::ast {
 
-namespace {
-void print(PassContext &ctx, const std::string &name, std::ostream &out)
-{
-  out << "\nAST after: " << name << std::endl;
-  out << "-------------------\n";
-  ast::Printer printer(ctx.ast_ctx, out);
-  printer.print();
-  out << std::endl;
-}
-} // namespace
+std::atomic<int> PassContext::next_type_id_;
+std::unordered_map<int, std::string> PassContext::type_names_;
 
-void PassManager::AddPass(Pass p)
+bool PassContext::ok() const
 {
-  passes_.push_back(std::move(p));
-}
-
-PassResult PassManager::Run(PassContext &ctx)
-{
-  if (bt_debug.find(DebugStage::Ast) != bt_debug.end())
-    print(ctx, "parser", std::cout);
-  for (auto &pass : passes_) {
-    auto result = pass.Run(ctx);
-    if (bt_debug.find(DebugStage::Ast) != bt_debug.end())
-      print(ctx, pass.name, std::cout);
-
-    if (!result.Ok())
-      return result;
+  int type_id = TypeId<ASTContext>::type_id();
+  if (state_.contains(type_id) || extern_state_.contains(type_id)) {
+    return get<ASTContext>().diagnostics().ok();
   }
-  return PassResult::Success();
+  return true;
 }
 
-PassResult PassResult::Error(const std::string &pass)
+void PassContext::no_object_failure(int type_id)
 {
-  return PassResult(pass);
+  // Rely on the type being available, otherwise how did we get here?
+  LOG(BUG) << "get<" << type_names_[type_id]
+           << "> failed; no object available.";
+  __builtin_unreachable();
 }
 
-PassResult PassResult::Error(const std::string &pass, int code)
+PassManager &PassManager::add(Pass &&pass)
 {
-  return PassResult(pass, code);
+  // Check that the inputs are all available.
+  for (const int type_id : pass.inputs()) {
+    if (!outputs_.contains(type_id)) {
+      auto type_name = PassContext::type_names_[type_id];
+      LOG(BUG)
+          << "Pass " << pass.name() << " requires output " << type_name
+          << ", which is not available; it must be provided by a prior pass.";
+    }
+  }
+  // Check that the registered output is unique.
+  const int pass_id = passes_.size();
+  for (const int type_id : pass.outputs()) {
+    if (outputs_.contains(type_id)) {
+      auto &orig_pass = passes_[outputs_[type_id]];
+      auto type_name = PassContext::type_names_[type_id];
+      LOG(BUG) << "Pass " << pass.name() << " attempting to register output "
+               << type_name << ", which is already registered by pass "
+               << orig_pass.name() << ".";
+    }
+    // Register the output.
+    outputs_.emplace(type_id, pass_id);
+  }
+  // Add the actual pass.
+  passes_.emplace_back(std::move(pass));
+  return *this;
 }
 
-PassResult PassResult::Error(const std::string &pass, const std::string &msg)
+PassManager &PassManager::add(std::vector<Pass> &&passes)
 {
-  return PassResult(pass, msg);
+  for (auto &pass : passes) {
+    add(std::move(pass));
+  }
+  return *this;
 }
 
-PassResult PassResult::Success()
+Result<> PassManager::foreach(std::function<Result<>(const Pass &)> fn)
 {
-  return PassResult();
+  for (const auto &pass : passes_) {
+    auto err = fn(pass);
+    if (!err) {
+      return err;
+    }
+  }
+  return OK();
 }
 
 } // namespace bpftrace::ast

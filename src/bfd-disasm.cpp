@@ -6,14 +6,16 @@
 // bfd.h assumes everyone is using autotools and will error out unless
 // PACKAGE is defined. Some distros patch this check out.
 #define PACKAGE "bpftrace"
-#include "bfd-disasm.h"
-#include "utils.h"
 #include <bfd.h>
 #include <dis-asm.h>
+#include <filesystem>
+
+#include "bfd-disasm.h"
+#include "util/system.h"
 
 namespace bpftrace {
 
-BfdDisasm::BfdDisasm(std::string &path) : size_(0)
+BfdDisasm::BfdDisasm(std::string &path)
 {
   fd_ = open(path.c_str(), O_RDONLY);
 
@@ -55,7 +57,7 @@ static AlignState is_aligned_buf(void *buf, uint64_t size, uint64_t offset)
 {
   disassembler_ftype disassemble;
   struct disassemble_info info;
-  std::string tpath = get_pid_exe("self");
+  std::string tpath = util::get_pid_exe("self");
   bfd *bfdf;
 
   bfdf = bfd_openr(tpath.c_str(), nullptr);

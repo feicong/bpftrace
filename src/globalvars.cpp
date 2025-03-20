@@ -1,16 +1,14 @@
-#include "globalvars.h"
-
-#include "bpftrace.h"
-#include "log.h"
-#include "types.h"
-#include "utils.h"
-
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 #include <elf.h>
 #include <map>
-#include <stdexcept>
 #include <sys/mman.h>
+
+#include "bpftrace.h"
+#include "globalvars.h"
+#include "log.h"
+#include "types.h"
+#include "util/exceptions.h"
 
 namespace bpftrace::globalvars {
 
@@ -30,7 +28,7 @@ static void verify_maps_found(
 {
   for (const auto global_var : bpftrace.resources.needed_global_vars) {
     auto config = get_config(global_var);
-    if (!section_name_to_global_vars_map.count(config.section)) {
+    if (!section_name_to_global_vars_map.contains(config.section)) {
       LOG(BUG) << "No map found for " << config.section
                << " which is needed to set global variable " << config.name;
     }
@@ -125,7 +123,7 @@ static void update_global_vars_rodata(
 
   size_t v_size;
   char *global_vars_buf = reinterpret_cast<char *>(
-      const_cast<void *>(bpf_map__initial_value(global_vars_map, &v_size)));
+      bpf_map__initial_value(global_vars_map, &v_size));
 
   if (!global_vars_buf) {
     LOG(BUG) << "Failed to get array buf for global variable map";
@@ -133,7 +131,7 @@ static void update_global_vars_rodata(
 
   // Update the values for the global vars (using the above offsets)
   for (const auto &[global_var, offset] : vars_and_offsets) {
-    int64_t *var = reinterpret_cast<int64_t *>(global_vars_buf + offset);
+    auto *var = reinterpret_cast<int64_t *>(global_vars_buf + offset);
 
     switch (global_var) {
       case GlobalVar::NUM_CPUS:
@@ -168,7 +166,7 @@ static void update_global_vars_custom_rw_section(
   auto global_var = *needed_global_vars.begin();
 
   size_t actual_size;
-  auto buf = bpf_map__initial_value(global_vars_map, &actual_size);
+  auto *buf = bpf_map__initial_value(global_vars_map, &actual_size);
   if (!buf) {
     LOG(BUG) << "Failed to get size for section " << section_name
              << " before resizing";
@@ -180,9 +178,9 @@ static void update_global_vars_custom_rw_section(
   auto desired_size = (bpftrace.max_cpu_id_ + 1) * actual_size;
   auto err = bpf_map__set_value_size(global_vars_map, desired_size);
   if (err != 0) {
-    throw bpftrace::FatalUserException("Failed to set size to " +
-                                       std::to_string(desired_size) +
-                                       " for section " + section_name);
+    throw util::FatalUserException("Failed to set size to " +
+                                   std::to_string(desired_size) +
+                                   " for section " + section_name);
   }
 
   buf = bpf_map__initial_value(global_vars_map, &actual_size);
@@ -191,7 +189,7 @@ static void update_global_vars_custom_rw_section(
              << " after resizing";
   }
   if (actual_size != desired_size) {
-    throw bpftrace::FatalUserException(
+    throw util::FatalUserException(
         "Failed to set size from " + std::to_string(actual_size) + " to " +
         std::to_string(desired_size) + " for section " + section_name);
   }

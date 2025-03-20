@@ -1,7 +1,6 @@
 #pragma once
 
 #include <optional>
-#include <set>
 #include <string>
 
 #include "bpftrace.h"
@@ -10,8 +9,7 @@
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 
-namespace bpftrace {
-namespace globalvars {
+namespace bpftrace::globalvars {
 
 std::string to_string(GlobalVar global_var);
 std::optional<GlobalVar> from_string(std::string_view name);
@@ -35,31 +33,46 @@ struct GlobalVarConfig {
 };
 
 const std::unordered_map<GlobalVar, GlobalVarConfig> GLOBAL_VAR_CONFIGS = {
-  { GlobalVar::NUM_CPUS, { "num_cpus", std::string(RO_SECTION_NAME), true } },
+  { GlobalVar::NUM_CPUS,
+    { .name = "num_cpus",
+      .section = std::string(RO_SECTION_NAME),
+      .read_only = true } },
   { GlobalVar::MAX_CPU_ID,
-    { "max_cpu_id", std::string(RO_SECTION_NAME), true } },
+    { .name = "max_cpu_id",
+      .section = std::string(RO_SECTION_NAME),
+      .read_only = true } },
   { GlobalVar::FMT_STRINGS_BUFFER,
-    { "fmt_str_buf", std::string(FMT_STRINGS_BUFFER_SECTION_NAME), false } },
+    { .name = "fmt_str_buf",
+      .section = std::string(FMT_STRINGS_BUFFER_SECTION_NAME),
+      .read_only = false } },
   { GlobalVar::TUPLE_BUFFER,
-    { "tuple_buf", std::string(TUPLE_BUFFER_SECTION_NAME), false } },
+    { .name = "tuple_buf",
+      .section = std::string(TUPLE_BUFFER_SECTION_NAME),
+      .read_only = false } },
   { GlobalVar::GET_STR_BUFFER,
-    { "get_str_buf", std::string(GET_STR_BUFFER_SECTION_NAME), false } },
+    { .name = "get_str_buf",
+      .section = std::string(GET_STR_BUFFER_SECTION_NAME),
+      .read_only = false } },
   { GlobalVar::READ_MAP_VALUE_BUFFER,
-    { "read_map_val_buf",
-      std::string(READ_MAP_VALUE_BUFFER_SECTION_NAME),
-      false } },
+    { .name = "read_map_val_buf",
+      .section = std::string(READ_MAP_VALUE_BUFFER_SECTION_NAME),
+      .read_only = false } },
   { GlobalVar::WRITE_MAP_VALUE_BUFFER,
-    { "write_map_val_buf",
-      std::string(WRITE_MAP_VALUE_BUFFER_SECTION_NAME),
-      false } },
+    { .name = "write_map_val_buf",
+      .section = std::string(WRITE_MAP_VALUE_BUFFER_SECTION_NAME),
+      .read_only = false } },
   { GlobalVar::VARIABLE_BUFFER,
-    { "var_buf", std::string(VARIABLE_BUFFER_SECTION_NAME), false } },
+    { .name = "var_buf",
+      .section = std::string(VARIABLE_BUFFER_SECTION_NAME),
+      .read_only = false } },
   { GlobalVar::MAP_KEY_BUFFER,
-    { "map_key_buf", std::string(MAP_KEY_BUFFER_SECTION_NAME), false } },
+    { .name = "map_key_buf",
+      .section = std::string(MAP_KEY_BUFFER_SECTION_NAME),
+      .read_only = false } },
 };
 
 void update_global_vars(
-    const struct bpf_object *obj,
+    const struct bpf_object *bpf_object,
     const std::unordered_map<std::string, struct bpf_map *> &global_vars_map,
     const BPFtrace &bpftrace);
 
@@ -69,5 +82,4 @@ SizedType get_type(GlobalVar global_var,
                    const Config &bpftrace_config);
 std::unordered_set<std::string> get_section_names();
 
-} // namespace globalvars
-} // namespace bpftrace
+} // namespace bpftrace::globalvars

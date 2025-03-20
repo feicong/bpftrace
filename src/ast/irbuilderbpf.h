@@ -1,10 +1,8 @@
 #pragma once
 
 #include <bcc/bcc_usdt.h>
-
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/IRBuilder.h>
-
 #include <optional>
 
 #include "ast/ast.h"
@@ -15,8 +13,7 @@
 #define CREATE_ATOMIC_RMW(op, ptr, val, align, order)                          \
   CreateAtomicRMW((op), (ptr), (val), MaybeAlign((align)), (order))
 
-namespace bpftrace {
-namespace ast {
+namespace bpftrace::ast {
 
 using namespace llvm;
 
@@ -47,48 +44,48 @@ public:
   Value *CreateMapLookupElem(Value *ctx,
                              Map &map,
                              Value *key,
-                             const location &loc);
+                             const Location &loc);
   Value *CreateMapLookupElem(Value *ctx,
                              const std::string &map_name,
                              Value *key,
                              SizedType &type,
-                             const location &loc);
+                             const Location &loc);
   Value *CreatePerCpuMapAggElems(Value *ctx,
                                  Map &map,
                                  Value *key,
                                  const SizedType &type,
-                                 const location &loc);
+                                 const Location &loc);
   void CreateMapUpdateElem(Value *ctx,
                            const std::string &map_ident,
                            Value *key,
                            Value *val,
-                           const location &loc,
+                           const Location &loc,
                            int64_t flags = 0);
   void CreateMapDeleteElem(Value *ctx,
                            Map &map,
                            Value *key,
-                           const location &loc);
+                           const Location &loc);
   Value *CreateForEachMapElem(Value *ctx,
                               Map &map,
                               Value *callback,
                               Value *callback_ctx,
-                              const location &loc);
+                              const Location &loc);
   void CreateProbeRead(Value *ctx,
                        Value *dst,
                        llvm::Value *size,
                        Value *src,
                        AddrSpace as,
-                       const location &loc);
+                       const Location &loc);
   // Emits a bpf_probe_read call in which the size is derived from the SizedType
   // argument. Has special handling for certain types such as pointers where the
   // size depends on the host system as well as the probe type.
   // If provided, the optional AddrSpace argument is used instead of the type's
   // address space (which may not always be set).
   void CreateProbeRead(Value *ctx,
-                       Value *dest,
+                       Value *dst,
                        const SizedType &type,
                        Value *src,
-                       const location &loc,
+                       const Location &loc,
                        std::optional<AddrSpace> addrSpace = std::nullopt);
   // Emits the load instruction the type of which is derived from the provided
   // SizedType. Used to access elements from structures that ctx points to, or
@@ -104,77 +101,77 @@ public:
                                llvm::Value *size,
                                Value *src,
                                AddrSpace as,
-                               const location &loc);
+                               const Location &loc);
   CallInst *CreateProbeReadStr(Value *ctx,
                                Value *dst,
                                size_t size,
                                Value *src,
                                AddrSpace as,
-                               const location &loc);
+                               const Location &loc);
   Value *CreateUSDTReadArgument(Value *ctx,
                                 AttachPoint *attach_point,
                                 int usdt_location_index,
-                                int arg_name,
+                                int arg_num,
                                 Builtin &builtin,
-                                pid_t pid,
+                                std::optional<pid_t> pid,
                                 AddrSpace as,
-                                const location &loc);
+                                const Location &loc);
   Value *CreateStrncmp(Value *str1, Value *str2, uint64_t n, bool inverse);
-  Value *CreateStrcontains(Value *val1,
-                           uint64_t str1_size,
-                           Value *val2,
-                           uint64_t str2_size);
+  Value *CreateStrcontains(Value *haystack,
+                           uint64_t haystack_sz,
+                           Value *needle,
+                           uint64_t needle_sz);
   Value *CreateIntegerArrayCmp(Value *ctx,
                                Value *val1,
                                Value *val2,
                                const SizedType &val1_type,
                                const SizedType &val2_type,
-                               const bool inverse,
-                               const location &loc,
+                               bool inverse,
+                               const Location &loc,
                                MDNode *metadata);
-  CallInst *CreateGetNs(TimestampMode ts, const location &loc);
-  CallInst *CreateJiffies64(const location &loc);
-  CallInst *CreateGetCurrentCgroupId(const location &loc);
-  CallInst *CreateGetUidGid(const location &loc);
-  CallInst *CreateGetNumaId(const location &loc);
-  CallInst *CreateGetCpuId(const location &loc);
-  CallInst *CreateGetCurrentTask(const location &loc);
-  CallInst *CreateGetRandom(const location &loc);
+  CallInst *CreateGetNs(TimestampMode ts, const Location &loc);
+  CallInst *CreateJiffies64(const Location &loc);
+  CallInst *CreateGetCurrentCgroupId(const Location &loc);
+  CallInst *CreateGetUidGid(const Location &loc);
+  CallInst *CreateGetNumaId(const Location &loc);
+  CallInst *CreateGetCpuId(const Location &loc);
+  CallInst *CreateGetCurrentTask(const Location &loc);
+  CallInst *CreateGetRandom(const Location &loc);
   CallInst *CreateGetStack(Value *ctx,
                            bool ustack,
                            Value *buf,
                            StackType stack_type,
-                           const location &loc);
-  CallInst *CreateGetFuncIp(Value *ctx, const location &loc);
-  CallInst *CreatePerCpuPtr(Value *var, Value *cpu, const location &loc);
-  CallInst *CreateThisCpuPtr(Value *var, const location &loc);
-  CallInst *CreateGetJoinMap(BasicBlock *failure_callback, const location &loc);
+                           const Location &loc);
+  CallInst *CreateGetFuncIp(Value *ctx, const Location &loc);
+  CallInst *CreatePerCpuPtr(Value *var, Value *cpu, const Location &loc);
+  CallInst *CreateThisCpuPtr(Value *var, const Location &loc);
+  CallInst *CreateGetJoinMap(BasicBlock *failure_callback, const Location &loc);
   CallInst *CreateGetStackScratchMap(StackType stack_type,
                                      BasicBlock *failure_callback,
-                                     const location &loc);
-  Value *CreateGetStrAllocation(const std::string &name, const location &loc);
+                                     const Location &loc);
+  Value *CreateGetStrAllocation(const std::string &name, const Location &loc);
   Value *CreateGetFmtStringArgsAllocation(StructType *struct_type,
                                           const std::string &name,
-                                          const location &loc);
+                                          const Location &loc);
   Value *CreateTupleAllocation(const SizedType &tuple_type,
                                const std::string &name,
-                               const location &loc);
+                               const Location &loc);
   Value *CreateWriteMapValueAllocation(const SizedType &value_type,
                                        const std::string &name,
-                                       const location &loc);
+                                       const Location &loc);
   Value *CreateVariableAllocationInit(const SizedType &value_type,
                                       const std::string &name,
-                                      const location &loc);
+                                      const Location &loc);
   Value *CreateMapKeyAllocation(const SizedType &value_type,
                                 const std::string &name,
-                                const location &loc);
-  void CreateCheckSetRecursion(const location &loc, int early_exit_ret);
-  void CreateUnSetRecursion(const location &loc);
+                                const Location &loc);
+  void CreateCheckSetRecursion(const Location &loc, int early_exit_ret);
+  void CreateUnSetRecursion(const Location &loc);
   CallInst *CreateHelperCall(libbpf::bpf_func_id func_id,
                              FunctionType *helper_type,
                              ArrayRef<Value *> args,
                              const Twine &Name,
-                             const location *loc = nullptr);
+                             const Location &loc);
   CallInst *createCall(FunctionType *callee_type,
                        Value *callee,
                        ArrayRef<Value *> args,
@@ -182,52 +179,49 @@ public:
   void CreateGetCurrentComm(Value *ctx,
                             AllocaInst *buf,
                             size_t size,
-                            const location &loc);
-  void CreateOutput(Value *ctx,
-                    Value *data,
-                    size_t size,
-                    const location *loc = nullptr);
+                            const Location &loc);
+  void CreateOutput(Value *ctx, Value *data, size_t size, const Location &loc);
   void CreateAtomicIncCounter(const std::string &map_name, uint32_t idx);
   void CreateMapElemInit(Value *ctx,
                          Map &map,
                          Value *key,
                          Value *val,
-                         const location &loc);
+                         const Location &loc);
   void CreateMapElemAdd(Value *ctx,
                         Map &map,
                         Value *key,
                         Value *val,
-                        const location &loc);
+                        const Location &loc);
   void CreateDebugOutput(std::string fmt_str,
                          const std::vector<Value *> &values,
-                         const location &loc);
+                         const Location &loc);
   void CreateTracePrintk(Value *fmt,
                          Value *fmt_size,
                          const std::vector<Value *> &values,
-                         const location &loc);
-  void CreateSignal(Value *ctx, Value *sig, const location &loc);
+                         const Location &loc);
+  void CreateSignal(Value *ctx, Value *sig, const Location &loc);
   void CreateOverrideReturn(Value *ctx, Value *rc);
   void CreateHelperError(Value *ctx,
                          Value *return_value,
                          libbpf::bpf_func_id func_id,
-                         const location &loc);
+                         const Location &loc);
   void CreateHelperErrorCond(Value *ctx,
                              Value *return_value,
                              libbpf::bpf_func_id func_id,
-                             const location &loc,
+                             const Location &loc,
                              bool compare_zero = false);
   StructType *GetStackStructType(bool is_ustack);
   StructType *GetStructType(std::string name,
                             const std::vector<llvm::Type *> &elements,
                             bool packed = false);
-  Value *CreateGetPid(const location &loc);
-  Value *CreateGetTid(const location &loc);
-  Value *CreateGetPid(Value *ctx, const location &loc);
-  Value *CreateGetTid(Value *ctx, const location &loc);
+  Value *CreateGetPid(const Location &loc);
+  Value *CreateGetTid(const Location &loc);
+  Value *CreateGetPid(Value *ctx, const Location &loc);
+  Value *CreateGetTid(Value *ctx, const Location &loc);
   AllocaInst *CreateUSym(Value *ctx,
                          Value *val,
                          int probe_id,
-                         const location &loc);
+                         const Location &loc);
   Value *CreateRegisterRead(Value *ctx, const std::string &builtin);
   Value *CreateRegisterRead(Value *ctx, int offset, const std::string &name);
   Value *CreateKFuncArg(Value *ctx, SizedType &type, std::string &name);
@@ -242,13 +236,13 @@ public:
                   Value *buf,
                   Value *path,
                   Value *sz,
-                  const location &loc);
+                  const Location &loc);
   void CreateSeqPrintf(Value *ctx,
                        Value *fmt,
                        Value *fmt_size,
                        Value *data,
                        Value *data_len,
-                       const location &loc);
+                       const Location &loc);
 
   // For a type T, creates an integer expression representing the byte offset
   // of the element at the given index in T[]. Used for array dereferences and
@@ -268,7 +262,7 @@ public:
   // [1] https://reviews.llvm.org/D133361
   llvm::Value *CreateSafeGEP(llvm::Type *Ty,
                              llvm::Value *Ptr,
-                             llvm::ArrayRef<Value *> IdxList,
+                             llvm::ArrayRef<Value *> offsets,
                              const llvm::Twine &Name = "");
 
   StoreInst *createAlignedStore(Value *val, Value *ptr, unsigned align);
@@ -289,24 +283,20 @@ private:
   BPFtrace &bpftrace_;
   AsyncIds &async_ids_;
 
-  CallInst *CreateGetPidTgid(const location &loc);
+  CallInst *CreateGetPidTgid(const Location &loc);
   void CreateGetNsPidTgid(Value *ctx,
                           Value *dev,
                           Value *ino,
                           AllocaInst *ret,
-                          const location &loc);
+                          const Location &loc);
   llvm::Type *BpfPidnsInfoType();
   Value *CreateUSDTReadArgument(Value *ctx,
                                 struct bcc_usdt_argument *argument,
                                 Builtin &builtin,
                                 AddrSpace as,
-                                const location &loc);
+                                const Location &loc);
   CallInst *createMapLookup(const std::string &map_name,
                             Value *key,
-                            const std::string &name = "lookup_elem");
-  CallInst *createMapLookup(const std::string &map_name,
-                            Value *key,
-                            PointerType *val_ptr_ty,
                             const std::string &name = "lookup_elem");
   CallInst *createPerCpuMapLookup(
       const std::string &map_name,
@@ -321,34 +311,31 @@ private:
       const std::string &name = "lookup_percpu_elem");
   CallInst *createGetScratchMap(const std::string &map_name,
                                 const std::string &name,
-                                PointerType *val_ptr_ty,
-                                const location &loc,
+                                const Location &loc,
                                 BasicBlock *failure_callback,
                                 int key = 0);
   Value *CreateReadMapValueAllocation(const SizedType &value_type,
                                       const std::string &name,
-                                      const location &loc);
+                                      const Location &loc);
   Value *createAllocation(globalvars::GlobalVar globalvar,
                           llvm::Type *obj_type,
                           const std::string &name,
-                          const location &loc,
+                          const Location &loc,
                           std::optional<std::function<size_t(AsyncIds &)>>
                               gen_async_id_cb = std::nullopt);
   void CreateAllocationInit(const SizedType &stype, Value *alloc);
   Value *createScratchBuffer(globalvars::GlobalVar globalvar,
-                             const location &loc,
+                             const Location &loc,
                              size_t key);
   libbpf::bpf_func_id selectProbeReadHelper(AddrSpace as, bool str);
 
   llvm::Type *getKernelPointerStorageTy();
   llvm::Type *getUserPointerStorageTy();
-  void CreateRingbufOutput(Value *data,
-                           size_t size,
-                           const location *loc = nullptr);
+  void CreateRingbufOutput(Value *data, size_t size, const Location &loc);
   void CreatePerfEventOutput(Value *ctx,
                              Value *data,
                              size_t size,
-                             const location *loc = nullptr);
+                             const Location &loc);
 
   void createPerCpuSum(AllocaInst *ret, CallInst *call, const SizedType &type);
   void createPerCpuMinMax(AllocaInst *ret,
@@ -364,5 +351,4 @@ private:
   llvm::Function *preserve_static_offset_ = nullptr;
 };
 
-} // namespace ast
-} // namespace bpftrace
+} // namespace bpftrace::ast

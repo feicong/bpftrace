@@ -8,28 +8,25 @@ target triple = "bpf-pc-linux"
 %"struct map_t.1" = type { ptr, ptr, ptr, ptr }
 %"struct map_t.2" = type { ptr, ptr }
 %"struct map_t.3" = type { ptr, ptr, ptr, ptr }
-%kstack_key = type { i64, i32 }
+%kstack_key = type { i64, i64 }
 
-@LICENSE = global [4 x i8] c"GPL\00", section "license"
-@AT_x = dso_local global %"struct map_t" zeroinitializer, section ".maps", !dbg !0
-@stack_bpftrace_127 = dso_local global %"struct map_t.0" zeroinitializer, section ".maps", !dbg !21
-@stack_scratch = dso_local global %"struct map_t.1" zeroinitializer, section ".maps", !dbg !41
-@ringbuf = dso_local global %"struct map_t.2" zeroinitializer, section ".maps", !dbg !53
-@event_loss_counter = dso_local global %"struct map_t.3" zeroinitializer, section ".maps", !dbg !67
+@LICENSE = global [4 x i8] c"GPL\00", section "license", !dbg !0
+@AT_x = dso_local global %"struct map_t" zeroinitializer, section ".maps", !dbg !7
+@stack_bpftrace_127 = dso_local global %"struct map_t.0" zeroinitializer, section ".maps", !dbg !26
+@stack_scratch = dso_local global %"struct map_t.1" zeroinitializer, section ".maps", !dbg !50
+@ringbuf = dso_local global %"struct map_t.2" zeroinitializer, section ".maps", !dbg !62
+@event_loss_counter = dso_local global %"struct map_t.3" zeroinitializer, section ".maps", !dbg !76
 
 ; Function Attrs: nounwind
 declare i64 @llvm.bpf.pseudo(i64 %0, i64 %1) #0
 
-define i64 @kprobe_f_1(ptr %0) section "s_kprobe_f_1" !dbg !80 {
+define i64 @kprobe_f_1(ptr %0) section "s_kprobe_f_1" !dbg !89 {
 entry:
   %"@x_key" = alloca i64, align 8
   %lookup_stack_scratch_key = alloca i32, align 4
   %stack_key = alloca %kstack_key, align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %stack_key)
-  %1 = getelementptr %kstack_key, ptr %stack_key, i64 0, i32 0
-  store i64 0, ptr %1, align 8
-  %2 = getelementptr %kstack_key, ptr %stack_key, i64 0, i32 1
-  store i32 0, ptr %2, align 4
+  call void @llvm.memset.p0.i64(ptr align 1 %stack_key, i8 0, i64 16, i1 false)
   call void @llvm.lifetime.start.p0(i64 -1, ptr %lookup_stack_scratch_key)
   store i32 0, ptr %lookup_stack_scratch_key, align 4
   %lookup_stack_scratch_map = call ptr inttoptr (i64 1 to ptr)(ptr @stack_scratch, ptr %lookup_stack_scratch_key)
@@ -52,18 +49,18 @@ lookup_stack_scratch_failure:                     ; preds = %entry
 
 lookup_stack_scratch_merge:                       ; preds = %entry
   %probe_read_kernel = call i64 inttoptr (i64 113 to ptr)(ptr %lookup_stack_scratch_map, i32 1016, ptr null)
-  %get_stack = call i32 inttoptr (i64 67 to ptr)(ptr %0, ptr %lookup_stack_scratch_map, i32 1016, i64 0)
-  %3 = icmp sge i32 %get_stack, 0
-  br i1 %3, label %get_stack_success, label %get_stack_fail
+  %get_stack = call i64 inttoptr (i64 67 to ptr)(ptr %0, ptr %lookup_stack_scratch_map, i32 1016, i64 0)
+  %1 = icmp sge i64 %get_stack, 0
+  br i1 %1, label %get_stack_success, label %get_stack_fail
 
 get_stack_success:                                ; preds = %lookup_stack_scratch_merge
-  %4 = udiv i32 %get_stack, 8
-  %5 = getelementptr %kstack_key, ptr %stack_key, i64 0, i32 1
-  store i32 %4, ptr %5, align 4
-  %6 = trunc i32 %4 to i8
-  %murmur_hash_2 = call i64 @murmur_hash_2(ptr %lookup_stack_scratch_map, i8 %6, i64 1)
-  %7 = getelementptr %kstack_key, ptr %stack_key, i64 0, i32 0
-  store i64 %murmur_hash_2, ptr %7, align 8
+  %2 = udiv i64 %get_stack, 8
+  %3 = getelementptr %kstack_key, ptr %stack_key, i64 0, i32 1
+  store i64 %2, ptr %3, align 8
+  %4 = trunc i64 %2 to i8
+  %murmur_hash_2 = call i64 @murmur_hash_2(ptr %lookup_stack_scratch_map, i8 %4, i64 1)
+  %5 = getelementptr %kstack_key, ptr %stack_key, i64 0, i32 0
+  store i64 %murmur_hash_2, ptr %5, align 8
   %update_elem = call i64 inttoptr (i64 2 to ptr)(ptr @stack_bpftrace_127, ptr %stack_key, ptr %lookup_stack_scratch_map, i64 0)
   br label %merge_block
 
@@ -154,96 +151,109 @@ declare void @llvm.lifetime.start.p0(i64 immarg %0, ptr nocapture %1) #2
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(i64 immarg %0, ptr nocapture %1) #2
 
+; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: write)
+declare void @llvm.memset.p0.i64(ptr nocapture writeonly %0, i8 %1, i64 %2, i1 immarg %3) #3
+
 attributes #0 = { nounwind }
 attributes #1 = { alwaysinline }
 attributes #2 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #3 = { nocallback nofree nounwind willreturn memory(argmem: write) }
 
-!llvm.dbg.cu = !{!77}
-!llvm.module.flags = !{!79}
+!llvm.dbg.cu = !{!86}
+!llvm.module.flags = !{!88}
 
 !0 = !DIGlobalVariableExpression(var: !1, expr: !DIExpression())
-!1 = distinct !DIGlobalVariable(name: "AT_x", linkageName: "global", scope: !2, file: !2, type: !3, isLocal: false, isDefinition: true)
+!1 = distinct !DIGlobalVariable(name: "LICENSE", linkageName: "global", scope: !2, file: !2, type: !3, isLocal: false, isDefinition: true)
 !2 = !DIFile(filename: "bpftrace.bpf.o", directory: ".")
-!3 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !4)
-!4 = !{!5, !11, !12, !15}
-!5 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !6, size: 64)
-!6 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !7, size: 64)
-!7 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 32, elements: !9)
-!8 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
-!9 = !{!10}
-!10 = !DISubrange(count: 1, lowerBound: 0)
-!11 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !6, size: 64, offset: 64)
-!12 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !13, size: 64, offset: 128)
-!13 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !14, size: 64)
-!14 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
-!15 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !16, size: 64, offset: 192)
-!16 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !17, size: 64)
-!17 = !DICompositeType(tag: DW_TAG_array_type, baseType: !18, size: 96, elements: !19)
-!18 = !DIBasicType(name: "int8", size: 8, encoding: DW_ATE_signed)
-!19 = !{!20}
-!20 = !DISubrange(count: 12, lowerBound: 0)
-!21 = !DIGlobalVariableExpression(var: !22, expr: !DIExpression())
-!22 = distinct !DIGlobalVariable(name: "stack_bpftrace_127", linkageName: "global", scope: !2, file: !2, type: !23, isLocal: false, isDefinition: true)
-!23 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !24)
-!24 = !{!25, !30, !35, !36}
-!25 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !26, size: 64)
-!26 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !27, size: 64)
-!27 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 288, elements: !28)
-!28 = !{!29}
-!29 = !DISubrange(count: 9, lowerBound: 0)
-!30 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !31, size: 64, offset: 64)
+!3 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 32, elements: !5)
+!4 = !DIBasicType(name: "int8", size: 8, encoding: DW_ATE_signed)
+!5 = !{!6}
+!6 = !DISubrange(count: 4, lowerBound: 0)
+!7 = !DIGlobalVariableExpression(var: !8, expr: !DIExpression())
+!8 = distinct !DIGlobalVariable(name: "AT_x", linkageName: "global", scope: !2, file: !2, type: !9, isLocal: false, isDefinition: true)
+!9 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !10)
+!10 = !{!11, !17, !18, !21}
+!11 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !12, size: 64)
+!12 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !13, size: 64)
+!13 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 32, elements: !15)
+!14 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!15 = !{!16}
+!16 = !DISubrange(count: 1, lowerBound: 0)
+!17 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !12, size: 64, offset: 64)
+!18 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !19, size: 64, offset: 128)
+!19 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !20, size: 64)
+!20 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
+!21 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !22, size: 64, offset: 192)
+!22 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !23, size: 64)
+!23 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 128, elements: !24)
+!24 = !{!25}
+!25 = !DISubrange(count: 16, lowerBound: 0)
+!26 = !DIGlobalVariableExpression(var: !27, expr: !DIExpression())
+!27 = distinct !DIGlobalVariable(name: "stack_bpftrace_127", linkageName: "global", scope: !2, file: !2, type: !28, isLocal: false, isDefinition: true)
+!28 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !29)
+!29 = !{!30, !35, !40, !45}
+!30 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !31, size: 64)
 !31 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !32, size: 64)
-!32 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 4194304, elements: !33)
+!32 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 288, elements: !33)
 !33 = !{!34}
-!34 = !DISubrange(count: 131072, lowerBound: 0)
-!35 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !16, size: 64, offset: 128)
-!36 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !37, size: 64, offset: 192)
-!37 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !38, size: 64)
-!38 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 8128, elements: !39)
-!39 = !{!40}
-!40 = !DISubrange(count: 127, lowerBound: 0)
-!41 = !DIGlobalVariableExpression(var: !42, expr: !DIExpression())
-!42 = distinct !DIGlobalVariable(name: "stack_scratch", linkageName: "global", scope: !2, file: !2, type: !43, isLocal: false, isDefinition: true)
-!43 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !44)
-!44 = !{!45, !11, !50, !36}
-!45 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !46, size: 64)
+!34 = !DISubrange(count: 9, lowerBound: 0)
+!35 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !36, size: 64, offset: 64)
+!36 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !37, size: 64)
+!37 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 4194304, elements: !38)
+!38 = !{!39}
+!39 = !DISubrange(count: 131072, lowerBound: 0)
+!40 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !41, size: 64, offset: 128)
+!41 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !42, size: 64)
+!42 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 96, elements: !43)
+!43 = !{!44}
+!44 = !DISubrange(count: 12, lowerBound: 0)
+!45 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !46, size: 64, offset: 192)
 !46 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !47, size: 64)
-!47 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 192, elements: !48)
+!47 = !DICompositeType(tag: DW_TAG_array_type, baseType: !20, size: 8128, elements: !48)
 !48 = !{!49}
-!49 = !DISubrange(count: 6, lowerBound: 0)
-!50 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !51, size: 64, offset: 128)
-!51 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !52, size: 64)
-!52 = !DIBasicType(name: "int32", size: 32, encoding: DW_ATE_signed)
-!53 = !DIGlobalVariableExpression(var: !54, expr: !DIExpression())
-!54 = distinct !DIGlobalVariable(name: "ringbuf", linkageName: "global", scope: !2, file: !2, type: !55, isLocal: false, isDefinition: true)
-!55 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 128, elements: !56)
-!56 = !{!57, !62}
-!57 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !58, size: 64)
-!58 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !59, size: 64)
-!59 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 864, elements: !60)
-!60 = !{!61}
-!61 = !DISubrange(count: 27, lowerBound: 0)
-!62 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !63, size: 64, offset: 64)
-!63 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !64, size: 64)
-!64 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 8388608, elements: !65)
-!65 = !{!66}
-!66 = !DISubrange(count: 262144, lowerBound: 0)
-!67 = !DIGlobalVariableExpression(var: !68, expr: !DIExpression())
-!68 = distinct !DIGlobalVariable(name: "event_loss_counter", linkageName: "global", scope: !2, file: !2, type: !69, isLocal: false, isDefinition: true)
-!69 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !70)
-!70 = !{!71, !11, !50, !76}
-!71 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !72, size: 64)
+!49 = !DISubrange(count: 127, lowerBound: 0)
+!50 = !DIGlobalVariableExpression(var: !51, expr: !DIExpression())
+!51 = distinct !DIGlobalVariable(name: "stack_scratch", linkageName: "global", scope: !2, file: !2, type: !52, isLocal: false, isDefinition: true)
+!52 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !53)
+!53 = !{!54, !17, !59, !45}
+!54 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !55, size: 64)
+!55 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !56, size: 64)
+!56 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 192, elements: !57)
+!57 = !{!58}
+!58 = !DISubrange(count: 6, lowerBound: 0)
+!59 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !60, size: 64, offset: 128)
+!60 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !61, size: 64)
+!61 = !DIBasicType(name: "int32", size: 32, encoding: DW_ATE_signed)
+!62 = !DIGlobalVariableExpression(var: !63, expr: !DIExpression())
+!63 = distinct !DIGlobalVariable(name: "ringbuf", linkageName: "global", scope: !2, file: !2, type: !64, isLocal: false, isDefinition: true)
+!64 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 128, elements: !65)
+!65 = !{!66, !71}
+!66 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !67, size: 64)
+!67 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !68, size: 64)
+!68 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 864, elements: !69)
+!69 = !{!70}
+!70 = !DISubrange(count: 27, lowerBound: 0)
+!71 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !72, size: 64, offset: 64)
 !72 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !73, size: 64)
-!73 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 64, elements: !74)
+!73 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 8388608, elements: !74)
 !74 = !{!75}
-!75 = !DISubrange(count: 2, lowerBound: 0)
-!76 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !13, size: 64, offset: 192)
-!77 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, globals: !78)
-!78 = !{!0, !21, !41, !53, !67}
-!79 = !{i32 2, !"Debug Info Version", i32 3}
-!80 = distinct !DISubprogram(name: "kprobe_f_1", linkageName: "kprobe_f_1", scope: !2, file: !2, type: !81, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !77, retainedNodes: !84)
-!81 = !DISubroutineType(types: !82)
-!82 = !{!14, !83}
-!83 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !18, size: 64)
-!84 = !{!85}
-!85 = !DILocalVariable(name: "ctx", arg: 1, scope: !80, file: !2, type: !83)
+!75 = !DISubrange(count: 262144, lowerBound: 0)
+!76 = !DIGlobalVariableExpression(var: !77, expr: !DIExpression())
+!77 = distinct !DIGlobalVariable(name: "event_loss_counter", linkageName: "global", scope: !2, file: !2, type: !78, isLocal: false, isDefinition: true)
+!78 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !79)
+!79 = !{!80, !17, !59, !85}
+!80 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !81, size: 64)
+!81 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !82, size: 64)
+!82 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 64, elements: !83)
+!83 = !{!84}
+!84 = !DISubrange(count: 2, lowerBound: 0)
+!85 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !19, size: 64, offset: 192)
+!86 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, globals: !87)
+!87 = !{!0, !7, !26, !50, !62, !76}
+!88 = !{i32 2, !"Debug Info Version", i32 3}
+!89 = distinct !DISubprogram(name: "kprobe_f_1", linkageName: "kprobe_f_1", scope: !2, file: !2, type: !90, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !86, retainedNodes: !93)
+!90 = !DISubroutineType(types: !91)
+!91 = !{!20, !92}
+!92 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !4, size: 64)
+!93 = !{!94}
+!94 = !DILocalVariable(name: "ctx", arg: 1, scope: !89, file: !2, type: !92)

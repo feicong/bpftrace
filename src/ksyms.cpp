@@ -1,14 +1,12 @@
+#include <bcc/bcc_syms.h>
 #include <sstream>
 
-#include <bcc/bcc_syms.h>
 #ifdef HAVE_BLAZESYM
 #include <blazesym.h>
 #endif
 
-#include "config.h"
 #include "ksyms.h"
 #include "scopeguard.h"
-#include "utils.h"
 
 namespace {
 std::string stringify_addr(uint64_t addr)
@@ -20,6 +18,7 @@ std::string stringify_addr(uint64_t addr)
 } // namespace
 
 namespace bpftrace {
+
 Ksyms::Ksyms(const Config &config) : config_(config)
 {
 }
@@ -53,8 +52,8 @@ std::string Ksyms::resolve_bcc(uint64_t addr, bool show_offset)
 }
 
 #ifdef HAVE_BLAZESYM
-std::optional<std::string> Ksyms::resolve_blazesym_int(uint64_t addr,
-                                                       bool show_offset)
+std::optional<std::string> Ksyms::resolve_blazesym_impl(uint64_t addr,
+                                                        bool show_offset)
 {
   if (symbolizer_ == nullptr) {
     symbolizer_ = blaze_symbolizer_new();
@@ -75,10 +74,9 @@ std::optional<std::string> Ksyms::resolve_blazesym_int(uint64_t addr,
     .vmlinux = "",
   };
 #pragma GCC diagnostic pop
-  uint64_t addrs[1] = { addr };
 
   const blaze_syms *syms = blaze_symbolize_kernel_abs_addrs(
-      symbolizer_, &src, addrs, ARRAY_SIZE(addrs));
+      symbolizer_, &src, &addr, 1);
   if (syms == nullptr)
     return std::nullopt;
   SCOPE_EXIT
@@ -101,7 +99,7 @@ std::optional<std::string> Ksyms::resolve_blazesym_int(uint64_t addr,
 
 std::string Ksyms::resolve_blazesym(uint64_t addr, bool show_offset)
 {
-  if (auto sym = resolve_blazesym_int(addr, show_offset)) {
+  if (auto sym = resolve_blazesym_impl(addr, show_offset)) {
     return *sym;
   }
   return stringify_addr(addr);
@@ -116,4 +114,5 @@ std::string Ksyms::resolve(uint64_t addr, bool show_offset)
 #endif
   return resolve_bcc(addr, show_offset);
 }
+
 } // namespace bpftrace

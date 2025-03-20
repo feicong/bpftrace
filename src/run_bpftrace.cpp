@@ -19,7 +19,7 @@ static const char *libbpf_print_level_string(enum libbpf_print_level level)
 
 int libbpf_print(enum libbpf_print_level level, const char *msg, va_list ap)
 {
-  if (bt_debug.find(DebugStage::Libbpf) == bt_debug.end())
+  if (!bt_debug.contains(DebugStage::Libbpf))
     return 0;
 
   printf("[%s] ", libbpf_print_level_string(level));
@@ -60,7 +60,7 @@ int run_bpftrace(BPFtrace &bpftrace, BpfBytecode &bytecode)
   std::cout << "\n\n";
 
   // Print maps if needed (true by default).
-  if (bpftrace.config_.get(ConfigKeyBool::print_maps_on_exit))
+  if (bpftrace.config_->get(ConfigKeyBool::print_maps_on_exit))
     err = bpftrace.print_maps();
 
   if (bpftrace.child_) {

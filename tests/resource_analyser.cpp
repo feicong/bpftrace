@@ -1,12 +1,8 @@
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-
-#include "ast/passes/field_analyser.h"
 #include "ast/passes/resource_analyser.h"
+#include "ast/passes/parser.h"
 #include "ast/passes/semantic_analyser.h"
-#include "clang_parser.h"
-#include "driver.h"
 #include "mocks.h"
+#include "gtest/gtest.h"
 
 namespace bpftrace::test::resource_analyser {
 
@@ -17,31 +13,23 @@ void test(BPFtrace &bpftrace,
           bool expected_result = true,
           RequiredResources *out_p = nullptr)
 {
-  Driver driver(bpftrace);
+  ast::ASTContext ast("stdin", input);
   std::stringstream out;
   std::stringstream msg;
   msg << "\nInput:\n" << input << "\n\nOutput:\n";
 
-  ASSERT_EQ(driver.parse_str(input), 0);
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateResourcePass())
+                .run();
+  ASSERT_TRUE(bool(ok)) << msg.str();
+  EXPECT_EQ(ast.diagnostics().ok(), expected_result) << msg.str();
 
-  ast::FieldAnalyser fields(driver.ctx, bpftrace, out);
-  ASSERT_EQ(fields.analyse(), 0) << msg.str() << out.str();
-
-  ClangParser clang;
-  ASSERT_TRUE(clang.parse(driver.ctx.root, bpftrace));
-
-  ASSERT_EQ(driver.parse_str(input), 0);
-  out.str("");
-  ast::SemanticAnalyser semantics(driver.ctx, bpftrace, out, false);
-  ASSERT_EQ(semantics.analyse(), 0) << msg.str() << out.str();
-
-  ast::ResourceAnalyser resource_analyser(driver.ctx, bpftrace, out);
-  auto resources_optional = resource_analyser.analyse();
-  EXPECT_EQ(resources_optional.has_value(), expected_result)
-      << msg.str() << out.str();
-
-  if (out_p && resources_optional)
-    *out_p = *resources_optional;
+  if (out_p)
+    *out_p = std::move(bpftrace.resources);
 }
 
 void test(const std::string &input,
@@ -50,9 +38,9 @@ void test(const std::string &input,
           std::optional<uint64_t> on_stack_limit = std::nullopt)
 {
   auto bpftrace = get_mock_bpftrace();
-  auto configs = ConfigSetter(bpftrace->config_, ConfigSource::script);
+  auto configs = ConfigSetter(*bpftrace->config_, ConfigSource::script);
   configs.set(ConfigKeyInt::on_stack_limit, on_stack_limit.value_or(0));
-  return test(*bpftrace, input, expected_result, out);
+  test(*bpftrace, input, expected_result, out);
 }
 
 TEST(resource_analyser, multiple_hist_bits_in_single_map)

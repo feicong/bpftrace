@@ -4,11 +4,9 @@
 #include <sstream>
 
 #include "ast/async_event_types.h"
-#include "bpftrace.h"
-#include "log.h"
 #include "struct.h"
 #include "types.h"
-#include "utils.h"
+#include "util/exceptions.h"
 
 namespace bpftrace {
 
@@ -247,12 +245,13 @@ ProbeType probetype(const std::string &probeName)
 {
   ProbeType retType = ProbeType::invalid;
 
-  auto v = std::find_if(PROBE_LIST.begin(),
-                        PROBE_LIST.end(),
-                        [&probeName](const ProbeItem &p) {
-                          return (p.name == probeName ||
-                                  p.aliases.find(probeName) != p.aliases.end());
-                        });
+  auto v = std::ranges::find_if(PROBE_LIST,
+
+                                [&probeName](const ProbeItem &p) {
+                                  return (p.name == probeName ||
+                                          p.aliases.find(probeName) !=
+                                              p.aliases.end());
+                                });
 
   if (v != PROBE_LIST.end())
     retType = v->type;
@@ -264,12 +263,13 @@ std::string expand_probe_name(const std::string &orig_name)
 {
   std::string expanded_name = orig_name;
 
-  auto v = std::find_if(PROBE_LIST.begin(),
-                        PROBE_LIST.end(),
-                        [&orig_name](const ProbeItem &p) {
-                          return (p.name == orig_name ||
-                                  p.aliases.find(orig_name) != p.aliases.end());
-                        });
+  auto v = std::ranges::find_if(PROBE_LIST,
+
+                                [&orig_name](const ProbeItem &p) {
+                                  return (p.name == orig_name ||
+                                          p.aliases.find(orig_name) !=
+                                              p.aliases.end());
+                                });
 
   if (v != PROBE_LIST.end())
     expanded_name = v->name;
@@ -383,22 +383,22 @@ SizedType CreateEnum(size_t bits, const std::string &name)
 
 SizedType CreateString(size_t size)
 {
-  return SizedType(Type::string, size);
+  return { Type::string, size };
 }
 
 SizedType CreateNone()
 {
-  return SizedType(Type::none, 0);
+  return { Type::none, 0 };
 }
 
 SizedType CreateVoid()
 {
-  return SizedType(Type::voidtype, 0);
+  return { Type::voidtype, 0 };
 }
 
 SizedType CreateStackMode()
 {
-  return SizedType(Type::stack_mode, 0);
+  return { Type::stack_mode, 0 };
 }
 
 SizedType CreateArray(size_t num_elements, const SizedType &element_type)
@@ -439,46 +439,46 @@ SizedType CreateRecord(const std::string &name, std::weak_ptr<Struct> record)
 SizedType CreateStack(bool kernel, StackType stack)
 {
   // These sizes are based on the stack key (see
-  // IRBuilderBPF::GetStackStructType)
+  // IRBuilderBPF::GetStackStructType) but include struct padding
   auto st = SizedType(kernel ? Type::kstack_t : Type::ustack_t,
-                      kernel ? 12 : 20);
+                      kernel ? 16 : 24);
   st.stack_type = stack;
   return st;
 }
 
 SizedType CreateMin(bool is_signed)
 {
-  return SizedType(Type::min_t, 8, is_signed);
+  return { Type::min_t, 8, is_signed };
 }
 
 SizedType CreateMax(bool is_signed)
 {
-  return SizedType(Type::max_t, 8, is_signed);
+  return { Type::max_t, 8, is_signed };
 }
 
 SizedType CreateSum(bool is_signed)
 {
-  return SizedType(Type::sum_t, 8, is_signed);
+  return { Type::sum_t, 8, is_signed };
 }
 
 SizedType CreateCount(bool is_signed)
 {
-  return SizedType(Type::count_t, 8, is_signed);
+  return { Type::count_t, 8, is_signed };
 }
 
 SizedType CreateAvg(bool is_signed)
 {
-  return SizedType(Type::avg_t, 8, is_signed);
+  return { Type::avg_t, 8, is_signed };
 }
 
 SizedType CreateStats(bool is_signed)
 {
-  return SizedType(Type::stats_t, 8, is_signed);
+  return { Type::stats_t, 8, is_signed };
 }
 
 SizedType CreateUsername()
 {
-  return SizedType(Type::username, 8);
+  return { Type::username, 8 };
 }
 
 SizedType CreateInet(size_t size)
@@ -490,33 +490,33 @@ SizedType CreateInet(size_t size)
 
 SizedType CreateLhist()
 {
-  return SizedType(Type::lhist_t, 8);
+  return { Type::lhist_t, 8 };
 }
 
 SizedType CreateHist()
 {
-  return SizedType(Type::hist_t, 8);
+  return { Type::hist_t, 8 };
 }
 
 SizedType CreateUSym()
 {
-  return SizedType(Type::usym_t, 16);
+  return { Type::usym_t, 16 };
 }
 
 SizedType CreateKSym()
 {
-  return SizedType(Type::ksym_t, 8);
+  return { Type::ksym_t, 8 };
 }
 
 SizedType CreateBuffer(size_t size)
 {
   auto metadata_headroom_bytes = sizeof(AsyncEvent::Buf);
-  return SizedType(Type::buffer, size + metadata_headroom_bytes);
+  return { Type::buffer, size + metadata_headroom_bytes };
 }
 
 SizedType CreateTimestamp()
 {
-  return SizedType(Type::timestamp, 16);
+  return { Type::timestamp, 16 };
 }
 
 SizedType CreateTuple(std::weak_ptr<Struct> tuple)
@@ -535,17 +535,17 @@ SizedType CreateMacAddress()
 
 SizedType CreateCgroupPath()
 {
-  return SizedType(Type::cgroup_path_t, 16);
+  return { Type::cgroup_path_t, 16 };
 }
 
 SizedType CreateStrerror()
 {
-  return SizedType(Type::strerror_t, 8);
+  return { Type::strerror_t, 8 };
 }
 
 SizedType CreateTimestampMode()
 {
-  return SizedType(Type::timestamp_mode, 0);
+  return { Type::timestamp_mode, 0 };
 }
 
 bool SizedType::IsSigned() const
@@ -563,7 +563,7 @@ Field &SizedType::GetField(ssize_t n) const
 {
   assert(IsTupleTy() || IsRecordTy());
   if (n >= GetFieldCount())
-    throw FatalUserException("Getfield(): out of bounds");
+    throw util::FatalUserException("Getfield(): out of bounds");
   return inner_struct_.lock()->fields[n];
 }
 
@@ -580,7 +580,7 @@ void SizedType::DumpStructure(std::ostream &os)
     os << "tuple";
   else
     os << "struct";
-  return inner_struct_.lock()->Dump(os);
+  inner_struct_.lock()->Dump(os);
 }
 
 ssize_t SizedType::GetInTupleAlignment() const
@@ -684,31 +684,31 @@ size_t hash<bpftrace::SizedType>::operator()(
     const bpftrace::SizedType &type) const
 {
   auto hash = std::hash<unsigned>()(static_cast<unsigned>(type.GetTy()));
-  bpftrace::hash_combine(hash, type.GetSize());
+  bpftrace::util::hash_combine(hash, type.GetSize());
 
   switch (type.GetTy()) {
     case bpftrace::Type::integer:
-      bpftrace::hash_combine(hash, type.IsSigned());
+      bpftrace::util::hash_combine(hash, type.IsSigned());
       break;
     case bpftrace::Type::pointer:
-      bpftrace::hash_combine(hash, *type.GetPointeeTy());
+      bpftrace::util::hash_combine(hash, *type.GetPointeeTy());
       break;
     case bpftrace::Type::reference:
-      bpftrace::hash_combine(hash, *type.GetDereferencedTy());
+      bpftrace::util::hash_combine(hash, *type.GetDereferencedTy());
       break;
     case bpftrace::Type::record:
-      bpftrace::hash_combine(hash, type.GetName());
+      bpftrace::util::hash_combine(hash, type.GetName());
       break;
     case bpftrace::Type::kstack_t:
     case bpftrace::Type::ustack_t:
-      bpftrace::hash_combine(hash, type.stack_type);
+      bpftrace::util::hash_combine(hash, type.stack_type);
       break;
     case bpftrace::Type::array:
-      bpftrace::hash_combine(hash, *type.GetElementTy());
-      bpftrace::hash_combine(hash, type.GetNumElements());
+      bpftrace::util::hash_combine(hash, *type.GetElementTy());
+      bpftrace::util::hash_combine(hash, type.GetNumElements());
       break;
     case bpftrace::Type::tuple:
-      bpftrace::hash_combine(hash, *type.GetStruct().lock());
+      bpftrace::util::hash_combine(hash, *type.GetStruct().lock());
       break;
     // No default case (explicitly skip all remaining types instead) to get
     // a compiler warning when we add a new type

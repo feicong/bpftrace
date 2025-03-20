@@ -1,7 +1,5 @@
 #include "functions.h"
 
-#include "log.h"
-
 namespace bpftrace {
 
 namespace {
@@ -67,7 +65,7 @@ const Function *FunctionRegistry::add(Function::Origin origin,
       origin, std::string{ name }, return_type, params));
   Function &new_func = *all_funcs_.back().get();
 
-  funcs_by_fq_name_[fq_name].push_back(new_func);
+  funcs_by_fq_name_[fq_name].emplace_back(new_func);
   return &new_func;
 }
 
@@ -104,8 +102,7 @@ bool can_implicit_cast(const SizedType &from, const SizedType &to)
 const Function *FunctionRegistry::get(std::string_view ns,
                                       std::string_view name,
                                       const std::vector<SizedType> &arg_types,
-                                      std::ostream &out,
-                                      std::optional<location> loc) const
+                                      const ast::Node &node) const
 {
   FqName fq_name = {
     .ns = std::string{ ns },
@@ -113,7 +110,7 @@ const Function *FunctionRegistry::get(std::string_view ns,
   };
   auto it = funcs_by_fq_name_.find(fq_name);
   if (it == funcs_by_fq_name_.end()) {
-    LOG(ERROR, loc, out) << "Function not found: '" << name << "'";
+    node.addError() << "Function not found: '" << name << "'";
     return nullptr;
   }
 
@@ -151,11 +148,11 @@ const Function *FunctionRegistry::get(std::string_view ns,
       return candidate;
   }
 
-  LOG(ERROR, loc, out) << "Cannot call function '" << name
-                       << "' using argument types: "
-                       << arg_types_str(arg_types);
-  LOG(HINT, out) << "Candidate function:\n  " << candidate->name()
-                 << param_types_str(candidate->params());
+  auto &err = node.addError();
+  err << "Cannot call function '" << name
+      << "' using argument types: " << arg_types_str(arg_types);
+  err.addHint() << "Candidate function:\n  " << candidate->name()
+                << param_types_str(candidate->params());
 
   return nullptr;
 }

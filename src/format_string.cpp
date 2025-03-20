@@ -1,11 +1,11 @@
-#include "format_string.h"
-#include "log.h"
-#include "struct.h"
-#include "utils.h"
-
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
+
+#include "format_string.h"
+#include "struct.h"
+#include "util/exceptions.h"
+#include "util/format.h"
 
 namespace bpftrace {
 
@@ -66,7 +66,7 @@ std::vector<std::tuple<std::string, Type>> get_token_types(
     if (format_types.contains(token))
       token_type = format_types.at(token);
 
-    types.push_back(std::make_tuple(token, token_type));
+    types.emplace_back(token, token_type);
   }
 
   return types;
@@ -141,7 +141,8 @@ std::string validate_format_string(const std::string &fmt,
 
       message << call_func << ": %" << token
               << " specifier expects a value of type " << token_type << " ("
-              << str_join(arg_types_vec, ",") << " supplied)" << std::endl;
+              << util::str_join(arg_types_vec, ",") << " supplied)"
+              << std::endl;
       return message.str();
     }
   }
@@ -170,7 +171,7 @@ void FormatString::split()
 void FormatString::format(std::ostream &out,
                           std::vector<std::unique_ptr<IPrintable>> &args)
 {
-  if (parts_.size() < 1) {
+  if (parts_.empty()) {
     split();
 
     // figure out the argument type for each format specifier
@@ -187,8 +188,8 @@ void FormatString::format(std::ostream &out,
   auto check_snprintf_ret = [](int r) {
     if (r < 0) {
       char *e = std::strerror(errno);
-      throw FatalUserException("format() error occurred: " +
-                               std::string(e ? e : ""));
+      throw util::FatalUserException("format() error occurred: " +
+                                     std::string(e ? e : ""));
     }
   };
 
@@ -203,7 +204,8 @@ void FormatString::format(std::ostream &out,
       std::string printf_fmt;
       if (fmt_string == "%r" || fmt_string == "%rx" || fmt_string == "%rh") {
         if (fmt_string == "%rx" || fmt_string == "%rh") {
-          auto printable_buffer = dynamic_cast<PrintableBuffer *>(&*args.at(i));
+          auto *printable_buffer = dynamic_cast<PrintableBuffer *>(
+              &*args.at(i));
           // this is checked by semantic analyzer
           assert(printable_buffer);
           printable_buffer->keep_ascii(false);

@@ -15,26 +15,23 @@ TEST(codegen, call_ustack)
 
 TEST(codegen, call_ustack_mapids)
 {
+  ast::ASTContext ast("stdin", R"(
+kprobe:f {
+  @x = ustack(5);
+  @y = ustack(6);
+  @z = ustack(6)
+})");
   auto bpftrace = get_mock_bpftrace();
-  Driver driver(*bpftrace);
-
-  ASSERT_EQ(driver.parse_str(
-                "kprobe:f { @x = ustack(5); @y = ustack(6); @z = ustack(6) }"),
-            0);
-
-  ClangParser clang;
-  clang.parse(driver.ctx.root, *bpftrace);
-
-  ast::SemanticAnalyser semantics(driver.ctx, *bpftrace);
-  ASSERT_EQ(semantics.analyse(), 0);
-
-  ast::ResourceAnalyser resource_analyser(driver.ctx, *bpftrace);
-  auto resources_optional = resource_analyser.analyse();
-  ASSERT_TRUE(resources_optional.has_value());
-  bpftrace->resources = resources_optional.value();
-
-  ast::CodegenLLVM codegen(driver.ctx, *bpftrace);
-  bpftrace->bytecode_ = codegen.compile();
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put<BPFtrace>(*bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateResourcePass())
+                .add(ast::AllCompilePasses())
+                .run();
+  ASSERT_TRUE(ok && ast.diagnostics().ok());
+  bpftrace->bytecode_ = std::move(ok->get<BpfBytecode>());
 
   ASSERT_EQ(bpftrace->bytecode_.maps().size(), 8);
   ASSERT_EQ(bpftrace->bytecode_.countStackMaps(), 3U);
@@ -48,27 +45,24 @@ TEST(codegen, call_ustack_mapids)
 
 TEST(codegen, call_ustack_modes_mapids)
 {
+  ast::ASTContext ast("stdin", R"(
+kprobe:f {
+  @w = ustack(raw);
+  @x = ustack(perf);
+  @y = ustack(bpftrace);
+  @z = ustack()
+})");
   auto bpftrace = get_mock_bpftrace();
-  Driver driver(*bpftrace);
-
-  ASSERT_EQ(driver.parse_str(
-                "kprobe:f { @w = ustack(raw); @x = ustack(perf); @y = "
-                "ustack(bpftrace); @z = ustack() }"),
-            0);
-
-  ClangParser clang;
-  clang.parse(driver.ctx.root, *bpftrace);
-
-  ast::SemanticAnalyser semantics(driver.ctx, *bpftrace);
-  ASSERT_EQ(semantics.analyse(), 0);
-
-  ast::ResourceAnalyser resource_analyser(driver.ctx, *bpftrace);
-  auto resources_optional = resource_analyser.analyse();
-  ASSERT_TRUE(resources_optional.has_value());
-  bpftrace->resources = resources_optional.value();
-
-  ast::CodegenLLVM codegen(driver.ctx, *bpftrace);
-  bpftrace->bytecode_ = codegen.compile();
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put<BPFtrace>(*bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateResourcePass())
+                .add(ast::AllCompilePasses())
+                .run();
+  ASSERT_TRUE(ok && ast.diagnostics().ok());
+  bpftrace->bytecode_ = std::move(ok->get<BpfBytecode>());
 
   ASSERT_EQ(bpftrace->bytecode_.maps().size(), 10);
   ASSERT_EQ(bpftrace->bytecode_.countStackMaps(), 4U);

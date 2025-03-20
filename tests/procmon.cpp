@@ -1,13 +1,10 @@
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-
 #include <ctime>
-
-#include "child.h"
-#include "procmon.h"
+#include <filesystem>
 
 #include "childhelper.h"
-#include "utils.h"
+#include "procmon.h"
+#include "gmock/gmock-matchers.h"
+#include "gtest/gtest.h"
 
 namespace bpftrace::test::procmon {
 

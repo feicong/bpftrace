@@ -1,28 +1,31 @@
-#include <time.h>
-
 #include "child.h"
-#include "utils.h"
+#include "util/io.h"
+#include "gtest/gtest.h"
 
-namespace bpftrace {
-namespace test {
+namespace {
 
-static int msleep(int msec)
+using bpftrace::ChildProc;
+using bpftrace::ChildProcBase;
+using bpftrace::util::StderrSilencer;
+using bpftrace::util::StdoutSilencer;
+
+inline int msleep(int msec)
 {
   struct timespec sleep = { .tv_sec = 0, .tv_nsec = msec * 1000000L };
   struct timespec rem = {};
   if (nanosleep(&sleep, &rem) < 0)
-    return 1000L * rem.tv_sec + 1000000L * rem.tv_nsec;
+    return (1000L * rem.tv_sec) + (1000000L * rem.tv_nsec);
   return 0;
 }
 
-static void wait_for(ChildProcBase *child, int msec_timeout)
+inline void wait_for(ChildProcBase *child, int msec_timeout)
 {
   constexpr int wait = 10;
   while (child->is_alive() && msec_timeout > 0)
     msec_timeout -= wait - msleep(wait);
 }
 
-static std::unique_ptr<ChildProc> getChild(std::string cmd)
+inline std::unique_ptr<ChildProc> getChild(std::string cmd)
 {
   std::unique_ptr<ChildProc> child;
   {
@@ -37,5 +40,4 @@ static std::unique_ptr<ChildProc> getChild(std::string cmd)
   return child;
 }
 
-} // namespace test
-} // namespace bpftrace
+} // namespace

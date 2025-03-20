@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <iostream>
 #include <map>
 #include <optional>
 #include <set>
@@ -28,6 +27,7 @@ enum class ConfigKeyBool {
   probe_inline,
   print_maps_on_exit,
   use_blazesym,
+  unstable_map_decl,
 };
 
 enum class ConfigKeyInt {
@@ -43,6 +43,7 @@ enum class ConfigKeyInt {
 };
 
 enum class ConfigKeyString {
+  license,
   str_trunc_trailer,
 };
 
@@ -73,14 +74,13 @@ enum class ConfigKeyMissingProbes {
   default_,
 };
 
-typedef std::variant<ConfigKeyBool,
-                     ConfigKeyInt,
-                     ConfigKeyString,
-                     ConfigKeyStackMode,
-                     ConfigKeyUserSymbolCacheType,
-                     ConfigKeySymbolSource,
-                     ConfigKeyMissingProbes>
-    ConfigKey;
+using ConfigKey = std::variant<ConfigKeyBool,
+                               ConfigKeyInt,
+                               ConfigKeyString,
+                               ConfigKeyStackMode,
+                               ConfigKeyUserSymbolCacheType,
+                               ConfigKeySymbolSource,
+                               ConfigKeyMissingProbes>;
 
 // The strings in CONFIG_KEY_MAP AND ENV_ONLY match the env variables (minus the
 // 'BPFTRACE_' prefix)
@@ -88,6 +88,7 @@ const std::map<std::string, ConfigKey> CONFIG_KEY_MAP = {
   { "cache_user_symbols", ConfigKeyUserSymbolCacheType::default_ },
   { "cpp_demangle", ConfigKeyBool::cpp_demangle },
   { "lazy_symbolication", ConfigKeyBool::lazy_symbolication },
+  { "license", ConfigKeyString::license },
   { "log_size", ConfigKeyInt::log_size },
   { "max_bpf_progs", ConfigKeyInt::max_bpf_progs },
   { "max_cat_bytes", ConfigKeyInt::max_cat_bytes },
@@ -104,6 +105,7 @@ const std::map<std::string, ConfigKey> CONFIG_KEY_MAP = {
   { "missing_probes", ConfigKeyMissingProbes::default_ },
   { "print_maps_on_exit", ConfigKeyBool::print_maps_on_exit },
   { "use_blazesym", ConfigKeyBool::use_blazesym },
+  { "unstable_map_decl", ConfigKeyBool::unstable_map_decl },
 };
 
 // These are not tracked by the config class
@@ -201,8 +203,7 @@ private:
     }
   }
 
-private:
-  bool can_set(ConfigSource prevSource, ConfigSource);
+  bool can_set(ConfigSource prevSource, ConfigSource source);
   bool is_aslr_enabled();
 
   std::map<ConfigKey, ConfigValue> config_map_;

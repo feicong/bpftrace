@@ -1,14 +1,12 @@
-#include "bpfprogram.h"
-
-#include "attached_probe.h"
-#include "log.h"
-#include "utils.h"
-
 #include <bpf/bpf.h>
 #include <elf.h>
 #include <linux/bpf.h>
 #include <linux/btf.h>
-#include <stdexcept>
+
+#include "attached_probe.h"
+#include "bpfprogram.h"
+#include "log.h"
+#include "util/exceptions.h"
 
 namespace bpftrace {
 
@@ -30,7 +28,7 @@ void BpfProgram::set_prog_type(const Probe &probe)
 void BpfProgram::set_expected_attach_type(const Probe &probe,
                                           BPFfeature &feature)
 {
-  libbpf::bpf_attach_type attach_type = static_cast<libbpf::bpf_attach_type>(0);
+  auto attach_type = static_cast<libbpf::bpf_attach_type>(0);
   if (probe.type == ProbeType::fentry)
     attach_type = libbpf::BPF_TRACE_FENTRY;
   else if (probe.type == ProbeType::fexit)
@@ -42,8 +40,12 @@ void BpfProgram::set_expected_attach_type(const Probe &probe,
   // because the BPF_TRACE_KPROBE_MULTI link type does not
   // currently support the `module:function` syntax.
   if ((probe.type == ProbeType::kprobe || probe.type == ProbeType::kretprobe) &&
-      feature.has_kprobe_multi() && !probe.funcs.empty() && probe.path.empty())
-    attach_type = libbpf::BPF_TRACE_KPROBE_MULTI;
+      !probe.funcs.empty() && probe.path.empty()) {
+    if (probe.is_session && feature.has_kprobe_session())
+      attach_type = libbpf::BPF_TRACE_KPROBE_SESSION;
+    else if (feature.has_kprobe_multi())
+      attach_type = libbpf::BPF_TRACE_KPROBE_MULTI;
+  }
 
   if ((probe.type == ProbeType::uprobe || probe.type == ProbeType::uretprobe) &&
       feature.has_uprobe_multi() && !probe.funcs.empty())
@@ -82,7 +84,7 @@ void BpfProgram::set_attach_target(const Probe &probe,
       bpf_program__set_autoload(bpf_prog_, false);
     } else {
       // explicit match failed, fail hard
-      throw FatalUserException(msg);
+      throw util::FatalUserException(msg);
     }
   }
 

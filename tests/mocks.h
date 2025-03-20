@@ -1,15 +1,14 @@
 #pragma once
 
-#include "gmock/gmock.h"
-
 #include "bpffeature.h"
 #include "bpftrace.h"
 #include "child.h"
 #include "probe_matcher.h"
 #include "procmon.h"
+#include "util/format.h"
+#include "gmock/gmock-function-mocker.h"
 
-namespace bpftrace {
-namespace test {
+namespace bpftrace::test {
 
 class MockProbeMatcher : public ProbeMatcher {
 public:
@@ -25,10 +24,10 @@ public:
   MOCK_CONST_METHOD1(get_symbols_from_traceable_funcs,
                      std::unique_ptr<std::istream>(bool with_modules));
   MOCK_CONST_METHOD2(get_symbols_from_usdt,
-                     std::unique_ptr<std::istream>(int pid,
+                     std::unique_ptr<std::istream>(std::optional<int> pid,
                                                    const std::string &target));
   MOCK_CONST_METHOD2(get_func_symbols_from_file,
-                     std::unique_ptr<std::istream>(int pid,
+                     std::unique_ptr<std::istream>(std::optional<int> pid,
                                                    const std::string &path));
 #pragma GCC diagnostic pop
 };
@@ -56,7 +55,7 @@ public:
       sym->address = 12345;
       sym->size = 4;
     } else {
-      auto fields = split_string(name, '_');
+      auto fields = util::split_string(name, '_');
       sym->address = std::stoull(fields.at(0));
       sym->size = std::stoull(fields.at(1));
     }
@@ -64,13 +63,13 @@ public:
   }
 
   bool is_traceable_func(
-      const std::string &__attribute__((unused))) const override
+      const std::string &__attribute__((unused)) /*func_name*/) const override
   {
     return true;
   }
 
   std::unordered_set<std::string> get_func_modules(
-      const std::string &__attribute__((unused))) const override
+      const std::string &__attribute__((unused)) /*func_name*/) const override
   {
     return { "mock_vmlinux" };
   }
@@ -119,6 +118,7 @@ public:
     has_d_path_ = std::make_optional<bool>(has_features);
     has_ktime_get_boot_ns_ = std::make_optional<bool>(has_features);
     has_kprobe_multi_ = std::make_optional<bool>(has_features);
+    has_kprobe_session_ = std::make_optional<bool>(has_features);
     has_uprobe_multi_ = std::make_optional<bool>(has_features);
     has_skb_output_ = std::make_optional<bool>(has_features);
     map_ringbuf_ = std::make_optional<bool>(has_features);
@@ -144,14 +144,14 @@ public:
   {
     child_pid_ = 1337;
   };
-  ~MockChildProc() {};
+  ~MockChildProc() override = default;
 
   void terminate(bool force __attribute__((unused)) = false) override {};
   bool is_alive() override
   {
     return true;
   };
-  void resume(void) override {};
+  void resume() override {};
 
   void run(bool pause = false) override
   {
@@ -168,12 +168,9 @@ public:
 
   ~MockProcMon() override = default;
 
-  bool is_alive(void) override
+  bool is_alive() override
   {
-    if (pid_ > 0)
-      return true;
-    else
-      return false;
+    return pid_ > 0;
   }
 };
 
@@ -187,7 +184,7 @@ public:
 #pragma GCC diagnostic ignored "-Winconsistent-missing-override"
 #endif
   MOCK_METHOD4(find,
-               std::optional<usdt_probe_entry>(int pid,
+               std::optional<usdt_probe_entry>(std::optional<int> pid,
                                                const std::string &target,
                                                const std::string &provider,
                                                const std::string &name));
@@ -196,5 +193,4 @@ public:
 
 std::unique_ptr<MockUSDTHelper> get_mock_usdt_helper(int num_locations);
 
-} // namespace test
-} // namespace bpftrace
+} // namespace bpftrace::test

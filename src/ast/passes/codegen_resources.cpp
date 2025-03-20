@@ -1,21 +1,18 @@
 #include "codegen_resources.h"
 
-#include "ast/async_event_types.h"
-#include "struct.h"
 #include "types.h"
 
 namespace bpftrace::ast {
 
 CodegenResourceAnalyser::CodegenResourceAnalyser(
-    ASTContext &ctx,
     const ::bpftrace::Config &config)
-    : Visitor<CodegenResourceAnalyser>(ctx), config_(config)
+    : config_(config)
 {
 }
 
-CodegenResources CodegenResourceAnalyser::analyse()
+CodegenResources CodegenResourceAnalyser::analyse(Program &program)
 {
-  visit(ctx_.root);
+  visit(program);
   return std::move(resources_);
 }
 

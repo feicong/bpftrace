@@ -260,30 +260,37 @@ EXPECT stdin:1:37-41: WARNING: Can't lookup map element because it does not exis
 TIMEOUT 1
 
 NAME per_cpu_map_count_if
+REQUIRES_FEATURE lookup_percpu_elem
 PROG i:ms:1 { @ = count(); if (@ > 5) { printf("done\n"); exit(); }}
 EXPECT done
 
 NAME per_cpu_map_min_if
+REQUIRES_FEATURE lookup_percpu_elem
 PROG BEGIN { @ = 10; } i:ms:1 { @--; @mn = min(@); if (@mn < 5) { printf("done\n"); exit(); }}
 EXPECT done
 
 NAME per_cpu_map_max_if
+REQUIRES_FEATURE lookup_percpu_elem
 PROG BEGIN { @ = 1; } i:ms:1 { @++; @mx = max(@); if (@mx > 5) { printf("done\n"); exit(); }}
 EXPECT done
 
 NAME per_cpu_map_avg_if
+REQUIRES_FEATURE lookup_percpu_elem
 PROG BEGIN { @ = avg(1); @ = avg(1); @ = avg(10); if (@ == 4) { printf("done\n"); exit(); }}
 EXPECT done
 
 NAME per_cpu_map_arithmetic
+REQUIRES_FEATURE lookup_percpu_elem
 PROG BEGIN { @a = sum(10); @b = count(); $c = @a + @b; if ($c == 11) { printf("done\n"); } exit();}
 EXPECT done
 
 NAME per_cpu_map_cast
+REQUIRES_FEATURE lookup_percpu_elem
 PROG BEGIN { @a = count(); @b = sum(10); printf("%d-%d\n", (uint64)@a, (int64)@b); exit();}
 EXPECT 1-10
 
 NAME per_cpu_map_as_map_key
+REQUIRES_FEATURE lookup_percpu_elem
 PROG BEGIN {@a = count(); @b = sum(5); @c = min(1); @d = max(10); @e = avg(7); @[@a, @b, @c, @d, @e] = 1; exit(); }
 EXPECT @[1, 5, 1, 10, 7]: 1
 
@@ -334,3 +341,12 @@ EXPECT FOO
 NAME no symbolize int cast to unknown enum variant
 PROG enum BAZ { FOO = 333, BAR }; BEGIN { $x = 444; print((enum BAZ)$x); exit(); }
 EXPECT 444
+
+NAME valid license
+PROG config={license="Dual BSD/GPL"} BEGIN { @p[1] = 1; print(len(@p)); exit(); }
+EXPECT 1
+
+NAME invalid license
+PROG config={license="Potato"} BEGIN { @p[1] = 1; print(len(@p)); exit(); }
+EXPECT ERROR: Your bpftrace program cannot load because you are using a license that is non-GPL compatible. License: Potato
+WILL_FAIL

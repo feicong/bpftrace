@@ -136,7 +136,7 @@ class Runner(object):
 
     @staticmethod
     @lru_cache(maxsize=1)
-    def __get_bpffeature():
+    def get_bpffeature():
         p = subprocess.Popen(
             [BPFTRACE_BIN, "--info"],
             stdout=subprocess.PIPE,
@@ -158,12 +158,14 @@ class Runner(object):
         bpffeature["dwarf"] = output.find("liblldb (DWARF support): yes") != -1
         bpffeature["kernel_dwarf"] = output.find("Kernel DWARF: yes") != -1
         bpffeature["kprobe_multi"] = output.find("kprobe_multi: yes") != -1
+        bpffeature["kprobe_session"] = output.find("kprobe_session: yes") != -1
         bpffeature["uprobe_multi"] = output.find("uprobe_multi: yes") != -1
         bpffeature["aot"] = cmake_vars.LIBBCC_BPF_CONTAINS_RUNTIME
         bpffeature["skboutput"] = output.find("skboutput: yes") != -1
         bpffeature["get_tai_ns"] = output.find("get_ktime_ns: yes") != -1
         bpffeature["get_func_ip"] = output.find("get_func_ip: yes") != -1
         bpffeature["jiffies64"] = output.find("jiffies64: yes") != -1
+        bpffeature["lookup_percpu_elem"] = output.find("lookup_percpu_elem: yes") != -1
         return bpffeature
 
 
@@ -319,7 +321,7 @@ class Runner(object):
                             return Runner.SKIP_REQUIREMENT_UNSATISFIED
 
             if test.feature_requirement or test.neg_feature_requirement:
-                bpffeature = Runner.__get_bpffeature()
+                bpffeature = Runner.get_bpffeature()
 
                 for feature in test.feature_requirement:
                     if feature not in bpffeature:
@@ -394,8 +396,6 @@ class Runner(object):
                 if test.new_pidns:
                     # This can be fixed in the future if needed
                     raise ValueError(f"BEFORE_PID cannot be used with NEW_PIDNS")
-                if len(test.befores) > 1:
-                    raise ValueError(f"test has {len(test.befores)} BEFORE clauses but BEFORE_PID usage requires exactly one")
 
                 child_name = test.befores[0].strip().split()[-1]
                 child_name = os.path.basename(child_name)

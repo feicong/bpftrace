@@ -4,24 +4,20 @@
 #include <string>
 
 struct pcap;
-typedef struct pcap pcap_t;
+using pcap_t = struct pcap;
 
 struct pcap_dumper;
-typedef struct pcap_dumper pcap_dumper_t;
+using pcap_dumper_t = struct pcap_dumper;
 
 namespace bpftrace {
 
 class PCAPwriter {
 public:
-  PCAPwriter()
-  {
-  }
-  ~PCAPwriter()
-  {
-  }
+  PCAPwriter() = default;
+  ~PCAPwriter() = default;
 
   bool open(std::string file);
-  void close(void);
+  void close();
 
   bool write(uint64_t ns, void *pkt, unsigned int size);
 

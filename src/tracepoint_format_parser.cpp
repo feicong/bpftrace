@@ -5,10 +5,10 @@
 
 #include "ast/ast.h"
 #include "bpftrace.h"
-#include "log.h"
-#include "struct.h"
-#include "tracefs.h"
+#include "tracefs/tracefs.h"
 #include "tracepoint_format_parser.h"
+#include "util/format.h"
+#include "util/wildcard.h"
 
 namespace bpftrace {
 
@@ -27,7 +27,7 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
   if (probes_with_tracepoint.empty())
     return true;
 
-  ast::TracepointArgsVisitor n(ctx);
+  ast::TracepointArgsVisitor n;
   if (!bpftrace.has_btf_data())
     program->c_definitions += "#include <linux/types.h>\n";
   for (ast::Probe *probe : probes_with_tracepoint) {
@@ -41,23 +41,22 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
                                                                   event_name);
         glob_t glob_result;
 
-        if (has_wildcard(category) || has_wildcard(event_name)) {
+        if (util::has_wildcard(category) || util::has_wildcard(event_name)) {
           // tracepoint wildcard expansion, part 1 of 3. struct definitions.
           memset(&glob_result, 0, sizeof(glob_result));
           int ret = glob(format_file_path.c_str(), 0, nullptr, &glob_result);
           if (ret != 0) {
             if (ret == GLOB_NOMATCH) {
-              LOG(ERROR, ap->loc, std::cerr)
-                  << "tracepoints not found: " << category << ":" << event_name;
+              auto &err = ap->addError();
+              err << "tracepoints not found: " << category << ":" << event_name;
               // helper message:
               if (category == "syscall")
-                LOG(ERROR, ap->loc, std::cerr)
-                    << "Did you mean syscalls:" << event_name << "?";
-              LOG(V1) << strerror(errno) << ": " << format_file_path;
+                err.addHint() << "Did you mean syscalls:" << event_name << "?";
               return false;
             } else {
               // unexpected error
-              LOG(ERROR, ap->loc, std::cerr) << std::string(strerror(errno));
+              ap->addError()
+                  << "unexpected error: " << std::string(strerror(errno));
               return false;
             }
           }
@@ -82,7 +81,7 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
             // definitions
             std::string struct_name = get_struct_name(real_category,
                                                       real_event);
-            if (!TracepointFormatParser::struct_list.count(struct_name)) {
+            if (!TracepointFormatParser::struct_list.contains(struct_name)) {
               program->c_definitions += get_tracepoint_struct(
                   format_file, real_category, real_event, bpftrace);
               TracepointFormatParser::struct_list.insert(struct_name);
@@ -100,20 +99,24 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
             // (at least one of them could succeed)
             bool fail = probe->attach_points.size() == 1;
             auto msg = "tracepoint not found: " + category + ":" + event_name;
-            if (fail)
-              LOG(ERROR, ap->loc, std::cerr) << msg;
-            else
-              LOG(WARNING, ap->loc, std::cerr) << msg;
+            auto select = [&]() -> ast::Diagnostic & {
+              if (fail)
+                return ap->addError();
+              else
+                return ap->addWarning();
+            };
+            auto &err = select();
+            err << msg;
 
             // helper message:
             if (category == "syscall")
-              LOG(WARNING, ap->loc, std::cerr)
-                  << "Did you mean syscalls:" << event_name << "?";
+              err.addHint() << "Did you mean syscalls:" << event_name << "?";
 
             if (fail && bt_verbose) {
               // Having the location info isn't really useful here, so no
               // bpftrace.error
-              LOG(ERROR) << strerror(saved_errno) << ": " << format_file_path;
+              ap->addError()
+                  << strerror(saved_errno) << ": " << format_file_path;
             }
             if (fail)
               return false;
@@ -147,7 +150,7 @@ std::string TracepointFormatParser::get_struct_name(const std::string &probe_id)
 {
   // probe_id has format category:event
   std::string event_name = probe_id;
-  std::string category = erase_prefix(event_name);
+  std::string category = util::erase_prefix(event_name);
   return get_struct_name(category, event_name);
 }
 
@@ -155,7 +158,7 @@ std::string TracepointFormatParser::parse_field(const std::string &line,
                                                 int *last_offset,
                                                 BPFtrace &bpftrace)
 {
-  std::string extra = "";
+  std::string extra;
 
   auto field_pos = line.find("field:");
   if (field_pos == std::string::npos)
@@ -265,6 +268,13 @@ std::string TracepointFormatParser::get_tracepoint_struct(
 
   format_struct += "};\n";
   return format_struct;
+}
+
+ast::Pass CreateParseTracepointFormatPass()
+{
+  return ast::Pass::create("tracepoint", [](ast::ASTContext &ast, BPFtrace &b) {
+    TracepointFormatParser::parse(ast, b);
+  });
 }
 
 } // namespace bpftrace

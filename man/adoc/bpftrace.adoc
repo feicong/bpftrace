@@ -159,9 +159,10 @@ Errors are still written to stderr.
 
 === *-p* _PID_
 
-Attach to the process with _PID_.
+Attach to the process with or filter actions by _PID_.
 If the process terminates, bpftrace will also terminate.
-When using USDT probes, uprobes, and uretprobes they will be attached to only this process.
+When using USDT, uprobes, uretprobes, hardware, software, profile, interval, watchpoint, or asyncwatchpoint probes they will be attached to only this process.
+For all other probes, except BEGIN/END, the pid will act like a predicate to filter out events not from that pid.
 For listing uprobes/uretprobes set the target to '*' and the process's address space will be searched for the symbols.
 
 === *-q*
@@ -729,6 +730,21 @@ Scratch variables must be initialized before using these operators.
 
 Note `{plus}{plus}`/`--` on a shared global variable can lose updates. See <<map-functions-count, `count()`>> for more details.
 
+==== Block Expressions
+
+A block can be used as expression, as long as the last statement of the block
+is an expression with no trailing semi-colon.
+
+```
+let $a = {
+  let $b = 1;
+  $b
+};
+// $a is 1
+```
+
+This can be used anywhere an expression can be used.
+
 === Preamble
 
 Preprocessor and type definitions take place in the preamble:
@@ -889,6 +905,35 @@ Map names always start with a `@`, e.g. `@mymap`.
 All valid identifiers can be used as `name`.
 
 The data type of a variable is automatically determined during first assignment and cannot be changed afterwards.
+
+==== Maps Declarations
+
+Maps can also be declared in the global scope, before probes and after the config e.g.
+----
+config = {
+    unstable_map_decl=1;
+}
+
+let @a = hash(100);
+let @b = percpulruhash(20);
+
+BEGIN { ... }
+----
+
+The utility of this is that you can specify different underlying BPF map types.
+Currently these are available in bpftrace:
+- hash (BPF_MAP_TYPE_HASH)
+- lruhash (BPF_MAP_TYPE_LRU_HASH)
+- percpuhash (BPF_MAP_TYPE_PERCPU_HASH)
+- percpulruhash (BPF_MAP_TYPE_LRU_PERCPU_HASH)
+- percpuarray (BPF_MAP_TYPE_PERCPU_ARRAY)
+
+Additionally, map declarations must supply a single argument: **max entries** e.g. `let @a = lruhash(100);`
+All maps that are not declared in the global scope utilize the default set in the config variable "max_map_keys".
+However, it's best practice to declare maps up front as using the default can lead to lost map update events (if the map is full) or over allocation of memory if the map is intended to only store a few entries.
+
+**Warning** this feature is experimental and may be subject to changes.
+It also requires the 'unstable_map_decl' config being set to 1.
 
 ==== Maps without Explicit Keys
 
@@ -3607,6 +3652,12 @@ Default: 0
 
 For user space symbols, symbolicate lazily/on-demand (1) or symbolicate everything ahead of time (0).
 
+=== license
+
+Default: "GPL"
+
+The license bpftrace will use to load BPF programs into the linux kernel.
+
 ==== log_size
 
 Default: 1000000
@@ -3790,6 +3841,13 @@ BEGIN { @=*uptr(kaddr("do_poweroff")) }
 
 bpftrace tries to automatically set the correct address space for a pointer based on the probe type, but might fail in cases where it is unclear.
 The address space can be changed with the <<functions-kptr, kptrs>> and <<functios-uptr, uptr>> functions.
+
+=== BPF License
+
+By default bpftrace uses "GPL", which is actually "GPL version 2", as the license it uses to load BPF programs into the kernel.
+Some other examples of compatible licenses are: "GPL v2" and "Dual MPL/GPL".
+You can specify a different license using the "license" config variable.
+link:https://docs.kernel.org/bpf/bpf_licensing.html#using-bpf-programs-in-the-linux-kernel[#Read more about BPF programs and licensing].
 
 === BTF Support
 

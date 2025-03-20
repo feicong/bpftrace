@@ -1,10 +1,8 @@
-#include "printf.h"
+#include <cstdint>
 
 #include "log.h"
-#include "printf_format_types.h"
-#include "struct.h"
-
-#include <cstdint>
+#include "printf.h"
+#include "util/format.h"
 
 namespace bpftrace {
 
@@ -26,8 +24,8 @@ PrintableString::PrintableString(std::string value,
 int PrintableString::print(char *buf,
                            size_t size,
                            const char *fmt,
-                           Type,
-                           ArgumentType)
+                           Type /*token*/,
+                           ArgumentType /*expected_type*/)
 {
   return snprintf(buf, size, fmt, value_.c_str());
 }
@@ -35,15 +33,15 @@ int PrintableString::print(char *buf,
 int PrintableBuffer::print(char *buf,
                            size_t size,
                            const char *fmt,
-                           Type,
-                           ArgumentType)
+                           Type /*token*/,
+                           ArgumentType /*expected_type*/)
 {
-  return snprintf(
-      buf,
-      size,
-      fmt,
-      hex_format_buffer(value_.data(), value_.size(), keep_ascii_, escape_hex_)
-          .c_str());
+  return snprintf(buf,
+                  size,
+                  fmt,
+                  util::hex_format_buffer(
+                      value_.data(), value_.size(), keep_ascii_, escape_hex_)
+                      .c_str());
 }
 
 void PrintableBuffer::keep_ascii(bool value)
@@ -59,8 +57,8 @@ void PrintableBuffer::escape_hex(bool value)
 int PrintableCString::print(char *buf,
                             size_t size,
                             const char *fmt,
-                            Type,
-                            ArgumentType)
+                            Type /*token*/,
+                            ArgumentType /*expected_type*/)
 {
   return snprintf(buf, size, fmt, value_);
 }
@@ -68,7 +66,7 @@ int PrintableCString::print(char *buf,
 int PrintableInt::print(char *buf,
                         size_t size,
                         const char *fmt,
-                        Type,
+                        Type /*token*/,
                         ArgumentType expected_type)
 {
   // Since the value is internally always stored as a 64-bit integer, a cast is
@@ -106,7 +104,7 @@ int PrintableInt::print(char *buf,
 int PrintableSInt::print(char *buf,
                          size_t size,
                          const char *fmt,
-                         Type,
+                         Type /*token*/,
                          ArgumentType expected_type)
 {
   switch (expected_type) {

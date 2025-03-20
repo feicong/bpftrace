@@ -1,14 +1,60 @@
-#include "field_analyser.h"
-
 #include <cassert>
-#include <iostream>
 
 #include "arch/arch.h"
+#include "ast/passes/field_analyser.h"
+#include "ast/visitor.h"
+#include "bpftrace.h"
 #include "dwarf_parser.h"
-#include "log.h"
 #include "probe_matcher.h"
+#include "util/format.h"
+
+namespace libbpf {
+#include "libbpf/bpf.h"
+} // namespace libbpf
 
 namespace bpftrace::ast {
+
+namespace {
+
+class FieldAnalyser : public Visitor<FieldAnalyser> {
+public:
+  explicit FieldAnalyser(BPFtrace &bpftrace) : bpftrace_(bpftrace)
+  {
+  }
+
+  using Visitor<FieldAnalyser>::visit;
+  void visit(Identifier &identifier);
+  void visit(Builtin &builtin);
+  void visit(Map &map);
+  void visit(Variable &var);
+  void visit(FieldAccess &acc);
+  void visit(ArrayAccess &arr);
+  void visit(Cast &cast);
+  void visit(Sizeof &szof);
+  void visit(Offsetof &offof);
+  void visit(AssignMapStatement &assignment);
+  void visit(AssignVarStatement &assignment);
+  void visit(Unop &unop);
+  void visit(Probe &probe);
+  void visit(Subprog &subprog);
+
+private:
+  void resolve_args(Probe &probe);
+  void resolve_fields(SizedType &type);
+  void resolve_type(SizedType &type);
+
+  ProbeType probe_type_;
+  std::string attach_func_;
+  SizedType sized_type_;
+  BPFtrace &bpftrace_;
+  libbpf::bpf_prog_type prog_type_{ libbpf::BPF_PROG_TYPE_UNSPEC };
+  bool has_builtin_args_;
+  Probe *probe_ = nullptr;
+
+  std::map<std::string, SizedType> var_types_;
+};
+
+} // namespace
 
 void FieldAnalyser::visit(Identifier &identifier)
 {
@@ -49,7 +95,7 @@ void FieldAnalyser::visit(Builtin &builtin)
       return;
     resolve_args(*probe_);
 
-    auto arg = bpftrace_.structs.GetProbeArg(*probe_, RETVAL_FIELD_NAME);
+    const auto *arg = bpftrace_.structs.GetProbeArg(*probe_, RETVAL_FIELD_NAME);
     if (arg)
       sized_type_ = arg->type;
     return;
@@ -82,7 +128,7 @@ void FieldAnalyser::visit(FieldAccess &acc)
   visit(acc.expr);
 
   if (has_builtin_args_) {
-    auto arg = bpftrace_.structs.GetProbeArg(*probe_, acc.field);
+    const auto *arg = bpftrace_.structs.GetProbeArg(*probe_, acc.field);
     if (arg)
       sized_type_ = arg->type;
 
@@ -179,18 +225,18 @@ void FieldAnalyser::resolve_args(Probe &probe)
       try {
         matches = bpftrace_.probe_matcher_->get_matches_for_ap(*ap);
       } catch (const WildcardException &e) {
-        LOG(ERROR) << e.what();
+        probe.addError() << e.what();
         return;
       }
 
       // ... and check if they share same arguments.
 
       Struct ap_args;
-      for (auto &match : matches) {
+      for (const auto &match : matches) {
         // Both uprobes and fentry have a target (binary for uprobes, kernel
         // module for fentry).
         std::string func = match;
-        std::string target = erase_prefix(func);
+        std::string target = util::erase_prefix(func);
 
         // Trying to attach to multiple fentry. If some of them fails on
         // argument resolution, do not fail hard, just print a warning and
@@ -198,9 +244,9 @@ void FieldAnalyser::resolve_args(Probe &probe)
         if (probe_type == ProbeType::fentry || probe_type == ProbeType::fexit) {
           std::string err;
           auto maybe_ap_args = bpftrace_.btf_->resolve_args(
-              func, probe_type == ProbeType::fexit, err);
+              func, probe_type == ProbeType::fexit, true, err);
           if (!maybe_ap_args.has_value()) {
-            LOG(WARNING) << "fentry:" << ap->func << ": " << err;
+            ap->addWarning() << "fentry:" << ap->func << ": " << err;
             continue;
           }
           ap_args = std::move(*maybe_ap_args);
@@ -210,14 +256,13 @@ void FieldAnalyser::resolve_args(Probe &probe)
           if (dwarf)
             ap_args = dwarf->resolve_args(func);
           else
-            LOG(WARNING, ap->loc, err_) << "No debuginfo found for " << target;
+            ap->addWarning() << "No debuginfo found for " << target;
         }
 
         if (probe_args.size == -1)
           probe_args = ap_args;
         else if (ap_args != probe_args) {
-          LOG(ERROR, ap->loc, err_)
-              << "Probe has attach points with mixed arguments";
+          ap->addError() << "Probe has attach points with mixed arguments";
           break;
         }
       }
@@ -226,9 +271,9 @@ void FieldAnalyser::resolve_args(Probe &probe)
       if (probe_type == ProbeType::fentry || probe_type == ProbeType::fexit) {
         std::string err;
         auto maybe_probe_args = bpftrace_.btf_->resolve_args(
-            ap->func, probe_type == ProbeType::fexit, err);
+            ap->func, probe_type == ProbeType::fexit, true, err);
         if (!maybe_probe_args.has_value()) {
-          LOG(ERROR, ap->loc, err_) << "fentry:" << ap->func << ": " << err;
+          ap->addError() << "fentry:" << ap->func << ": " << err;
           return;
         }
         probe_args = std::move(*maybe_probe_args);
@@ -238,13 +283,12 @@ void FieldAnalyser::resolve_args(Probe &probe)
         if (dwarf)
           probe_args = dwarf->resolve_args(ap->func);
         else {
-          LOG(WARNING, ap->loc, err_)
-              << "No debuginfo found for " << ap->target;
+          ap->addWarning() << "No debuginfo found for " << ap->target;
         }
         if (static_cast<int>(probe_args.fields.size()) >
             (arch::max_arg() + 1)) {
-          LOG(ERROR, ap->loc, err_) << "\'args\' builtin is not supported for "
-                                       "probes with stack-passed arguments.";
+          ap->addError() << "\'args\' builtin is not supported for "
+                         << "probes with stack-passed arguments.";
         }
       }
     }
@@ -253,14 +297,12 @@ void FieldAnalyser::resolve_args(Probe &probe)
     auto args = bpftrace_.structs.Lookup(probe.args_typename()).lock();
     if (args && *args != probe_args) {
       // we did, and it's different...trigger the error
-      LOG(ERROR, ap->loc, err_)
-          << "Probe has attach points with mixed arguments";
+      ap->addError() << "Probe has attach points with mixed arguments";
     } else {
       // store/save args for each ap for later processing
       bpftrace_.structs.Add(probe.args_typename(), std::move(probe_args));
     }
   }
-  return;
 }
 
 void FieldAnalyser::resolve_fields(SizedType &type)
@@ -324,17 +366,14 @@ void FieldAnalyser::visit(Subprog &subprog)
   visit(subprog.stmts);
 }
 
-int FieldAnalyser::analyse()
+Pass CreateFieldAnalyserPass()
 {
-  visit(ctx_.root);
+  auto fn = [](ASTContext &ast, BPFtrace &b) {
+    FieldAnalyser analyser(b);
+    analyser.visit(ast.root);
+  };
 
-  std::string errors = err_.str();
-  if (!errors.empty()) {
-    out_ << errors;
-    return 1;
-  }
-
-  return 0;
-}
+  return Pass::create("FieldAnalyser", fn);
+};
 
 } // namespace bpftrace::ast

@@ -1,23 +1,120 @@
+#include <algorithm>
+#include <clang-c/Index.h>
 #include <cstring>
 #include <iostream>
-#include <limits>
+#include <llvm/Config/llvm-config.h>
 #include <regex>
 #include <sstream>
+#include <sys/utsname.h>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "llvm/Config/llvm-config.h"
-
 #include "ast/ast.h"
-#include "ast/passes/field_analyser.h"
+#include "ast/context.h"
+#include "ast/visitor.h"
+#include "bpftrace.h"
 #include "btf.h"
 #include "clang_parser.h"
 #include "log.h"
 #include "resources/headers.h"
 #include "types.h"
-#include "utils.h"
+#include "util/format.h"
+#include "util/io.h"
+#include "util/system.h"
 
 namespace bpftrace {
+
+char ClangParseError::ID;
+
+void ClangParseError::log(llvm::raw_ostream &OS) const
+{
+  OS << "Clang parse error";
+}
+
+class ClangParser {
+public:
+  bool parse(ast::Program *program,
+             BPFtrace &bpftrace,
+             std::vector<std::string> extra_flags = {});
+
+private:
+  bool visit_children(CXCursor &cursor, BPFtrace &bpftrace);
+  // The user might have written some struct definitions that rely on types
+  // supplied by BTF data.
+  //
+  // This method will pull out any forward-declared / incomplete struct
+  // definitions and return the types (in string form) of the unresolved types.
+  //
+  // Note that this method does not report "errors". This is because the user
+  // could have typo'd and actually referenced a non-existent type. Put
+  // differently, this method is best effort.
+  std::unordered_set<std::string> get_incomplete_types();
+  // Iteratively check for incomplete types, pull their definitions from BTF,
+  // and update the input files with the definitions.
+  void resolve_incomplete_types_from_btf(BPFtrace &bpftrace,
+                                         const ast::ProbeList &probes);
+
+  // Collect names of types defined by typedefs that are in non-included
+  // headers as they may pose problems for clang parser.
+  std::unordered_set<std::string> get_unknown_typedefs();
+  // Iteratively check for unknown typedefs, pull their definitions from BTF,
+  // and update the input files with the definitions.
+  void resolve_unknown_typedefs_from_btf(BPFtrace &bpftrace);
+
+  static std::optional<std::string> get_unknown_type(
+      const std::string &diagnostic_msg);
+
+  CXUnsavedFile get_btf_generated_header(BPFtrace &bpftrace);
+  CXUnsavedFile get_empty_btf_generated_header();
+
+  std::string get_arch_include_path();
+  std::vector<std::string> system_include_paths();
+
+  std::string input;
+  std::vector<const char *> args;
+  std::vector<CXUnsavedFile> input_files;
+  std::string btf_cdef;
+
+  class ClangParserHandler {
+  public:
+    ClangParserHandler();
+
+    ~ClangParserHandler();
+
+    bool parse_file(const std::string &filename,
+                    const std::vector<const char *> &args,
+                    std::vector<CXUnsavedFile> &unsaved_files,
+                    bool bail_on_errors = true);
+
+    CXTranslationUnit get_translation_unit();
+
+    CXErrorCode parse_translation_unit(const char *source_filename,
+                                       const char *const *command_line_args,
+                                       int num_command_line_args,
+                                       struct CXUnsavedFile *unsaved_files,
+                                       unsigned num_unsaved_files,
+                                       unsigned options);
+
+    // Check diagnostics and collect all error messages.
+    // Return true if an error occurred. If bail_on_error is false, only fail
+    // on fatal errors.
+    bool check_diagnostics(bool bail_on_error);
+
+    CXCursor get_translation_unit_cursor();
+
+    const std::vector<std::string> &get_error_messages();
+
+    bool has_redefinition_error();
+    bool has_unknown_type_error();
+
+  private:
+    CXIndex index;
+    CXTranslationUnit translation_unit = nullptr;
+    std::vector<std::string> error_msgs;
+  };
+};
+
 namespace {
 const std::vector<CXUnsavedFile> &getDefaultHeaders()
 {
@@ -136,7 +233,7 @@ static bool translateMacro(CXCursor cursor,
     clang_disposeString(tokenText);
   }
   clang_disposeTokens(transUnit, tokens, numTokens);
-  return value.length() != 0;
+  return !value.empty();
 }
 
 static std::string remove_qualifiers(std::string &&typestr)
@@ -255,9 +352,7 @@ bool ClangParser::ClangParserHandler::check_diagnostics(bool bail_on_error)
     if ((bail_on_error && severity == CXDiagnostic_Error) ||
         severity == CXDiagnostic_Fatal) {
       // Do not fail on "too many errors"
-      if (!bail_on_error && msg == "too many errors emitted, stopping now")
-        return true;
-      return false;
+      return !bail_on_error && msg == "too many errors emitted, stopping now";
     }
   }
   return true;
@@ -274,7 +369,7 @@ bool ClangParser::ClangParserHandler::parse_file(
     std::vector<CXUnsavedFile> &unsaved_files,
     bool bail_on_errors)
 {
-  StderrSilencer silencer;
+  util::StderrSilencer silencer;
   if (!bail_on_errors)
     silencer.silence();
 
@@ -303,20 +398,16 @@ const std::vector<std::string> &ClangParser::ClangParserHandler::
 
 bool ClangParser::ClangParserHandler::has_redefinition_error()
 {
-  for (auto &msg : error_msgs) {
-    if (msg.find("redefinition") != std::string::npos)
-      return true;
-  }
-  return false;
+  return std::ranges::any_of(error_msgs, [](const auto &msg) {
+    return msg.find("redefinition") != std::string::npos;
+  });
 }
 
 bool ClangParser::ClangParserHandler::has_unknown_type_error()
 {
-  for (auto &msg : error_msgs) {
-    if (ClangParser::get_unknown_type(msg).has_value())
-      return true;
-  }
-  return false;
+  return std::ranges::any_of(error_msgs, [](const auto &msg) {
+    return ClangParser::get_unknown_type(msg).has_value();
+  });
 }
 
 namespace {
@@ -384,7 +475,7 @@ bool ClangParser::visit_children(CXCursor &cursor, BPFtrace &bpftrace)
           if (enum_name.empty()) {
             std::ostringstream name;
             name << "enum <anon_" << anon_enum_count << ">";
-            enum_name = std::move(name.str());
+            enum_name = name.str();
           }
           auto variant_name = get_clang_string(clang_getCursorSpelling(c));
           auto variant_value = clang_getEnumConstantDeclValue(c);
@@ -523,12 +614,12 @@ void ClangParser::resolve_incomplete_types_from_btf(
   // The maximum number of iterations can be also controlled by the
   // BPFTRACE_MAX_TYPE_RES_ITERATIONS env variable (0 is unlimited).
   uint64_t field_lvl = 1;
-  for (auto &probe : probes)
+  for (const auto &probe : probes)
     if (probe->tp_args_structs_level > static_cast<int>(field_lvl))
       field_lvl = probe->tp_args_structs_level;
 
   unsigned max_iterations = std::max(
-      bpftrace.config_.get(ConfigKeyInt::max_type_res_iterations), field_lvl);
+      bpftrace.config_->get(ConfigKeyInt::max_type_res_iterations), field_lvl);
 
   bool check_incomplete_types = true;
   for (unsigned i = 0; i < max_iterations && check_incomplete_types; i++) {
@@ -574,10 +665,6 @@ bool ClangParser::parse(ast::Program *program,
                         BPFtrace &bpftrace,
                         std::vector<std::string> extra_flags)
 {
-#ifdef FUZZ
-  StderrSilencer silencer;
-  silencer.silence();
-#endif
   input = "#include </bpftrace/include/__btf_generated_header.h>\n" +
           program->c_definitions;
 
@@ -682,8 +769,8 @@ std::optional<std::string> ClangParser::ClangParser::get_unknown_type(
   const std::vector<std::string> unknown_type_msgs = {
     "unknown type name \'", "use of undeclared identifier \'"
   };
-  for (auto &unknown_type_msg : unknown_type_msgs) {
-    if (diagnostic_msg.find(unknown_type_msg) == 0) {
+  for (const auto &unknown_type_msg : unknown_type_msgs) {
+    if (diagnostic_msg.starts_with(unknown_type_msg)) {
       return diagnostic_msg.substr(unknown_type_msg.length(),
                                    diagnostic_msg.length() -
                                        unknown_type_msg.length() - 1);
@@ -764,14 +851,14 @@ static void query_clang_include_dirs(std::vector<std::string> &result)
   try {
     auto clang = "clang-" + std::to_string(LLVM_VERSION_MAJOR);
     auto cmd = clang + " -Wp,-v -x c -fsyntax-only /dev/null 2>&1";
-    auto check = exec_system(cmd.c_str());
+    auto check = util::exec_system(cmd.c_str());
     std::istringstream lines(check);
     std::string line;
     while (std::getline(lines, line) &&
            line != "#include <...> search starts here:") {
     }
     while (std::getline(lines, line) && line != "End of search list.")
-      result.push_back(trim(line));
+      result.push_back(util::trim(line));
   } catch (std::runtime_error &) { // If exec_system fails, just ignore it
   }
 }
@@ -785,13 +872,27 @@ std::vector<std::string> ClangParser::system_include_paths()
     if (line == "auto")
       query_clang_include_dirs(result);
     else
-      result.push_back(trim(line));
+      result.push_back(util::trim(line));
   }
 
   if (result.empty())
     result = { "/usr/local/include", "/usr/include" };
 
   return result;
+}
+
+ast::Pass CreateClangPass(std::vector<std::string> &&extra_flags)
+{
+  return ast::Pass::create("ClangParser",
+                           [extra_flags = std::move(
+                                extra_flags)](ast::ASTContext &ast,
+                                              BPFtrace &b) -> Result<OK> {
+                             ClangParser parser;
+                             if (!parser.parse(ast.root, b, extra_flags)) {
+                               return make_error<ClangParseError>();
+                             }
+                             return OK();
+                           });
 }
 
 } // namespace bpftrace

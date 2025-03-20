@@ -36,6 +36,7 @@ add_executable(bpftrace_test
   cstring_view.cpp
   field_analyser.cpp
   function_registry.cpp
+  location.cpp
   log.cpp
   main.cpp
   mocks.cpp
@@ -45,7 +46,11 @@ add_executable(bpftrace_test
   procmon.cpp
   probe.cpp
   config_analyser.cpp
+  pass_manager.cpp
+  pid_filter_pass.cpp
+  recursion_check.cpp
   resource_analyser.cpp
+  result.cpp
   required_resources.cpp
   return_path_analyser.cpp
   scopeguard.cpp

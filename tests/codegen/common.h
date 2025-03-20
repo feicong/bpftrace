@@ -1,28 +1,28 @@
 #pragma once
 
+#include <fstream>
+#include <iostream>
 #include <regex>
 
-#include "gmock/gmock.h"
+#include "ast/attachpoint_parser.h"
+#include "ast/passes/codegen_llvm.h"
+#include "ast/passes/field_analyser.h"
+#include "ast/passes/parser.h"
+#include "ast/passes/pid_filter_pass.h"
+#include "ast/passes/probe_analyser.h"
+#include "ast/passes/recursion_check.h"
+#include "ast/passes/resource_analyser.h"
+#include "ast/passes/semantic_analyser.h"
+#include "bpftrace.h"
+#include "btf_common.h"
+#include "clang_parser.h"
+#include "driver.h"
+#include "util/env.h"
 #include "gtest/gtest.h"
 
 #include "../mocks.h"
 
-#include "ast/passes/codegen_llvm.h"
-#include "ast/passes/field_analyser.h"
-#include "ast/passes/resource_analyser.h"
-#include "ast/passes/semantic_analyser.h"
-
-#include "bpffeature.h"
-#include "bpftrace.h"
-#include "clang_parser.h"
-#include "driver.h"
-#include "tracepoint_format_parser.h"
-
-#include "btf_common.h"
-
-namespace bpftrace {
-namespace test {
-namespace codegen {
+namespace bpftrace::test::codegen {
 
 #define NAME (::testing::UnitTest::GetInstance()->current_test_info()->name())
 
@@ -50,36 +50,36 @@ static void test(BPFtrace &bpftrace,
                  const std::string &input,
                  const std::string &name)
 {
-  Driver driver(bpftrace);
-  ASSERT_EQ(driver.parse_str(input), 0);
+  ast::ASTContext ast("stdin", input);
 
-  ast::FieldAnalyser fields(driver.ctx, bpftrace);
-  ASSERT_EQ(fields.analyse(), 0);
-
-  ClangParser clang;
-  clang.parse(driver.ctx.root, bpftrace);
-
-  ASSERT_EQ(driver.parse_str(input), 0);
-
-  ast::SemanticAnalyser semantics(driver.ctx, bpftrace);
-  ASSERT_EQ(semantics.analyse(), 0);
-
-  ast::ResourceAnalyser resource_analyser(driver.ctx, bpftrace);
-  auto resources_optional = resource_analyser.analyse();
-  ASSERT_TRUE(resources_optional.has_value());
-  bpftrace.resources = resources_optional.value();
-
+  // N.B. No tracepoint expansion.
   std::stringstream out;
-  ast::CodegenLLVM codegen(driver.ctx, bpftrace);
-  codegen.generate_ir();
-  codegen.DumpIR(out);
-  // Test that generated code compiles cleanly
-  codegen.optimize();
-  codegen.emit(false);
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bpftrace)
+                .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateFieldAnalyserPass())
+                .add(CreateClangPass())
+                .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreatePidFilterPass())
+                .add(ast::CreateRecursionCheckPass())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateResourcePass())
+                .add(ast::CreateProbePass())
+                .add(ast::CreateLLVMInitPass())
+                .add(ast::CreateCompilePass())
+                .add(ast::CreateDumpIRPass(out))
+                .run();
+  std::stringstream errs;
+  ast.diagnostics().emit(errs);
+  ASSERT_TRUE(ok && ast.diagnostics().ok()) << errs.str();
 
   uint64_t update_tests = 0;
-  get_uint64_env_var("BPFTRACE_UPDATE_TESTS",
-                     [&](uint64_t x) { update_tests = x; });
+  util::get_uint64_env_var("BPFTRACE_UPDATE_TESTS",
+                           [&](uint64_t x) { update_tests = x; });
   if (update_tests >= 1) {
     std::cerr << "Running in update mode, test is skipped" << std::endl;
     std::ofstream file(TEST_CODEGEN_LOCATION + name + ".ll");
@@ -106,6 +106,4 @@ static void test(const std::string &input,
   test(*bpftrace, input, name);
 }
 
-} // namespace codegen
-} // namespace test
-} // namespace bpftrace
+} // namespace bpftrace::test::codegen

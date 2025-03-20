@@ -10,21 +10,21 @@ target triple = "bpf-pc-linux"
 %"struct map_t.3" = type { ptr, ptr }
 %"struct map_t.4" = type { ptr, ptr, ptr, ptr }
 %helper_error_t = type <{ i64, i64, i32 }>
-%kstack_key = type { i64, i32 }
-%ustack_key = type { i64, i32, i32, i32 }
+%kstack_key = type { i64, i64 }
+%ustack_key = type { i64, i64, i32, i32 }
 
-@LICENSE = global [4 x i8] c"GPL\00", section "license"
-@AT_x = dso_local global %"struct map_t" zeroinitializer, section ".maps", !dbg !0
-@AT_y = dso_local global %"struct map_t.0" zeroinitializer, section ".maps", !dbg !21
-@stack_bpftrace_127 = dso_local global %"struct map_t.1" zeroinitializer, section ".maps", !dbg !30
-@stack_scratch = dso_local global %"struct map_t.2" zeroinitializer, section ".maps", !dbg !50
-@ringbuf = dso_local global %"struct map_t.3" zeroinitializer, section ".maps", !dbg !62
-@event_loss_counter = dso_local global %"struct map_t.4" zeroinitializer, section ".maps", !dbg !76
+@LICENSE = global [4 x i8] c"GPL\00", section "license", !dbg !0
+@AT_x = dso_local global %"struct map_t" zeroinitializer, section ".maps", !dbg !7
+@AT_y = dso_local global %"struct map_t.0" zeroinitializer, section ".maps", !dbg !26
+@stack_bpftrace_127 = dso_local global %"struct map_t.1" zeroinitializer, section ".maps", !dbg !35
+@stack_scratch = dso_local global %"struct map_t.2" zeroinitializer, section ".maps", !dbg !59
+@ringbuf = dso_local global %"struct map_t.3" zeroinitializer, section ".maps", !dbg !71
+@event_loss_counter = dso_local global %"struct map_t.4" zeroinitializer, section ".maps", !dbg !85
 
 ; Function Attrs: nounwind
 declare i64 @llvm.bpf.pseudo(i64 %0, i64 %1) #0
 
-define i64 @kprobe_f_1(ptr %0) section "s_kprobe_f_1" !dbg !89 {
+define i64 @kprobe_f_1(ptr %0) section "s_kprobe_f_1" !dbg !98 {
 entry:
   %key76 = alloca i32, align 4
   %helper_error_t71 = alloca %helper_error_t, align 8
@@ -45,10 +45,7 @@ entry:
   %lookup_stack_scratch_key = alloca i32, align 4
   %stack_key = alloca %ustack_key, align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %stack_key)
-  %1 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 0
-  store i64 0, ptr %1, align 8
-  %2 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 1
-  store i32 0, ptr %2, align 4
+  call void @llvm.memset.p0.i64(ptr align 1 %stack_key, i8 0, i64 24, i1 false)
   call void @llvm.lifetime.start.p0(i64 -1, ptr %lookup_stack_scratch_key)
   store i32 0, ptr %lookup_stack_scratch_key, align 4
   %lookup_stack_scratch_map = call ptr inttoptr (i64 1 to ptr)(ptr @stack_scratch, ptr %lookup_stack_scratch_key)
@@ -60,60 +57,61 @@ stack_scratch_failure:                            ; preds = %lookup_stack_scratc
   br label %merge_block
 
 merge_block:                                      ; preds = %stack_scratch_failure, %helper_merge2, %get_stack_fail
-  %3 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 2
+  %1 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 2
   %get_pid_tgid = call i64 inttoptr (i64 14 to ptr)()
-  %4 = lshr i64 %get_pid_tgid, 32
-  %pid = trunc i64 %4 to i32
-  store i32 %pid, ptr %3, align 4
-  %5 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 3
-  store i32 0, ptr %5, align 4
+  %2 = lshr i64 %get_pid_tgid, 32
+  %pid = trunc i64 %2 to i32
+  store i32 %pid, ptr %1, align 4
+  %3 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 3
+  store i32 0, ptr %3, align 4
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"@x_key")
   store i64 0, ptr %"@x_key", align 8
   %update_elem14 = call i64 inttoptr (i64 2 to ptr)(ptr @AT_x, ptr %"@x_key", ptr %stack_key, i64 0)
-  %6 = trunc i64 %update_elem14 to i32
-  %7 = icmp sge i32 %6, 0
-  br i1 %7, label %helper_merge16, label %helper_failure15
+  %4 = trunc i64 %update_elem14 to i32
+  %5 = icmp sge i32 %4, 0
+  br i1 %5, label %helper_merge16, label %helper_failure15
 
 lookup_stack_scratch_failure:                     ; preds = %entry
   br label %stack_scratch_failure
 
 lookup_stack_scratch_merge:                       ; preds = %entry
   %probe_read_kernel = call i64 inttoptr (i64 113 to ptr)(ptr %lookup_stack_scratch_map, i32 1016, ptr null)
-  %get_stack = call i32 inttoptr (i64 67 to ptr)(ptr %0, ptr %lookup_stack_scratch_map, i32 1016, i64 256)
-  %8 = icmp sge i32 %get_stack, 0
-  br i1 %8, label %helper_merge, label %helper_failure
+  %get_stack = call i64 inttoptr (i64 67 to ptr)(ptr %0, ptr %lookup_stack_scratch_map, i32 1016, i64 256)
+  %6 = trunc i64 %get_stack to i32
+  %7 = icmp sge i32 %6, 0
+  br i1 %7, label %helper_merge, label %helper_failure
 
 get_stack_success:                                ; preds = %helper_merge
-  %9 = udiv i32 %get_stack, 8
-  %10 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 1
-  store i32 %9, ptr %10, align 4
-  %11 = trunc i32 %9 to i8
-  %murmur_hash_2 = call i64 @murmur_hash_2(ptr %lookup_stack_scratch_map, i8 %11, i64 1)
-  %12 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 0
-  store i64 %murmur_hash_2, ptr %12, align 8
+  %8 = udiv i64 %get_stack, 8
+  %9 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 1
+  store i64 %8, ptr %9, align 8
+  %10 = trunc i64 %8 to i8
+  %murmur_hash_2 = call i64 @murmur_hash_2(ptr %lookup_stack_scratch_map, i8 %10, i64 1)
+  %11 = getelementptr %ustack_key, ptr %stack_key, i64 0, i32 0
+  store i64 %murmur_hash_2, ptr %11, align 8
   %update_elem = call i64 inttoptr (i64 2 to ptr)(ptr @stack_bpftrace_127, ptr %stack_key, ptr %lookup_stack_scratch_map, i64 0)
-  %13 = trunc i64 %update_elem to i32
-  %14 = icmp sge i32 %13, 0
-  br i1 %14, label %helper_merge2, label %helper_failure1
+  %12 = trunc i64 %update_elem to i32
+  %13 = icmp sge i32 %12, 0
+  br i1 %13, label %helper_merge2, label %helper_failure1
 
 get_stack_fail:                                   ; preds = %helper_merge
   br label %merge_block
 
 helper_failure:                                   ; preds = %lookup_stack_scratch_merge
   call void @llvm.lifetime.start.p0(i64 -1, ptr %helper_error_t)
-  %15 = getelementptr %helper_error_t, ptr %helper_error_t, i64 0, i32 0
-  store i64 30006, ptr %15, align 8
-  %16 = getelementptr %helper_error_t, ptr %helper_error_t, i64 0, i32 1
-  store i64 0, ptr %16, align 8
-  %17 = getelementptr %helper_error_t, ptr %helper_error_t, i64 0, i32 2
-  store i32 %get_stack, ptr %17, align 4
+  %14 = getelementptr %helper_error_t, ptr %helper_error_t, i64 0, i32 0
+  store i64 30006, ptr %14, align 8
+  %15 = getelementptr %helper_error_t, ptr %helper_error_t, i64 0, i32 1
+  store i64 0, ptr %15, align 8
+  %16 = getelementptr %helper_error_t, ptr %helper_error_t, i64 0, i32 2
+  store i32 %6, ptr %16, align 4
   %ringbuf_output = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %helper_error_t, i64 20, i64 0)
   %ringbuf_loss = icmp slt i64 %ringbuf_output, 0
   br i1 %ringbuf_loss, label %event_loss_counter, label %counter_merge
 
 helper_merge:                                     ; preds = %counter_merge, %lookup_stack_scratch_merge
-  %18 = icmp sge i32 %get_stack, 0
-  br i1 %18, label %get_stack_success, label %get_stack_fail
+  %17 = icmp sge i64 %get_stack, 0
+  br i1 %17, label %get_stack_success, label %get_stack_fail
 
 event_loss_counter:                               ; preds = %helper_failure
   call void @llvm.lifetime.start.p0(i64 -1, ptr %key)
@@ -127,7 +125,7 @@ counter_merge:                                    ; preds = %lookup_merge, %help
   br label %helper_merge
 
 lookup_success:                                   ; preds = %event_loss_counter
-  %19 = atomicrmw add ptr %lookup_elem, i64 1 seq_cst, align 8
+  %18 = atomicrmw add ptr %lookup_elem, i64 1 seq_cst, align 8
   br label %lookup_merge
 
 lookup_failure:                                   ; preds = %event_loss_counter
@@ -139,12 +137,12 @@ lookup_merge:                                     ; preds = %lookup_failure, %lo
 
 helper_failure1:                                  ; preds = %get_stack_success
   call void @llvm.lifetime.start.p0(i64 -1, ptr %helper_error_t3)
-  %20 = getelementptr %helper_error_t, ptr %helper_error_t3, i64 0, i32 0
-  store i64 30006, ptr %20, align 8
-  %21 = getelementptr %helper_error_t, ptr %helper_error_t3, i64 0, i32 1
-  store i64 1, ptr %21, align 8
-  %22 = getelementptr %helper_error_t, ptr %helper_error_t3, i64 0, i32 2
-  store i32 %13, ptr %22, align 4
+  %19 = getelementptr %helper_error_t, ptr %helper_error_t3, i64 0, i32 0
+  store i64 30006, ptr %19, align 8
+  %20 = getelementptr %helper_error_t, ptr %helper_error_t3, i64 0, i32 1
+  store i64 1, ptr %20, align 8
+  %21 = getelementptr %helper_error_t, ptr %helper_error_t3, i64 0, i32 2
+  store i32 %12, ptr %21, align 4
   %ringbuf_output4 = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %helper_error_t3, i64 20, i64 0)
   %ringbuf_loss7 = icmp slt i64 %ringbuf_output4, 0
   br i1 %ringbuf_loss7, label %event_loss_counter5, label %counter_merge6
@@ -164,7 +162,7 @@ counter_merge6:                                   ; preds = %lookup_merge12, %he
   br label %helper_merge2
 
 lookup_success10:                                 ; preds = %event_loss_counter5
-  %23 = atomicrmw add ptr %lookup_elem9, i64 1 seq_cst, align 8
+  %22 = atomicrmw add ptr %lookup_elem9, i64 1 seq_cst, align 8
   br label %lookup_merge12
 
 lookup_failure11:                                 ; preds = %event_loss_counter5
@@ -176,12 +174,12 @@ lookup_merge12:                                   ; preds = %lookup_failure11, %
 
 helper_failure15:                                 ; preds = %merge_block
   call void @llvm.lifetime.start.p0(i64 -1, ptr %helper_error_t17)
-  %24 = getelementptr %helper_error_t, ptr %helper_error_t17, i64 0, i32 0
-  store i64 30006, ptr %24, align 8
-  %25 = getelementptr %helper_error_t, ptr %helper_error_t17, i64 0, i32 1
-  store i64 2, ptr %25, align 8
-  %26 = getelementptr %helper_error_t, ptr %helper_error_t17, i64 0, i32 2
-  store i32 %6, ptr %26, align 4
+  %23 = getelementptr %helper_error_t, ptr %helper_error_t17, i64 0, i32 0
+  store i64 30006, ptr %23, align 8
+  %24 = getelementptr %helper_error_t, ptr %helper_error_t17, i64 0, i32 1
+  store i64 2, ptr %24, align 8
+  %25 = getelementptr %helper_error_t, ptr %helper_error_t17, i64 0, i32 2
+  store i32 %4, ptr %25, align 4
   %ringbuf_output18 = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %helper_error_t17, i64 20, i64 0)
   %ringbuf_loss21 = icmp slt i64 %ringbuf_output18, 0
   br i1 %ringbuf_loss21, label %event_loss_counter19, label %counter_merge20
@@ -189,10 +187,7 @@ helper_failure15:                                 ; preds = %merge_block
 helper_merge16:                                   ; preds = %counter_merge20, %merge_block
   call void @llvm.lifetime.end.p0(i64 -1, ptr %"@x_key")
   call void @llvm.lifetime.start.p0(i64 -1, ptr %stack_key28)
-  %27 = getelementptr %kstack_key, ptr %stack_key28, i64 0, i32 0
-  store i64 0, ptr %27, align 8
-  %28 = getelementptr %kstack_key, ptr %stack_key28, i64 0, i32 1
-  store i32 0, ptr %28, align 4
+  call void @llvm.memset.p0.i64(ptr align 1 %stack_key28, i8 0, i64 16, i1 false)
   call void @llvm.lifetime.start.p0(i64 -1, ptr %lookup_stack_scratch_key31)
   store i32 0, ptr %lookup_stack_scratch_key31, align 4
   %lookup_stack_scratch_map32 = call ptr inttoptr (i64 1 to ptr)(ptr @stack_scratch, ptr %lookup_stack_scratch_key31)
@@ -212,7 +207,7 @@ counter_merge20:                                  ; preds = %lookup_merge26, %he
   br label %helper_merge16
 
 lookup_success24:                                 ; preds = %event_loss_counter19
-  %29 = atomicrmw add ptr %lookup_elem23, i64 1 seq_cst, align 8
+  %26 = atomicrmw add ptr %lookup_elem23, i64 1 seq_cst, align 8
   br label %lookup_merge26
 
 lookup_failure25:                                 ; preds = %event_loss_counter19
@@ -229,50 +224,51 @@ merge_block30:                                    ; preds = %stack_scratch_failu
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"@y_key")
   store i64 0, ptr %"@y_key", align 8
   %update_elem68 = call i64 inttoptr (i64 2 to ptr)(ptr @AT_y, ptr %"@y_key", ptr %stack_key28, i64 0)
-  %30 = trunc i64 %update_elem68 to i32
-  %31 = icmp sge i32 %30, 0
-  br i1 %31, label %helper_merge70, label %helper_failure69
+  %27 = trunc i64 %update_elem68 to i32
+  %28 = icmp sge i32 %27, 0
+  br i1 %28, label %helper_merge70, label %helper_failure69
 
 lookup_stack_scratch_failure33:                   ; preds = %helper_merge16
   br label %stack_scratch_failure29
 
 lookup_stack_scratch_merge34:                     ; preds = %helper_merge16
   %probe_read_kernel36 = call i64 inttoptr (i64 113 to ptr)(ptr %lookup_stack_scratch_map32, i32 1016, ptr null)
-  %get_stack39 = call i32 inttoptr (i64 67 to ptr)(ptr %0, ptr %lookup_stack_scratch_map32, i32 1016, i64 0)
-  %32 = icmp sge i32 %get_stack39, 0
-  br i1 %32, label %helper_merge41, label %helper_failure40
+  %get_stack39 = call i64 inttoptr (i64 67 to ptr)(ptr %0, ptr %lookup_stack_scratch_map32, i32 1016, i64 0)
+  %29 = trunc i64 %get_stack39 to i32
+  %30 = icmp sge i32 %29, 0
+  br i1 %30, label %helper_merge41, label %helper_failure40
 
 get_stack_success37:                              ; preds = %helper_merge41
-  %33 = udiv i32 %get_stack39, 8
-  %34 = getelementptr %kstack_key, ptr %stack_key28, i64 0, i32 1
-  store i32 %33, ptr %34, align 4
-  %35 = trunc i32 %33 to i8
-  %murmur_hash_253 = call i64 @murmur_hash_2(ptr %lookup_stack_scratch_map32, i8 %35, i64 1)
-  %36 = getelementptr %kstack_key, ptr %stack_key28, i64 0, i32 0
-  store i64 %murmur_hash_253, ptr %36, align 8
+  %31 = udiv i64 %get_stack39, 8
+  %32 = getelementptr %kstack_key, ptr %stack_key28, i64 0, i32 1
+  store i64 %31, ptr %32, align 8
+  %33 = trunc i64 %31 to i8
+  %murmur_hash_253 = call i64 @murmur_hash_2(ptr %lookup_stack_scratch_map32, i8 %33, i64 1)
+  %34 = getelementptr %kstack_key, ptr %stack_key28, i64 0, i32 0
+  store i64 %murmur_hash_253, ptr %34, align 8
   %update_elem54 = call i64 inttoptr (i64 2 to ptr)(ptr @stack_bpftrace_127, ptr %stack_key28, ptr %lookup_stack_scratch_map32, i64 0)
-  %37 = trunc i64 %update_elem54 to i32
-  %38 = icmp sge i32 %37, 0
-  br i1 %38, label %helper_merge56, label %helper_failure55
+  %35 = trunc i64 %update_elem54 to i32
+  %36 = icmp sge i32 %35, 0
+  br i1 %36, label %helper_merge56, label %helper_failure55
 
 get_stack_fail38:                                 ; preds = %helper_merge41
   br label %merge_block30
 
 helper_failure40:                                 ; preds = %lookup_stack_scratch_merge34
   call void @llvm.lifetime.start.p0(i64 -1, ptr %helper_error_t42)
-  %39 = getelementptr %helper_error_t, ptr %helper_error_t42, i64 0, i32 0
-  store i64 30006, ptr %39, align 8
-  %40 = getelementptr %helper_error_t, ptr %helper_error_t42, i64 0, i32 1
-  store i64 3, ptr %40, align 8
-  %41 = getelementptr %helper_error_t, ptr %helper_error_t42, i64 0, i32 2
-  store i32 %get_stack39, ptr %41, align 4
+  %37 = getelementptr %helper_error_t, ptr %helper_error_t42, i64 0, i32 0
+  store i64 30006, ptr %37, align 8
+  %38 = getelementptr %helper_error_t, ptr %helper_error_t42, i64 0, i32 1
+  store i64 3, ptr %38, align 8
+  %39 = getelementptr %helper_error_t, ptr %helper_error_t42, i64 0, i32 2
+  store i32 %29, ptr %39, align 4
   %ringbuf_output43 = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %helper_error_t42, i64 20, i64 0)
   %ringbuf_loss46 = icmp slt i64 %ringbuf_output43, 0
   br i1 %ringbuf_loss46, label %event_loss_counter44, label %counter_merge45
 
 helper_merge41:                                   ; preds = %counter_merge45, %lookup_stack_scratch_merge34
-  %42 = icmp sge i32 %get_stack39, 0
-  br i1 %42, label %get_stack_success37, label %get_stack_fail38
+  %40 = icmp sge i64 %get_stack39, 0
+  br i1 %40, label %get_stack_success37, label %get_stack_fail38
 
 event_loss_counter44:                             ; preds = %helper_failure40
   call void @llvm.lifetime.start.p0(i64 -1, ptr %key47)
@@ -286,7 +282,7 @@ counter_merge45:                                  ; preds = %lookup_merge51, %he
   br label %helper_merge41
 
 lookup_success49:                                 ; preds = %event_loss_counter44
-  %43 = atomicrmw add ptr %lookup_elem48, i64 1 seq_cst, align 8
+  %41 = atomicrmw add ptr %lookup_elem48, i64 1 seq_cst, align 8
   br label %lookup_merge51
 
 lookup_failure50:                                 ; preds = %event_loss_counter44
@@ -298,12 +294,12 @@ lookup_merge51:                                   ; preds = %lookup_failure50, %
 
 helper_failure55:                                 ; preds = %get_stack_success37
   call void @llvm.lifetime.start.p0(i64 -1, ptr %helper_error_t57)
-  %44 = getelementptr %helper_error_t, ptr %helper_error_t57, i64 0, i32 0
-  store i64 30006, ptr %44, align 8
-  %45 = getelementptr %helper_error_t, ptr %helper_error_t57, i64 0, i32 1
-  store i64 4, ptr %45, align 8
-  %46 = getelementptr %helper_error_t, ptr %helper_error_t57, i64 0, i32 2
-  store i32 %37, ptr %46, align 4
+  %42 = getelementptr %helper_error_t, ptr %helper_error_t57, i64 0, i32 0
+  store i64 30006, ptr %42, align 8
+  %43 = getelementptr %helper_error_t, ptr %helper_error_t57, i64 0, i32 1
+  store i64 4, ptr %43, align 8
+  %44 = getelementptr %helper_error_t, ptr %helper_error_t57, i64 0, i32 2
+  store i32 %35, ptr %44, align 4
   %ringbuf_output58 = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %helper_error_t57, i64 20, i64 0)
   %ringbuf_loss61 = icmp slt i64 %ringbuf_output58, 0
   br i1 %ringbuf_loss61, label %event_loss_counter59, label %counter_merge60
@@ -323,7 +319,7 @@ counter_merge60:                                  ; preds = %lookup_merge66, %he
   br label %helper_merge56
 
 lookup_success64:                                 ; preds = %event_loss_counter59
-  %47 = atomicrmw add ptr %lookup_elem63, i64 1 seq_cst, align 8
+  %45 = atomicrmw add ptr %lookup_elem63, i64 1 seq_cst, align 8
   br label %lookup_merge66
 
 lookup_failure65:                                 ; preds = %event_loss_counter59
@@ -335,12 +331,12 @@ lookup_merge66:                                   ; preds = %lookup_failure65, %
 
 helper_failure69:                                 ; preds = %merge_block30
   call void @llvm.lifetime.start.p0(i64 -1, ptr %helper_error_t71)
-  %48 = getelementptr %helper_error_t, ptr %helper_error_t71, i64 0, i32 0
-  store i64 30006, ptr %48, align 8
-  %49 = getelementptr %helper_error_t, ptr %helper_error_t71, i64 0, i32 1
-  store i64 5, ptr %49, align 8
-  %50 = getelementptr %helper_error_t, ptr %helper_error_t71, i64 0, i32 2
-  store i32 %30, ptr %50, align 4
+  %46 = getelementptr %helper_error_t, ptr %helper_error_t71, i64 0, i32 0
+  store i64 30006, ptr %46, align 8
+  %47 = getelementptr %helper_error_t, ptr %helper_error_t71, i64 0, i32 1
+  store i64 5, ptr %47, align 8
+  %48 = getelementptr %helper_error_t, ptr %helper_error_t71, i64 0, i32 2
+  store i32 %27, ptr %48, align 4
   %ringbuf_output72 = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %helper_error_t71, i64 20, i64 0)
   %ringbuf_loss75 = icmp slt i64 %ringbuf_output72, 0
   br i1 %ringbuf_loss75, label %event_loss_counter73, label %counter_merge74
@@ -361,7 +357,7 @@ counter_merge74:                                  ; preds = %lookup_merge80, %he
   br label %helper_merge70
 
 lookup_success78:                                 ; preds = %event_loss_counter73
-  %51 = atomicrmw add ptr %lookup_elem77, i64 1 seq_cst, align 8
+  %49 = atomicrmw add ptr %lookup_elem77, i64 1 seq_cst, align 8
   br label %lookup_merge80
 
 lookup_failure79:                                 ; preds = %event_loss_counter73
@@ -455,105 +451,118 @@ declare void @llvm.lifetime.start.p0(i64 immarg %0, ptr nocapture %1) #2
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(i64 immarg %0, ptr nocapture %1) #2
 
+; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: write)
+declare void @llvm.memset.p0.i64(ptr nocapture writeonly %0, i8 %1, i64 %2, i1 immarg %3) #3
+
 attributes #0 = { nounwind }
 attributes #1 = { alwaysinline }
 attributes #2 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #3 = { nocallback nofree nounwind willreturn memory(argmem: write) }
 
-!llvm.dbg.cu = !{!86}
-!llvm.module.flags = !{!88}
+!llvm.dbg.cu = !{!95}
+!llvm.module.flags = !{!97}
 
 !0 = !DIGlobalVariableExpression(var: !1, expr: !DIExpression())
-!1 = distinct !DIGlobalVariable(name: "AT_x", linkageName: "global", scope: !2, file: !2, type: !3, isLocal: false, isDefinition: true)
+!1 = distinct !DIGlobalVariable(name: "LICENSE", linkageName: "global", scope: !2, file: !2, type: !3, isLocal: false, isDefinition: true)
 !2 = !DIFile(filename: "bpftrace.bpf.o", directory: ".")
-!3 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !4)
-!4 = !{!5, !11, !12, !15}
-!5 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !6, size: 64)
-!6 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !7, size: 64)
-!7 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 32, elements: !9)
-!8 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
-!9 = !{!10}
-!10 = !DISubrange(count: 1, lowerBound: 0)
-!11 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !6, size: 64, offset: 64)
-!12 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !13, size: 64, offset: 128)
-!13 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !14, size: 64)
-!14 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
-!15 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !16, size: 64, offset: 192)
-!16 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !17, size: 64)
-!17 = !DICompositeType(tag: DW_TAG_array_type, baseType: !18, size: 160, elements: !19)
-!18 = !DIBasicType(name: "int8", size: 8, encoding: DW_ATE_signed)
-!19 = !{!20}
-!20 = !DISubrange(count: 20, lowerBound: 0)
-!21 = !DIGlobalVariableExpression(var: !22, expr: !DIExpression())
-!22 = distinct !DIGlobalVariable(name: "AT_y", linkageName: "global", scope: !2, file: !2, type: !23, isLocal: false, isDefinition: true)
-!23 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !24)
-!24 = !{!5, !11, !12, !25}
-!25 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !26, size: 64, offset: 192)
-!26 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !27, size: 64)
-!27 = !DICompositeType(tag: DW_TAG_array_type, baseType: !18, size: 96, elements: !28)
-!28 = !{!29}
-!29 = !DISubrange(count: 12, lowerBound: 0)
-!30 = !DIGlobalVariableExpression(var: !31, expr: !DIExpression())
-!31 = distinct !DIGlobalVariable(name: "stack_bpftrace_127", linkageName: "global", scope: !2, file: !2, type: !32, isLocal: false, isDefinition: true)
-!32 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !33)
-!33 = !{!34, !39, !44, !45}
-!34 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !35, size: 64)
-!35 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !36, size: 64)
-!36 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 288, elements: !37)
-!37 = !{!38}
-!38 = !DISubrange(count: 9, lowerBound: 0)
-!39 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !40, size: 64, offset: 64)
+!3 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 32, elements: !5)
+!4 = !DIBasicType(name: "int8", size: 8, encoding: DW_ATE_signed)
+!5 = !{!6}
+!6 = !DISubrange(count: 4, lowerBound: 0)
+!7 = !DIGlobalVariableExpression(var: !8, expr: !DIExpression())
+!8 = distinct !DIGlobalVariable(name: "AT_x", linkageName: "global", scope: !2, file: !2, type: !9, isLocal: false, isDefinition: true)
+!9 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !10)
+!10 = !{!11, !17, !18, !21}
+!11 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !12, size: 64)
+!12 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !13, size: 64)
+!13 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 32, elements: !15)
+!14 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!15 = !{!16}
+!16 = !DISubrange(count: 1, lowerBound: 0)
+!17 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !12, size: 64, offset: 64)
+!18 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !19, size: 64, offset: 128)
+!19 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !20, size: 64)
+!20 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
+!21 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !22, size: 64, offset: 192)
+!22 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !23, size: 64)
+!23 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 192, elements: !24)
+!24 = !{!25}
+!25 = !DISubrange(count: 24, lowerBound: 0)
+!26 = !DIGlobalVariableExpression(var: !27, expr: !DIExpression())
+!27 = distinct !DIGlobalVariable(name: "AT_y", linkageName: "global", scope: !2, file: !2, type: !28, isLocal: false, isDefinition: true)
+!28 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !29)
+!29 = !{!11, !17, !18, !30}
+!30 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !31, size: 64, offset: 192)
+!31 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !32, size: 64)
+!32 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 128, elements: !33)
+!33 = !{!34}
+!34 = !DISubrange(count: 16, lowerBound: 0)
+!35 = !DIGlobalVariableExpression(var: !36, expr: !DIExpression())
+!36 = distinct !DIGlobalVariable(name: "stack_bpftrace_127", linkageName: "global", scope: !2, file: !2, type: !37, isLocal: false, isDefinition: true)
+!37 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !38)
+!38 = !{!39, !44, !49, !54}
+!39 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !40, size: 64)
 !40 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !41, size: 64)
-!41 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 4194304, elements: !42)
+!41 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 288, elements: !42)
 !42 = !{!43}
-!43 = !DISubrange(count: 131072, lowerBound: 0)
-!44 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !26, size: 64, offset: 128)
-!45 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !46, size: 64, offset: 192)
-!46 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !47, size: 64)
-!47 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 8128, elements: !48)
-!48 = !{!49}
-!49 = !DISubrange(count: 127, lowerBound: 0)
-!50 = !DIGlobalVariableExpression(var: !51, expr: !DIExpression())
-!51 = distinct !DIGlobalVariable(name: "stack_scratch", linkageName: "global", scope: !2, file: !2, type: !52, isLocal: false, isDefinition: true)
-!52 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !53)
-!53 = !{!54, !11, !59, !45}
-!54 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !55, size: 64)
+!43 = !DISubrange(count: 9, lowerBound: 0)
+!44 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !45, size: 64, offset: 64)
+!45 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !46, size: 64)
+!46 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 4194304, elements: !47)
+!47 = !{!48}
+!48 = !DISubrange(count: 131072, lowerBound: 0)
+!49 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !50, size: 64, offset: 128)
+!50 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !51, size: 64)
+!51 = !DICompositeType(tag: DW_TAG_array_type, baseType: !4, size: 96, elements: !52)
+!52 = !{!53}
+!53 = !DISubrange(count: 12, lowerBound: 0)
+!54 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !55, size: 64, offset: 192)
 !55 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !56, size: 64)
-!56 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 192, elements: !57)
+!56 = !DICompositeType(tag: DW_TAG_array_type, baseType: !20, size: 8128, elements: !57)
 !57 = !{!58}
-!58 = !DISubrange(count: 6, lowerBound: 0)
-!59 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !60, size: 64, offset: 128)
-!60 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !61, size: 64)
-!61 = !DIBasicType(name: "int32", size: 32, encoding: DW_ATE_signed)
-!62 = !DIGlobalVariableExpression(var: !63, expr: !DIExpression())
-!63 = distinct !DIGlobalVariable(name: "ringbuf", linkageName: "global", scope: !2, file: !2, type: !64, isLocal: false, isDefinition: true)
-!64 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 128, elements: !65)
-!65 = !{!66, !71}
-!66 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !67, size: 64)
-!67 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !68, size: 64)
-!68 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 864, elements: !69)
-!69 = !{!70}
-!70 = !DISubrange(count: 27, lowerBound: 0)
-!71 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !72, size: 64, offset: 64)
-!72 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !73, size: 64)
-!73 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 8388608, elements: !74)
-!74 = !{!75}
-!75 = !DISubrange(count: 262144, lowerBound: 0)
-!76 = !DIGlobalVariableExpression(var: !77, expr: !DIExpression())
-!77 = distinct !DIGlobalVariable(name: "event_loss_counter", linkageName: "global", scope: !2, file: !2, type: !78, isLocal: false, isDefinition: true)
-!78 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !79)
-!79 = !{!80, !11, !59, !85}
-!80 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !81, size: 64)
+!58 = !DISubrange(count: 127, lowerBound: 0)
+!59 = !DIGlobalVariableExpression(var: !60, expr: !DIExpression())
+!60 = distinct !DIGlobalVariable(name: "stack_scratch", linkageName: "global", scope: !2, file: !2, type: !61, isLocal: false, isDefinition: true)
+!61 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !62)
+!62 = !{!63, !17, !68, !54}
+!63 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !64, size: 64)
+!64 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !65, size: 64)
+!65 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 192, elements: !66)
+!66 = !{!67}
+!67 = !DISubrange(count: 6, lowerBound: 0)
+!68 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !69, size: 64, offset: 128)
+!69 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !70, size: 64)
+!70 = !DIBasicType(name: "int32", size: 32, encoding: DW_ATE_signed)
+!71 = !DIGlobalVariableExpression(var: !72, expr: !DIExpression())
+!72 = distinct !DIGlobalVariable(name: "ringbuf", linkageName: "global", scope: !2, file: !2, type: !73, isLocal: false, isDefinition: true)
+!73 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 128, elements: !74)
+!74 = !{!75, !80}
+!75 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !76, size: 64)
+!76 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !77, size: 64)
+!77 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 864, elements: !78)
+!78 = !{!79}
+!79 = !DISubrange(count: 27, lowerBound: 0)
+!80 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !81, size: 64, offset: 64)
 !81 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !82, size: 64)
-!82 = !DICompositeType(tag: DW_TAG_array_type, baseType: !8, size: 64, elements: !83)
+!82 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 8388608, elements: !83)
 !83 = !{!84}
-!84 = !DISubrange(count: 2, lowerBound: 0)
-!85 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !13, size: 64, offset: 192)
-!86 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, globals: !87)
-!87 = !{!0, !21, !30, !50, !62, !76}
-!88 = !{i32 2, !"Debug Info Version", i32 3}
-!89 = distinct !DISubprogram(name: "kprobe_f_1", linkageName: "kprobe_f_1", scope: !2, file: !2, type: !90, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !86, retainedNodes: !93)
-!90 = !DISubroutineType(types: !91)
-!91 = !{!14, !92}
-!92 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !18, size: 64)
-!93 = !{!94}
-!94 = !DILocalVariable(name: "ctx", arg: 1, scope: !89, file: !2, type: !92)
+!84 = !DISubrange(count: 262144, lowerBound: 0)
+!85 = !DIGlobalVariableExpression(var: !86, expr: !DIExpression())
+!86 = distinct !DIGlobalVariable(name: "event_loss_counter", linkageName: "global", scope: !2, file: !2, type: !87, isLocal: false, isDefinition: true)
+!87 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !88)
+!88 = !{!89, !17, !68, !94}
+!89 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !90, size: 64)
+!90 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !91, size: 64)
+!91 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 64, elements: !92)
+!92 = !{!93}
+!93 = !DISubrange(count: 2, lowerBound: 0)
+!94 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !19, size: 64, offset: 192)
+!95 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, globals: !96)
+!96 = !{!0, !7, !26, !35, !59, !71, !85}
+!97 = !{i32 2, !"Debug Info Version", i32 3}
+!98 = distinct !DISubprogram(name: "kprobe_f_1", linkageName: "kprobe_f_1", scope: !2, file: !2, type: !99, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !95, retainedNodes: !102)
+!99 = !DISubroutineType(types: !100)
+!100 = !{!20, !101}
+!101 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !4, size: 64)
+!102 = !{!103}
+!103 = !DILocalVariable(name: "ctx", arg: 1, scope: !98, file: !2, type: !101)

@@ -1,9 +1,9 @@
 #pragma once
 
-#include <time.h>
-
+#include <bcc/bcc_syms.h>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "ast/location.h"
+#include "ast/pass_manager.h"
 #include "attached_probe.h"
 #include "bpfbytecode.h"
 #include "bpffeature.h"
@@ -34,11 +36,12 @@
 #include "struct.h"
 #include "types.h"
 #include "usyms.h"
-#include "utils.h"
-
-#include <bcc/bcc_syms.h>
+#include "util/cpus.h"
+#include "util/kernel.h"
 
 namespace bpftrace {
+
+using util::symbol;
 
 const int timeout_ms = 100;
 
@@ -56,6 +59,7 @@ extern bool bt_verbose;
 extern bool dry_run;
 
 enum class DebugStage {
+  Parse,
   Ast,
   Codegen,
   CodegenOpt,
@@ -65,6 +69,8 @@ enum class DebugStage {
 };
 
 const std::unordered_map<std::string_view, DebugStage> debug_stages = {
+  // clang-format off
+  { "parse", DebugStage::Parse },
   { "ast", DebugStage::Ast },
   { "codegen", DebugStage::Codegen },
   { "codegen-opt", DebugStage::CodegenOpt },
@@ -73,11 +79,12 @@ const std::unordered_map<std::string_view, DebugStage> debug_stages = {
 #endif
   { "libbpf", DebugStage::Libbpf },
   { "verifier", DebugStage::Verifier },
+  // clang-format on
 };
 
 class WildcardException : public std::exception {
 public:
-  WildcardException(const std::string &msg) : msg_(msg)
+  WildcardException(std::string msg) : msg_(std::move(msg))
   {
   }
 
@@ -90,22 +97,22 @@ private:
   std::string msg_;
 };
 
-class BPFtrace {
+class BPFtrace : public ast::State<"bpftrace"> {
 public:
   BPFtrace(std::unique_ptr<Output> o = std::make_unique<TextOutput>(std::cout),
            BPFnofeature no_feature = BPFnofeature(),
-           Config config = Config())
+           std::unique_ptr<Config> config = std::make_unique<Config>())
       : out_(std::move(o)),
         feature_(std::make_unique<BPFfeature>(no_feature)),
         probe_matcher_(std::make_unique<ProbeMatcher>(this)),
-        ncpus_(get_possible_cpus().size()),
-        max_cpu_id_(get_max_cpu_id()),
-        config_(config),
-        ksyms_(config_),
-        usyms_(config_)
+        ncpus_(util::get_possible_cpus().size()),
+        max_cpu_id_(util::get_max_cpu_id()),
+        config_(std::move(config)),
+        ksyms_(*config_),
+        usyms_(*config_)
   {
   }
-  virtual ~BPFtrace();
+  ~BPFtrace() override;
   virtual int add_probe(ast::ASTContext &ctx,
                         const ast::AttachPoint &ap,
                         const ast::Probe &p,
@@ -150,7 +157,6 @@ public:
   std::string resolve_cgroup_path(uint64_t cgroup_path_id,
                                   uint64_t cgroup_id) const;
   std::string resolve_probe(uint64_t probe_id) const;
-  uint64_t resolve_cgroupid(const std::string &path) const;
   std::vector<std::unique_ptr<IPrintable>> get_arg_values(
       const std::vector<Field> &args,
       uint8_t *arg_data);
@@ -176,7 +182,7 @@ public:
   {
     return !dwarves_.empty();
   }
-  void fentry_recursion_check(ast::Program *prog);
+  std::set<std::string> list_modules(const ast::ASTContext &ctx);
 
   std::string cmd_;
   bool finalize_ = false;
@@ -190,13 +196,14 @@ public:
   StructManager structs;
   FunctionRegistry functions;
   std::map<std::string, std::string> macros_;
-  // Map of enum variant_name to (variant_value, enum_name)
+  // Map of enum variant_name to (variant_value, enum_name).
   std::map<std::string, std::tuple<uint64_t, std::string>> enums_;
-  // Map of enum_name to map of variant_value to variant_name
+  // Map of enum_name to map of variant_value to variant_name.
   std::map<std::string, std::map<uint64_t, std::string>> enum_defs_;
-  std::map<libbpf::bpf_func_id, location> helper_use_loc_;
-  const FuncsModulesMap &get_traceable_funcs() const;
-  KConfig kconfig;
+  // For each helper, list of all generated call sites.
+  std::map<libbpf::bpf_func_id, std::vector<HelperErrorInfo>> helper_use_loc_;
+  const util::FuncsModulesMap &get_traceable_funcs() const;
+  util::KConfig kconfig;
   std::vector<std::unique_ptr<AttachedProbe>> attached_probes_;
   std::optional<int> sigusr1_prog_fd_;
 
@@ -229,14 +236,17 @@ public:
   std::unordered_set<std::string> btf_set_;
   std::unique_ptr<ChildProcBase> child_;
   std::unique_ptr<ProcMonBase> procmon_;
-  pid_t pid(void) const
+  std::optional<pid_t> pid() const
   {
-    return procmon_ ? procmon_->pid() : 0;
+    if (procmon_) {
+      return procmon_->pid();
+    }
+    return std::nullopt;
   }
   int ncpus_;
   int online_cpus_;
   int max_cpu_id_;
-  Config config_;
+  std::unique_ptr<Config> config_;
 
 private:
   Ksyms ksyms_;
@@ -249,7 +259,7 @@ private:
   std::vector<std::unique_ptr<AttachedProbe>> attach_usdt_probe(
       Probe &probe,
       const BpfProgram &program,
-      int pid,
+      std::optional<int> pid,
       bool file_activation);
   int create_pcaps();
   void close_pcaps();
@@ -259,13 +269,13 @@ private:
   int setup_event_loss();
   // when the ringbuf feature is available, enable ringbuf for built-ins like
   // printf, cat.
-  bool is_ringbuf_enabled(void) const
+  bool is_ringbuf_enabled() const
   {
     return feature_->has_map_ringbuf();
   }
   // when the ringbuf feature is unavailable or built-in skboutput is used,
   // enable perf_event
-  bool is_perf_event_enabled(void) const
+  bool is_perf_event_enabled() const
   {
     return !feature_->has_map_ringbuf() || resources.needs_perf_event_map;
   }
@@ -287,7 +297,7 @@ private:
   // Mapping traceable functions to modules (or "vmlinux") they appear in.
   // Needs to be mutable to allow lazy loading of the mapping from const lookup
   // functions.
-  mutable FuncsModulesMap traceable_funcs_;
+  mutable util::FuncsModulesMap traceable_funcs_;
 
   std::unordered_map<std::string, std::unique_ptr<Dwarf>> dwarves_;
 };

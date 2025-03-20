@@ -2,6 +2,7 @@
 #include "gtest/gtest.h"
 
 #include "ast/ast.h"
+#include "ast/context.h"
 #include "common.h"
 
 namespace bpftrace {
@@ -48,30 +49,23 @@ public:
 
 TEST(codegen, printf_offsets)
 {
+  ast::ASTContext ast("stdin", R"(
+struct Foo { char c; int i; char str[10]; }
+kprobe:f
+{
+  $foo = (struct Foo*)arg0;
+  printf("%c %u %s %p\n", $foo->c, $foo->i, $foo->str, 0)
+})");
   auto bpftrace = get_mock_bpftrace();
-  Driver driver(*bpftrace);
-
-  ASSERT_EQ(driver.parse_str(
-                "struct Foo { char c; int i; char str[10]; }\n"
-                "kprobe:f\n"
-                "{\n"
-                "  $foo = (struct Foo*)arg0;\n"
-                "  printf(\"%c %u %s %p\\n\", $foo->c, $foo->i, $foo->str, 0)\n"
-                "}"),
-            0);
-  ClangParser clang;
-  clang.parse(driver.ctx.root, *bpftrace);
-
-  ast::SemanticAnalyser semantics(driver.ctx, *bpftrace);
-  ASSERT_EQ(semantics.analyse(), 0);
-
-  ast::ResourceAnalyser resource_analyser(driver.ctx, *bpftrace);
-  auto resources_optional = resource_analyser.analyse();
-  ASSERT_TRUE(resources_optional.has_value());
-  bpftrace->resources = resources_optional.value();
-
-  ast::CodegenLLVM codegen(driver.ctx, *bpftrace);
-  codegen.generate_ir();
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put<BPFtrace>(*bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateResourcePass())
+                .add(ast::AllCompilePasses())
+                .run();
+  ASSERT_TRUE(ok && ast.diagnostics().ok());
 
   EXPECT_EQ(bpftrace->resources.printf_args.size(), 1U);
   auto fmt = std::get<0>(bpftrace->resources.printf_args[0]).str();
@@ -102,18 +96,23 @@ TEST(codegen, printf_offsets)
 
 TEST(codegen, probe_count)
 {
+  ast::ASTContext ast("stdin", R"(
+kprobe:f { 1; } kprobe:d { 1; }
+)");
   MockBPFtrace bpftrace;
   EXPECT_CALL(bpftrace, add_probe(_, _, _, _)).Times(2);
 
-  Driver driver(bpftrace);
-
-  ASSERT_EQ(driver.parse_str("kprobe:f { 1; } kprobe:d { 1; }"), 0);
   // Override to mockbpffeature.
   bpftrace.feature_ = std::make_unique<MockBPFfeature>(true);
-  ast::SemanticAnalyser semantics(driver.ctx, bpftrace);
-  ASSERT_EQ(semantics.analyse(), 0);
-  ast::CodegenLLVM codegen(driver.ctx, bpftrace);
-  codegen.generate_ir();
+
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put<BPFtrace>(bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::AllCompilePasses())
+                .run();
+  ASSERT_TRUE(ok && ast.diagnostics().ok());
 }
 } // namespace codegen
 } // namespace test

@@ -106,7 +106,7 @@ AFTER ./testprogs/syscall read
 
 NAME kprobe_order
 RUN {{BPFTRACE}} runtime/scripts/kprobe_order.bt
-EXPECT first second
+EXPECT_REGEX (first)+ second
 AFTER /bin/bash -c "./testprogs/syscall nanosleep 1001";
 
 NAME kprobe_offset
@@ -244,7 +244,7 @@ AFTER ./testprogs/syscall read
 
 NAME kretprobe_order
 RUN {{BPFTRACE}} runtime/scripts/kretprobe_order.bt
-EXPECT first second
+EXPECT_REGEX (first)+ second
 AFTER /bin/bash -c "./testprogs/syscall nanosleep 1000";
 
 NAME kretprobe_wildcard
@@ -277,6 +277,22 @@ EXPECT link: 1
 REQUIRES bpftool
 REQUIRES_FEATURE uprobe_multi
 BEFORE ./testprogs/uprobe_test
+
+# We need to check multiple things for session probes:
+# - both entry and exit are hit
+# - there is just one BPF program created
+# - there is just one BPF link created
+# This case combines all of the above by getting the number of progs from the
+# entry probe and the number of links from the exit probe and checking for both.
+# Note that getting the number of progs/links requires to call bpftool via
+# system() call, hence we need --unsafe.
+NAME kprobe_session
+RUN {{BPFTRACE}} --unsafe -e 'kprobe:ksys_* { @entry = 1; printf("progs: "); system("bpftool prog | grep kprobe | grep ksys_ | wc -l"); } kretprobe:ksys_* { printf("links: "); system("bpftool link | grep kprobe_multi | wc -l"); if (@entry == 1) { exit() } }'
+AFTER ./testprogs/syscall read
+EXPECT progs: 1
+EXPECT links: 1
+REQUIRES bpftool
+REQUIRES_FEATURE kprobe_session
 
 NAME uprobe
 PROG uprobe:/bin/bash:echo_builtin { printf("arg0: %d\n", arg0); exit();}
@@ -311,7 +327,7 @@ REQUIRES_FEATURE libpath_resolv
 
 NAME uprobe_order
 RUN {{BPFTRACE}} runtime/scripts/uprobe_order.bt
-EXPECT first second
+EXPECT_REGEX (first)+ second
 AFTER /bin/bash -c "echo lala";
 
 NAME uprobe_zero_size
@@ -348,7 +364,7 @@ AFTER /bin/bash -c "echo lala"
 
 NAME uretprobe_order
 RUN {{BPFTRACE}} runtime/scripts/uretprobe_order.bt
-EXPECT first second
+EXPECT_REGEX (first)+ second
 AFTER /bin/bash -c "echo lala";
 
 NAME tracepoint
@@ -363,7 +379,7 @@ AFTER ./testprogs/syscall nanosleep 1e8
 
 NAME tracepoint_order
 RUN {{BPFTRACE}} runtime/scripts/tracepoint_order.bt
-EXPECT first second
+EXPECT_REGEX (first)+ second
 AFTER ./testprogs/syscall nanosleep 100000001;
 
 NAME tracepoint_expansion
@@ -489,10 +505,12 @@ EXPECT Hello
 TIMEOUT 2
 
 # The "probe" builtin forces bpftrace to generate one BPF function for each
-# match and so we should fail on exceeding BPFTRACE_MAX_BPF_PROGS.
+# match and so we should fail on exceeding BPFTRACE_MAX_BPF_PROGS. The error is
+# attached to the probe that went over the limit, which in this case is the
+# only probe that we specify.
 NAME bpf_programs_limit
 PROG k:* { @[probe] = count(); }
-EXPECT_REGEX ERROR: Failed to compile: Your program is trying to generate more than \d+ BPF programs, which exceeds the current limit of 1024.\nYou can increase the limit through the BPFTRACE_MAX_BPF_PROGS environment variable.
+EXPECT_REGEX stdin:1:1-28: ERROR: Your program is trying to generate more than \d+ BPF programs, which exceeds the current limit of 1024\nk:\* { @\[probe\] = count\(\); }\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\nHINT: You can increase the limit through the BPFTRACE_MAX_BPF_PROGS environment variable.
 WILL_FAIL
 TIMEOUT 2
 
@@ -500,3 +518,16 @@ NAME sanitise probe name
 PROG uprobe:./testprogs/uprobe_namesan:fn* { printf("ok\n"); exit(); }
 EXPECT ok
 AFTER ./testprogs/uprobe_namesan
+
+NAME pid filter software
+RUN {{BPFTRACE}} -e 'software:cpu-clock:10000000 { @[pid] = count(); if (len(@) != 1) { print("bad"); } }' -p {{BEFORE_PID}}
+EXPECT_NONE bad
+BEFORE ./testprogs/work_loop
+TIMEOUT 2
+
+NAME pid filter kprobe
+RUN {{BPFTRACE}} -e 'kprobe:do_nanosleep { @[pid] = count(); if (len(@) != 1) { print("bad"); } }' -p {{BEFORE_PID}}
+EXPECT_NONE bad
+BEFORE ./testprogs/nanosleep_loop
+BEFORE ./testprogs/nanosleep_loop
+TIMEOUT 2

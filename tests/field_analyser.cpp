@@ -1,5 +1,7 @@
 #include "ast/passes/field_analyser.h"
+#include "ast/attachpoint_parser.h"
 #include "driver.h"
+#include "dwarf_common.h"
 #include "mocks.h"
 #include "gtest/gtest.h"
 
@@ -11,15 +13,19 @@ using ::testing::_;
 
 void test(BPFtrace &bpftrace, const std::string &input, int expected_result = 0)
 {
-  std::stringstream out;
   std::stringstream msg;
   msg << "\nInput:\n" << input << "\n\nOutput:\n";
 
-  Driver driver(bpftrace);
-  EXPECT_EQ(driver.parse_str(input), 0);
-
-  ast::FieldAnalyser fields(driver.ctx, bpftrace, out);
-  EXPECT_EQ(fields.analyse(), expected_result) << msg.str() + out.str();
+  ast::ASTContext ast("stdin", input);
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bpftrace)
+                .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateFieldAnalyserPass())
+                .run();
+  ASSERT_TRUE(bool(ok)) << msg.str();
+  EXPECT_EQ(int(!ast.diagnostics().ok()), expected_result);
 }
 
 void test(const std::string &input, int expected_result = 0)
@@ -183,10 +189,9 @@ TEST_F(field_analyser_btf, btf_arrays)
   EXPECT_EQ(arrs->GetField("flexible").offset, 64);
 }
 
-TEST_F(field_analyser_btf, btf_arrays_multi_dim)
+// Disabled because BTF flattens multi-dimensional arrays #3082.
+TEST_F(field_analyser_btf, DISABLED_btf_arrays_multi_dim)
 {
-  GTEST_SKIP() << "BTF flattens multi-dimensional arrays #3082";
-
   BPFtrace bpftrace;
   bpftrace.parse_btf({});
   test(bpftrace,
@@ -229,24 +234,24 @@ void test_arrays_compound_data(BPFtrace &bpftrace)
   ASSERT_EQ(arrs->fields.size(), 1U);
   ASSERT_TRUE(arrs->HasField("data"));
 
-  auto &data_type = arrs->GetField("data").type;
+  const auto &data_type = arrs->GetField("data").type;
   EXPECT_TRUE(data_type.IsArrayTy());
   EXPECT_EQ(data_type.GetNumElements(), 2);
   EXPECT_EQ(data_type.GetSize(), 2 * sizeof(uintptr_t));
 
   // Check that referenced types n-levels deep are all parsed from BTF
 
-  auto &foo3_ptr_type = *data_type.GetElementTy();
+  const auto &foo3_ptr_type = *data_type.GetElementTy();
   ASSERT_TRUE(foo3_ptr_type.IsPtrTy());
 
-  auto &foo3_type = *foo3_ptr_type.GetPointeeTy();
+  const auto &foo3_type = *foo3_ptr_type.GetPointeeTy();
   ASSERT_TRUE(foo3_type.IsRecordTy());
   ASSERT_TRUE(foo3_type.HasField("foo1"));
 
-  auto &foo1_ptr_type = foo3_type.GetField("foo1").type;
+  const auto &foo1_ptr_type = foo3_type.GetField("foo1").type;
   ASSERT_TRUE(foo1_ptr_type.IsPtrTy());
 
-  auto &foo1_type = *foo1_ptr_type.GetPointeeTy();
+  const auto &foo1_type = *foo1_ptr_type.GetPointeeTy();
   ASSERT_TRUE(foo1_type.IsRecordTy());
   ASSERT_TRUE(foo1_type.HasField("a"));
 }
@@ -393,9 +398,6 @@ TEST_F(field_analyser_btf, btf_anon_union_first_in_struct)
 }
 
 #ifdef HAVE_LIBLLDB
-
-#include "dwarf_common.h"
-
 class field_analyser_dwarf : public test_dwarf {};
 
 TEST_F(field_analyser_dwarf, uprobe_args)
@@ -702,10 +704,9 @@ TEST_F(field_analyser_dwarf, parse_inheritance_multi)
   EXPECT_EQ(cls->GetField("rabc").offset, 24);
 }
 
-TEST_F(field_analyser_dwarf, parse_struct_anonymous_fields)
+// Disable because anonymous fields not supported #3084.
+TEST_F(field_analyser_dwarf, DISABLED_parse_struct_anonymous_fields)
 {
-  GTEST_SKIP() << "Anonymous fields not supported #3084";
-
   BPFtrace bpftrace;
   std::string uprobe = "uprobe:" + std::string(bin_);
   test(bpftrace, uprobe + ":func_1 { $x = args.foo2->g; }", 0);
@@ -817,7 +818,6 @@ TEST(field_analyser_subprog, struct_cast)
 {
   test("struct x { int a; } fn f(): void { $s = (struct x *)0; }", 0);
 }
-
 #endif // HAVE_LIBLLDB
 
 } // namespace bpftrace::test::field_analyser

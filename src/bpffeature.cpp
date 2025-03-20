@@ -7,25 +7,31 @@
 #include <cstdint>
 #include <cstdio>
 #include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "bpf_assembler.h"
 #include "btf.h"
-#include "debugfs.h"
 #include "dwarf_parser.h"
-#include "probe_matcher.h"
-#include "tracefs.h"
-#include "utils.h"
+#include "tracefs/tracefs.h"
+#include "util/format.h"
+#include "util/kernel.h"
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
 namespace bpftrace {
 
+using util::KernelVersionMethod;
+
 int BPFnofeature::parse(const char* str)
 {
-  for (auto feat : split_string(str, ',')) {
+  for (auto feat : util::split_string(str, ',')) {
     if (feat == "kprobe_multi") {
       kprobe_multi_ = true;
+    } else if (feat == "kprobe_session") {
+      kprobe_session_ = true;
     } else if (feat == "uprobe_multi") {
       uprobe_multi_ = true;
     } else {
@@ -46,12 +52,14 @@ static bool try_load_(const char* name,
                       size_t logbuf_size,
                       int* outfd = nullptr)
 {
-  const KernelVersionMethod methods[] = { vDSO, UTS, File };
+  const KernelVersionMethod methods[] = { KernelVersionMethod::vDSO,
+                                          KernelVersionMethod::UTS,
+                                          KernelVersionMethod::File };
 
   for (KernelVersionMethod method : methods) {
     auto version = kernel_version(method);
 
-    if (method != vDSO && !version) {
+    if (method != KernelVersionMethod::vDSO && !version) {
       // Recent kernels don't check the version so we should try to call
       // bpf_prog_load during first iteration even if we failed to determine
       // the version. We should not do that in subsequent iterations to avoid
@@ -381,6 +389,52 @@ bool BPFfeature::has_uprobe_refcnt()
   return *has_uprobe_refcnt_;
 }
 
+bool try_create_link(libbpf::bpf_prog_type prog_type,
+                     const std::string_view prog_name,
+                     libbpf::bpf_attach_type expected_attach_type,
+                     const bpf_link_create_opts& link_opts,
+                     std::optional<int> expected_err)
+{
+  bool result = false;
+
+  BPFTRACE_LIBBPF_OPTS(
+      bpf_prog_load_opts,
+      load_opts,
+      .expected_attach_type = static_cast<enum ::bpf_attach_type>(
+          expected_attach_type));
+
+  struct bpf_insn insns[] = {
+    BPF_MOV64_IMM(BPF_REG_0, 0),
+    BPF_EXIT_INSN(),
+  };
+
+  int progfd = bpf_prog_load(static_cast<::bpf_prog_type>(prog_type),
+                             prog_name.data(),
+                             "GPL",
+                             reinterpret_cast<struct bpf_insn*>(insns),
+                             ARRAY_SIZE(insns),
+                             &load_opts);
+
+  if (progfd < 0)
+    return false;
+
+  int linkfd = bpf_link_create(progfd,
+                               0,
+                               static_cast<enum ::bpf_attach_type>(
+                                   expected_attach_type),
+                               &link_opts);
+
+  result = expected_err.has_value() ? linkfd < 0 && -errno == *expected_err
+                                    : linkfd >= 0;
+
+  if (linkfd >= 0) {
+    close(linkfd);
+  }
+  close(progfd);
+
+  return result;
+}
+
 bool BPFfeature::has_kprobe_multi()
 {
   if (has_kprobe_multi_.has_value())
@@ -392,46 +446,41 @@ bool BPFfeature::has_kprobe_multi()
   }
 
   const char* sym = "ksys_read";
+
   BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, link_opts);
-  int progfd, linkfd = -1;
-
-  struct bpf_insn insns[] = {
-    BPF_MOV64_IMM(BPF_REG_0, 0),
-    BPF_EXIT_INSN(),
-  };
-
   link_opts.kprobe_multi.syms = &sym;
   link_opts.kprobe_multi.cnt = 1;
 
-  BPFTRACE_LIBBPF_OPTS(bpf_prog_load_opts, load_opts);
-  load_opts.expected_attach_type = static_cast<enum ::bpf_attach_type>(
-      libbpf::BPF_TRACE_KPROBE_MULTI);
-
-  progfd = bpf_prog_load(static_cast<::bpf_prog_type>(
-                             libbpf::BPF_PROG_TYPE_KPROBE),
-                         sym,
-                         "GPL",
-                         reinterpret_cast<struct bpf_insn*>(insns),
-                         ARRAY_SIZE(insns),
-                         &load_opts);
-
-  if (progfd >= 0) {
-    linkfd = bpf_link_create(progfd,
-                             0,
-                             static_cast<enum ::bpf_attach_type>(
-                                 libbpf::BPF_TRACE_KPROBE_MULTI),
-                             &link_opts);
-  }
-
-  has_kprobe_multi_ = linkfd >= 0;
-
-  if (linkfd >= 0) {
-    close(linkfd);
-  }
-  if (progfd >= 0) {
-    close(progfd);
-  }
+  has_kprobe_multi_ = try_create_link(libbpf::BPF_PROG_TYPE_KPROBE,
+                                      sym,
+                                      libbpf::BPF_TRACE_KPROBE_MULTI,
+                                      link_opts,
+                                      std::nullopt);
   return *has_kprobe_multi_;
+}
+
+bool BPFfeature::has_kprobe_session()
+{
+  if (has_kprobe_session_.has_value())
+    return *has_kprobe_session_;
+
+  if (no_feature_.kprobe_session_) {
+    has_kprobe_session_ = false;
+    return *has_kprobe_session_;
+  }
+
+  const char* sym = "ksys_read";
+
+  BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, link_opts);
+  link_opts.kprobe_multi.syms = &sym;
+  link_opts.kprobe_multi.cnt = 1;
+
+  has_kprobe_session_ = try_create_link(libbpf::BPF_PROG_TYPE_KPROBE,
+                                        sym,
+                                        libbpf::BPF_TRACE_KPROBE_SESSION,
+                                        link_opts,
+                                        std::nullopt);
+  return *has_kprobe_session_;
 }
 
 bool BPFfeature::has_uprobe_multi()
@@ -445,51 +494,17 @@ bool BPFfeature::has_uprobe_multi()
     return *has_uprobe_multi_;
   }
 
-  BPFTRACE_LIBBPF_OPTS(
-      bpf_prog_load_opts,
-      load_opts,
-      .expected_attach_type = static_cast<enum ::bpf_attach_type>(
-          libbpf::BPF_TRACE_UPROBE_MULTI), );
+  BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, link_opts);
+  const unsigned long offset = 0;
+  link_opts.uprobe_multi.path = "/";
+  link_opts.uprobe_multi.offsets = &offset;
+  link_opts.uprobe_multi.cnt = 1;
 
-  int err = 0, progfd, linkfd = -1;
-
-  struct bpf_insn insns[] = {
-    BPF_MOV64_IMM(BPF_REG_0, 0),
-    BPF_EXIT_INSN(),
-  };
-
-  progfd = bpf_prog_load(static_cast<::bpf_prog_type>(
-                             libbpf::BPF_PROG_TYPE_KPROBE),
-                         "uprobe_multi",
-                         "GPL",
-                         reinterpret_cast<struct bpf_insn*>(insns),
-                         ARRAY_SIZE(insns),
-                         &load_opts);
-
-  if (progfd >= 0) {
-    BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, link_opts);
-    const unsigned long offset = 0;
-
-    link_opts.uprobe_multi.path = "/";
-    link_opts.uprobe_multi.offsets = &offset;
-    link_opts.uprobe_multi.cnt = 1;
-
-    linkfd = bpf_link_create(progfd,
-                             0,
-                             static_cast<enum ::bpf_attach_type>(
-                                 libbpf::BPF_TRACE_UPROBE_MULTI),
-                             &link_opts);
-    err = -errno;
-  }
-
-  has_uprobe_multi_ = linkfd < 0 && err == -EBADF;
-
-  if (linkfd >= 0) {
-    close(linkfd);
-  }
-  if (progfd >= 0) {
-    close(progfd);
-  }
+  has_uprobe_multi_ = try_create_link(libbpf::BPF_PROG_TYPE_KPROBE,
+                                      "uprobe_multi",
+                                      libbpf::BPF_TRACE_UPROBE_MULTI,
+                                      link_opts,
+                                      -EBADF);
 #else
   has_uprobe_multi_ = false;
 #endif                       // HAVE_LIBBPF_UPROBE_MULTI
@@ -613,6 +628,7 @@ std::string BPFfeature::report()
     { "fentry", to_str(has_fentry()) },
     { "kprobe_multi", to_str(has_kprobe_multi()) },
     { "uprobe_multi", to_str(has_uprobe_multi()) },
+    { "kprobe_session", to_str(has_kprobe_session()) },
     { "iter", to_str(has_iter("task")) }
   };
 
@@ -705,11 +721,7 @@ bool BPFfeature::has_iter(std::string name)
 
 bool BPFfeature::has_kernel_dwarf()
 {
-#ifndef HAVE_LIBLLDB
-  return false;
-#endif
-
-  auto vmlinux = find_vmlinux();
+  auto vmlinux = util::find_vmlinux();
   if (!vmlinux.has_value())
     return false;
 

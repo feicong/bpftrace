@@ -1,7 +1,6 @@
 #include <cassert>
 #include <cerrno>
 #include <fcntl.h>
-
 #include <sched.h>
 #include <stdexcept>
 #include <string>
@@ -12,12 +11,12 @@
 #include <sys/wait.h>
 #include <system_error>
 #include <unistd.h>
+#include <unordered_set>
 
 #include "child.h"
 #include "log.h"
-#include "utils.h"
-
-extern char** environ;
+#include "util/format.h"
+#include "util/paths.h"
 
 namespace bpftrace {
 
@@ -28,7 +27,7 @@ constexpr unsigned int STACK_SIZE = (64 * 1024UL);
 
 std::system_error SYS_ERROR(std::string msg)
 {
-  return std::system_error(errno, std::generic_category(), msg);
+  return { errno, std::generic_category(), msg };
 }
 
 static void report_status(int wstatus)
@@ -49,7 +48,7 @@ static void report_status(int wstatus)
 
 static int childfn(void* arg)
 {
-  struct child_args* args = static_cast<struct child_args*>(arg);
+  auto* args = static_cast<struct child_args*>(arg);
 
   // Receive SIGTERM if parent dies
   if (prctl(PR_SET_PDEATHSIG, SIGTERM)) {
@@ -90,13 +89,13 @@ static int childfn(void* arg)
 
 static void validate_cmd(std::vector<std::string>& cmd)
 {
-  auto paths = resolve_binary_path(cmd[0]);
+  auto paths = util::resolve_binary_path(cmd[0]);
   switch (paths.size()) {
     case 0:
       throw std::runtime_error("path '" + cmd[0] +
                                "' does not exist or is not executable");
     case 1:
-      cmd[0] = paths.front().c_str();
+      cmd[0] = paths.front();
       break;
     default:
       // /bin maybe is a symbolic link to /usr/bin (/bin -> /usr/bin), there
@@ -108,14 +107,14 @@ static void validate_cmd(std::vector<std::string>& cmd)
       // /usr/bin/ping
       std::unordered_set<std::string> uniq_abs_path;
       for (const auto& path : paths) {
-        auto absolute = abs_path(path);
+        auto absolute = util::abs_path(path);
         if (!absolute.has_value())
           continue;
         uniq_abs_path.insert(*absolute);
       }
 
       if (uniq_abs_path.size() == 1) {
-        cmd[0] = paths.front().c_str();
+        cmd[0] = paths.front();
         break;
       } else {
         throw std::runtime_error(
@@ -136,7 +135,7 @@ ChildProc::ChildProc(std::string cmd)
   auto child_args = std::make_unique<struct child_args>();
   auto child_stack = std::make_unique<char[]>(STACK_SIZE);
 
-  child_args->cmd = split_string(cmd, ' ');
+  child_args->cmd = util::split_string(cmd, ' ');
   validate_cmd(child_args->cmd);
 
   int event_fd = eventfd(0, EFD_CLOEXEC);
@@ -210,7 +209,7 @@ void ChildProc::run(bool pause)
 
   assert(state_ == State::FORKED);
 
-  auto* data = pause ? &CHILD_PTRACE : &CHILD_GO;
+  const auto* data = pause ? &CHILD_PTRACE : &CHILD_GO;
   if (write(child_event_fd_, data, sizeof(*data)) < 0) {
     close(child_event_fd_);
     terminate(true);

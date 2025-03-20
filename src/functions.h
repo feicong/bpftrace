@@ -1,12 +1,13 @@
 #pragma once
 
-#include <optional>
 #include <ostream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
-#include "location.hh"
+#include "ast/ast.h"
+#include "ast/location.h"
 #include "types.h"
 
 namespace bpftrace {
@@ -14,8 +15,8 @@ namespace bpftrace {
 // A parameter for a BpfScript function
 class Param {
 public:
-  Param(std::string name, const SizedType &type)
-      : name_(std::move(name)), type_(type)
+  Param(std::string name, SizedType type)
+      : name_(std::move(name)), type_(std::move(type))
   {
   }
 
@@ -49,10 +50,10 @@ public:
 
   Function(Origin origin,
            std::string name,
-           const SizedType &return_type,
+           SizedType return_type,
            const std::vector<Param> &params)
       : name_(std::move(name)),
-        return_type_(return_type),
+        return_type_(std::move(return_type)),
         params_(params),
         origin_(origin)
   {
@@ -102,8 +103,7 @@ public:
   const Function *get(std::string_view ns,
                       std::string_view name,
                       const std::vector<SizedType> &arg_types,
-                      std::ostream &out = std::cerr,
-                      std::optional<location> loc = {}) const;
+                      const ast::Node &node) const;
 
 private:
   struct FqName {

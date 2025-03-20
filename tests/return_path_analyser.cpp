@@ -1,12 +1,8 @@
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-
-#include "ast/passes/field_analyser.h"
 #include "ast/passes/return_path_analyser.h"
+#include "ast/passes/parser.h"
 #include "ast/passes/semantic_analyser.h"
-#include "clang_parser.h"
-#include "driver.h"
 #include "mocks.h"
+#include "gtest/gtest.h"
 
 namespace bpftrace::test::return_path_analyser {
 
@@ -14,26 +10,21 @@ using ::testing::_;
 
 void test(BPFtrace &bpftrace, const std::string &input, int expected_result = 0)
 {
-  Driver driver(bpftrace);
+  ast::ASTContext ast("stdin", input);
   std::stringstream out;
   std::stringstream msg;
   msg << "\nInput:\n" << input << "\n\nOutput:\n";
 
-  ASSERT_EQ(driver.parse_str(input), 0);
-
-  ast::FieldAnalyser fields(driver.ctx, bpftrace, out);
-  ASSERT_EQ(fields.analyse(), 0) << msg.str() << out.str();
-
-  ClangParser clang;
-  ASSERT_TRUE(clang.parse(driver.ctx.root, bpftrace));
-
-  ASSERT_EQ(driver.parse_str(input), 0);
-  out.str("");
-  ast::SemanticAnalyser semantics(driver.ctx, bpftrace, out, false);
-  ASSERT_EQ(semantics.analyse(), 0) << msg.str() << out.str();
-
-  ast::ReturnPathAnalyser return_path(driver.ctx, out);
-  EXPECT_EQ(return_path.analyse(), expected_result) << msg.str() << out.str();
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bpftrace)
+                .add(ast::AllParsePasses())
+                .add(ast::CreateSemanticPass())
+                .add(ast::CreateReturnPathPass())
+                .run();
+  ast.diagnostics().emit(out);
+  EXPECT_EQ(int(!ast.diagnostics().ok()), expected_result)
+      << msg.str() << out.str();
 }
 
 void test(const std::string &input, int expected_result = 0)

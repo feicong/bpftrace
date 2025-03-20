@@ -23,7 +23,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     blazesym = {
-      url = "github:libbpf/blazesym/6beb39ebc8e3a604c7b483951c85c831c1bbe0d1";
+      url = "github:libbpf/blazesym";
       flake = false;
     };
   };
@@ -37,7 +37,7 @@
           pkgs = import nixpkgs { inherit system; };
 
           # The default LLVM version is the latest supported release
-          defaultLlvmVersion = 19;
+          defaultLlvmVersion = 20;
 
           # Override to specify the libbpf build we want
           libbpfVersion = "1.5.0";
@@ -214,6 +214,33 @@
                 # dev builds we do in nix shell, it just causes warning spew.
                 hardeningDisable = [ "all" ];
               };
+
+          # Ensure that the LLVM & clang version for AFL are aligned, and can
+          # be controlled alongside the version used for the shell environment.
+          mkAFL =
+            llvmVersion:
+              pkgs.aflplusplus.override {
+                clang = pkgs."clang_${toString llvmVersion}";
+                llvm = pkgs."llvmPackages_${toString llvmVersion}".llvm;
+                llvmPackages = pkgs."llvmPackages_${toString llvmVersion}";
+              };
+
+          # Lambda that can be used for a fuzzing environment. Not part of the default
+          # devshell because aflplusplus is only available for x86_64/amd64.
+          mkBpftraceFuzzShell =
+            llvmVersion: shell:
+            let
+              afl = mkAFL llvmVersion;
+            in
+              with pkgs;
+              pkgs.mkShell {
+                nativeBuildInputs = shell.nativeBuildInputs;
+                buildInputs = [ afl ] ++ shell.buildInputs;
+
+                # See above.
+                hardeningDisable = [ "all" ];
+            };
+
         in
         {
           # Set formatter for `nix fmt` command
@@ -224,6 +251,7 @@
             default = self.packages.${system}."bpftrace-llvm${toString defaultLlvmVersion}";
 
             # Support matrix of llvm versions
+            bpftrace-llvm20 = mkBpftrace 20;
             bpftrace-llvm19 = mkBpftrace 19;
             bpftrace-llvm18 = mkBpftrace 18;
             bpftrace-llvm17 = mkBpftrace 17;
@@ -280,10 +308,18 @@
           devShells = rec {
             default = self.devShells.${system}."bpftrace-llvm${toString defaultLlvmVersion}";
 
+            bpftrace-llvm20 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm20;
             bpftrace-llvm19 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm19;
             bpftrace-llvm18 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm18;
             bpftrace-llvm17 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm17;
             bpftrace-llvm16 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm16;
+
+            # Note that we depend on LLVM 18 explicitly for the fuzz shell, and
+            # this is managed separately. The version of LLVM used to build the
+            # tool must be the same as the version linked as a dependency, or
+            # strange things happen. Hopefully this is a simple update, where
+            # both numbers are bumped at the same time.
+            bpftrace-fuzz = mkBpftraceFuzzShell 18 self.devShells.${system}."bpftrace-llvm18";
           };
         });
 }

@@ -1,17 +1,27 @@
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
-
-#include "utils.h"
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "util/bpf_names.h"
+#include "util/cgroup.h"
+#include "util/format.h"
+#include "util/kernel.h"
+#include "util/math.h"
+#include "util/paths.h"
+#include "util/symbols.h"
+#include "util/system.h"
+#include "util/wildcard.h"
+#include "gmock/gmock-matchers.h"
+#include "gtest/gtest.h"
+
 namespace bpftrace::test::utils {
+
+using namespace bpftrace::util;
 
 TEST(utils, split_string)
 {
@@ -150,13 +160,13 @@ static std::string get_working_path()
     throw std::runtime_error(
         "getting current working directory for tests failed");
   }
-  return std::string(cwd_path);
+  return cwd_path;
 }
 
 TEST(utils, resolve_binary_path)
 {
   std::string path = "/tmp/bpftrace-test-utils-XXXXXX";
-  if (::mkdtemp(&path[0]) == nullptr) {
+  if (::mkdtemp(path.data()) == nullptr) {
     throw std::runtime_error("creating temporary path for tests failed");
   }
 
@@ -191,7 +201,7 @@ TEST(utils, abs_path)
 {
   std::string path = "/tmp/bpftrace-test-utils-XXXXXX";
   std::string rel_file = "bpftrace-test-utils-abs-path";
-  if (::mkdtemp(&path[0]) == nullptr) {
+  if (::mkdtemp(path.data()) == nullptr) {
     throw std::runtime_error("creating temporary path for tests failed");
   }
 
@@ -236,7 +246,7 @@ TEST(utils, get_cgroup_path_in_hierarchy)
 {
   std::string tmpdir = "/tmp/bpftrace-test-utils-XXXXXX";
 
-  if (::mkdtemp(&tmpdir[0]) == nullptr) {
+  if (::mkdtemp(tmpdir.data()) == nullptr) {
     throw std::runtime_error("creating temporary path for tests failed");
   }
 
@@ -327,7 +337,7 @@ static void with_env(const std::string &key,
 TEST(utils, find_in_path)
 {
   std::string tmpdir = "/tmp/bpftrace-test-utils-XXXXXX";
-  ASSERT_TRUE(::mkdtemp(&tmpdir[0]));
+  ASSERT_TRUE(::mkdtemp(tmpdir.data()));
 
   // Create some directories
   const std::filesystem::path path(tmpdir);
@@ -405,12 +415,10 @@ TEST(utils, find_near_self)
 TEST(utils, get_pids_for_program)
 {
   auto pids = get_pids_for_program("/proc/self/exe");
-
-  ASSERT_EQ(pids.size(), 1);
-  ASSERT_EQ(pids[0], getpid());
+  EXPECT_THAT(pids, testing::Contains(getpid()));
 
   pids = get_pids_for_program("/doesnotexist");
-  ASSERT_EQ(pids.size(), 0);
+  EXPECT_EQ(pids.size(), 0);
 }
 
 TEST(utils, round_up_to_next_power_of_two)

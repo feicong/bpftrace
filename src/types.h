@@ -1,11 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <map>
 #include <memory>
-#include <optional>
 #include <ostream>
-#include <sstream>
 #include <string>
 #include <sys/types.h>
 #include <unistd.h>
@@ -157,7 +156,7 @@ private:
   AddrSpace as_ = AddrSpace::none;
   bool is_signed_ = false;
   bool ctx_ = false;                                   // Is bpf program context
-  std::unordered_set<std::string> btf_type_tags_ = {}; // Only populated for
+  std::unordered_set<std::string> btf_type_tags_;      // Only populated for
                                                        // Type::pointer
   size_t num_elements_ = 0; // Only populated for array types
 
@@ -253,7 +252,7 @@ public:
     is_signed_ = is_signed;
   }
 
-  bool IsSigned(void) const;
+  bool IsSigned() const;
 
   size_t GetSize() const
   {
@@ -272,8 +271,7 @@ public:
   {
     assert(IsIntTy());
     // Truncate integers too large to fit in BPF registers (64-bits).
-    if (bits > 64)
-      bits = 64;
+    bits = std::min<size_t>(bits, 64);
     // Zero sized integers are not usually valid. However, during semantic
     // analysis when we're inferring types, the first pass may not have
     // enough information to figure out the exact size of the integer. Later
@@ -299,7 +297,7 @@ public:
     return num_elements_;
   };
 
-  const std::string GetName() const
+  std::string GetName() const
   {
     assert(IsRecordTy() || IsEnumTy());
     return name_;
@@ -346,117 +344,117 @@ public:
   };
   bool IsEnumTy() const
   {
-    return IsIntTy() && name_.size();
+    return IsIntTy() && !name_.empty();
   }
-  bool IsNoneTy(void) const
+  bool IsNoneTy() const
   {
     return type_ == Type::none;
   };
-  bool IsVoidTy(void) const
+  bool IsVoidTy() const
   {
     return type_ == Type::voidtype;
   };
-  bool IsIntegerTy(void) const
+  bool IsIntegerTy() const
   {
     return type_ == Type::integer;
   };
-  bool IsHistTy(void) const
+  bool IsHistTy() const
   {
     return type_ == Type::hist_t;
   };
-  bool IsLhistTy(void) const
+  bool IsLhistTy() const
   {
     return type_ == Type::lhist_t;
   };
-  bool IsCountTy(void) const
+  bool IsCountTy() const
   {
     return type_ == Type::count_t;
   };
-  bool IsSumTy(void) const
+  bool IsSumTy() const
   {
     return type_ == Type::sum_t;
   };
-  bool IsMinTy(void) const
+  bool IsMinTy() const
   {
     return type_ == Type::min_t;
   };
-  bool IsMaxTy(void) const
+  bool IsMaxTy() const
   {
     return type_ == Type::max_t;
   };
-  bool IsAvgTy(void) const
+  bool IsAvgTy() const
   {
     return type_ == Type::avg_t;
   };
-  bool IsStatsTy(void) const
+  bool IsStatsTy() const
   {
     return type_ == Type::stats_t;
   };
-  bool IsKstackTy(void) const
+  bool IsKstackTy() const
   {
     return type_ == Type::kstack_t;
   };
-  bool IsUstackTy(void) const
+  bool IsUstackTy() const
   {
     return type_ == Type::ustack_t;
   };
-  bool IsStringTy(void) const
+  bool IsStringTy() const
   {
     return type_ == Type::string;
   };
-  bool IsKsymTy(void) const
+  bool IsKsymTy() const
   {
     return type_ == Type::ksym_t;
   };
-  bool IsUsymTy(void) const
+  bool IsUsymTy() const
   {
     return type_ == Type::usym_t;
   };
-  bool IsUsernameTy(void) const
+  bool IsUsernameTy() const
   {
     return type_ == Type::username;
   };
-  bool IsInetTy(void) const
+  bool IsInetTy() const
   {
     return type_ == Type::inet;
   };
-  bool IsStackModeTy(void) const
+  bool IsStackModeTy() const
   {
     return type_ == Type::stack_mode;
   };
-  bool IsArrayTy(void) const
+  bool IsArrayTy() const
   {
     return type_ == Type::array;
   };
-  bool IsRecordTy(void) const
+  bool IsRecordTy() const
   {
     return type_ == Type::record;
   };
-  bool IsBufferTy(void) const
+  bool IsBufferTy() const
   {
     return type_ == Type::buffer;
   };
-  bool IsTupleTy(void) const
+  bool IsTupleTy() const
   {
     return type_ == Type::tuple;
   };
-  bool IsTimestampTy(void) const
+  bool IsTimestampTy() const
   {
     return type_ == Type::timestamp;
   };
-  bool IsMacAddressTy(void) const
+  bool IsMacAddressTy() const
   {
     return type_ == Type::mac_address;
   };
-  bool IsCgroupPathTy(void) const
+  bool IsCgroupPathTy() const
   {
     return type_ == Type::cgroup_path_t;
   };
-  bool IsStrerrorTy(void) const
+  bool IsStrerrorTy() const
   {
     return type_ == Type::strerror_t;
   };
-  bool IsTimestampModeTy(void) const
+  bool IsTimestampModeTy() const
   {
     return type_ == Type::timestamp_mode;
   }
@@ -495,7 +493,8 @@ public:
                                const SizedType &element_type);
 
   friend SizedType CreatePointer(const SizedType &pointee_type, AddrSpace as);
-  friend SizedType CreateReference(const SizedType &pointee_type, AddrSpace as);
+  friend SizedType CreateReference(const SizedType &referred_type,
+                                   AddrSpace as);
   friend SizedType CreateRecord(const std::string &name,
                                 std::weak_ptr<Struct> record);
   friend SizedType CreateInteger(size_t bits, bool is_signed);
@@ -519,6 +518,7 @@ SizedType CreateUInt32();
 SizedType CreateUInt64();
 SizedType CreateEnum(size_t bits, const std::string &name);
 
+// Create a string of `size` bytes, inclusive of NUL terminator.
 SizedType CreateString(size_t size);
 SizedType CreateArray(size_t num_elements, const SizedType &element_type);
 SizedType CreatePointer(const SizedType &pointee_type,
@@ -639,7 +639,7 @@ const std::vector<ProbeItem> PROBE_LIST = {
     .show_in_kernel_list = true },
 };
 
-ProbeType probetype(const std::string &type);
+ProbeType probetype(const std::string &probeName);
 std::string addrspacestr(AddrSpace as);
 std::string typestr(Type t);
 std::string typestr(const SizedType &type);
@@ -667,6 +667,7 @@ struct Probe {
   uint64_t address = 0;
   uint64_t func_offset = 0;
   std::vector<std::string> funcs;
+  bool is_session = false;
 
 private:
   friend class cereal::access;

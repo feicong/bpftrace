@@ -2,15 +2,14 @@
 
 #include <optional>
 #include <regex>
-#include <sstream>
+#include <utility>
 
-#include "ast/ast.h"
 #include "printf_format_types.h"
 #include "types.h"
 
 namespace bpftrace {
 
-static const std::string generate_pattern_string()
+static std::string generate_pattern_string()
 {
   std::string pattern = "%-?[0-9]*(\\.[0-9]+)?(";
   for (const auto& e : printf_format_types) {
@@ -40,7 +39,7 @@ enum class ArgumentType {
 
 class IPrintable {
 public:
-  virtual ~IPrintable() {};
+  virtual ~IPrintable() = default;
   virtual int print(char* buf,
                     size_t size,
                     const char* fmt,
@@ -56,8 +55,8 @@ public:
   int print(char* buf,
             size_t size,
             const char* fmt,
-            Type,
-            ArgumentType) override;
+            Type /*token*/,
+            ArgumentType /*expected_type*/) override;
 
 private:
   std::string value_;
@@ -72,8 +71,8 @@ public:
   int print(char* buf,
             size_t size,
             const char* fmt,
-            Type,
-            ArgumentType) override;
+            Type /*token*/,
+            ArgumentType /*expected_type*/) override;
   void keep_ascii(bool value);
   void escape_hex(bool value);
 
@@ -91,8 +90,8 @@ public:
   int print(char* buf,
             size_t size,
             const char* fmt,
-            Type,
-            ArgumentType) override;
+            Type /*token*/,
+            ArgumentType /*expected_type*/) override;
 
 private:
   char* value_;
@@ -130,7 +129,8 @@ private:
 
 class PrintableEnum : public virtual IPrintable {
 public:
-  PrintableEnum(uint64_t value, std::string name) : name_(name), value_(value)
+  PrintableEnum(uint64_t value, std::string name)
+      : name_(std::move(name)), value_(value)
   {
   }
   int print(char* buf,

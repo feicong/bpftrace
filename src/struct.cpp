@@ -1,10 +1,10 @@
-#include "struct.h"
-
+#include <algorithm>
 #include <iomanip>
 #include <limits>
 
 #include "log.h"
-#include "utils.h"
+#include "struct.h"
+#include "util/exceptions.h"
 
 namespace bpftrace {
 
@@ -132,20 +132,18 @@ void Struct::Dump(std::ostream &os)
 
 bool Struct::HasField(const std::string &name) const
 {
-  for (auto &field : fields) {
-    if (field.name == name)
-      return true;
-  }
-  return false;
+  return std::ranges::any_of(fields, [name](const auto &field) {
+    return field.name == name;
+  });
 }
 
 const Field &Struct::GetField(const std::string &name) const
 {
-  for (auto &field : fields) {
+  for (const auto &field : fields) {
     if (field.name == name)
       return field;
   }
-  throw FatalUserException("struct has no field named " + name);
+  throw util::FatalUserException("struct has no field named " + name);
 }
 
 void Struct::AddField(const std::string &field_name,
@@ -179,8 +177,8 @@ std::weak_ptr<Struct> StructManager::Add(const std::string &name,
   auto [it, inserted] = struct_map_.insert(
       { name, std::make_unique<Struct>(size, allow_override) });
   if (!inserted)
-    throw FatalUserException("Type redefinition: type with name \'" + name +
-                             "\' already exists");
+    throw util::FatalUserException("Type redefinition: type with name \'" +
+                                   name + "\' already exists");
   return it->second;
 }
 
@@ -206,7 +204,7 @@ std::weak_ptr<Struct> StructManager::LookupOrAdd(const std::string &name,
 
 bool StructManager::Has(const std::string &name) const
 {
-  return struct_map_.find(name) != struct_map_.end();
+  return struct_map_.contains(name);
 }
 
 std::weak_ptr<Struct> StructManager::AddAnonymousStruct(
