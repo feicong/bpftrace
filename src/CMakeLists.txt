@@ -10,8 +10,10 @@ add_library(compiler_core STATIC
   struct.cpp
   types.cpp
 )
+add_dependencies(compiler_core parser)
 
 add_library(runtime STATIC
+  async_action.cpp
   attached_probe.cpp
   bpffeature.cpp
   bpftrace.cpp
@@ -28,6 +30,7 @@ add_library(runtime STATIC
   log.cpp
   output.cpp
   probe_matcher.cpp
+  probe_types.cpp
   procmon.cpp
   printf.cpp
   run_bpftrace.cpp
@@ -100,10 +103,6 @@ target_link_libraries(runtime debugfs tracefs util)
 target_link_libraries(runtime ${LIBBPF_LIBRARIES} ${ZLIB_LIBRARIES})
 target_link_libraries(libbpftrace parser resources runtime aot ast arch util cxxdemangler_llvm)
 
-if(LLDB_FOUND)
-  target_link_libraries(runtime LLDB)
-endif(LLDB_FOUND)
-
 if(LIBPCAP_FOUND)
   target_link_libraries(libbpftrace ${LIBPCAP_LIBRARIES})
 endif(LIBPCAP_FOUND)
@@ -162,6 +161,34 @@ else()
   target_link_libraries(runtime ${LIBELF_LIBRARIES})
 endif(STATIC_LINKING)
 
+if (LIBDW_FOUND)
+  if(STATIC_LINKING)
+    find_package(LibBz2)
+    find_package(LibEbl)
+
+    add_library(LIBBZ2 STATIC IMPORTED)
+    set_property(TARGET LIBBZ2 PROPERTY IMPORTED_LOCATION ${LIBBZ2_LIBRARIES})
+
+    add_library(LIBDW STATIC IMPORTED)
+    set_property(TARGET LIBDW PROPERTY IMPORTED_LOCATION ${LIBDW_LIBRARIES})
+
+    set(LIBDW_LIBS LIBBZ2 LIBELF LIBLZMA)
+
+    if (${LIBEBL_FOUND})
+      # libebl is not necessary on some systems (e.g. Alpine)
+      add_library(LIBEBL STATIC IMPORTED)
+      set_property(TARGET LIBEBL PROPERTY IMPORTED_LOCATION ${LIBEBL_LIBRARIES})
+      set(LIBDW_LIBS ${LIBDW_LIBS} LIBEBL)
+    endif()
+
+    target_link_libraries(LIBDW INTERFACE ${LIBDW_LIBS})
+
+    target_link_libraries(runtime LIBDW)
+  else()
+    target_link_libraries(runtime ${LIBDW_LIBRARIES})
+  endif()
+endif()
+
 # Support for std::filesystem
 # GCC version <9 and Clang (all versions) require -lstdc++fs
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS "9")
@@ -198,5 +225,6 @@ add_subdirectory(ast)
 add_subdirectory(cxxdemangler)
 add_subdirectory(debugfs)
 add_subdirectory(resources)
+add_subdirectory(stdlib)
 add_subdirectory(tracefs)
 add_subdirectory(util)

@@ -21,10 +21,21 @@ struct Foo3 {
 
 struct Foo3 foo3;
 
+struct Foo4 {
+  int pid;
+  int pgid;
+  unsigned int : 12; // padding
+  unsigned int a : 8;
+  unsigned int b : 1;
+  unsigned int c : 3;
+  unsigned int d : 20;
+};
+
 struct Foo3 *func_1(int a,
                     struct Foo1 *foo1,
                     struct Foo2 *foo2,
-                    struct Foo3 *foo3)
+                    struct Foo3 *foo3,
+                    struct Foo4 *foo4)
 {
   return 0;
 }
@@ -76,11 +87,6 @@ void func_array_with_compound_data(struct ArrayWithCompoundData *arr)
 struct task_struct {
   int pid;
   int pgid;
-  int : 12; // padding
-  int a : 8;
-  int b : 1;
-  int c : 3;
-  int d : 20;
 };
 
 struct file {
@@ -132,6 +138,11 @@ _Bool bpf_session_is_return()
   return 1;
 }
 
+long __probestub_event_rt(void *__data, long first_real_arg)
+{
+  return first_real_arg;
+}
+
 // kernel percpu variables
 __attribute__((section(".data..percpu"))) unsigned long process_counts;
 
@@ -144,11 +155,12 @@ int main(void)
   struct bpf_iter__task_vma iter_task_vma;
   struct bpf_map bpf_map;
 
-  func_1(0, 0, 0, 0);
+  func_1(0, 0, 0, 0, 0);
 
   bpf_iter_task();
   bpf_iter_task_file();
   bpf_iter_task_vma();
   bpf_map_sum_elem_count(&bpf_map);
+  __probestub_event_rt((void *)&bpf_map, 1);
   return 0;
 }

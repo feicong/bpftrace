@@ -76,11 +76,11 @@ constexpr uint32_t PROC_PID_INIT_INO = 0xeffffffc;
 Value *IRBuilderBPF::CreateGetPid(Value *ctx, const Location &loc)
 {
   const auto &pidns = bpftrace_.get_pidns_self_stat();
-  if (pidns.st_ino != PROC_PID_INIT_INO) {
+  if (pidns && pidns->st_ino != PROC_PID_INIT_INO) {
     // Get namespaced target PID when we're running in a namespace
     AllocaInst *res = CreateAllocaBPF(BpfPidnsInfoType(), "bpf_pidns_info");
     CreateGetNsPidTgid(
-        ctx, getInt64(pidns.st_dev), getInt64(pidns.st_ino), res, loc);
+        ctx, getInt64(pidns->st_dev), getInt64(pidns->st_ino), res, loc);
     Value *pid = CreateLoad(
         getInt32Ty(),
         CreateGEP(BpfPidnsInfoType(), res, { getInt32(0), getInt32(0) }));
@@ -97,11 +97,11 @@ Value *IRBuilderBPF::CreateGetPid(Value *ctx, const Location &loc)
 Value *IRBuilderBPF::CreateGetTid(Value *ctx, const Location &loc)
 {
   const auto &pidns = bpftrace_.get_pidns_self_stat();
-  if (pidns.st_ino != PROC_PID_INIT_INO) {
+  if (pidns && pidns->st_ino != PROC_PID_INIT_INO) {
     // Get namespaced target TID when we're running in a namespace
     AllocaInst *res = CreateAllocaBPF(BpfPidnsInfoType(), "bpf_pidns_info");
     CreateGetNsPidTgid(
-        ctx, getInt64(pidns.st_dev), getInt64(pidns.st_ino), res, loc);
+        ctx, getInt64(pidns->st_dev), getInt64(pidns->st_ino), res, loc);
     Value *tid = CreateLoad(
         getInt32Ty(),
         CreateGEP(BpfPidnsInfoType(), res, { getInt32(0), getInt32(1) }));
@@ -537,7 +537,7 @@ CallInst *IRBuilderBPF::CreateGetStackScratchMap(StackType stack_type,
 Value *IRBuilderBPF::CreateGetStrAllocation(const std::string &name,
                                             const Location &loc)
 {
-  const auto max_strlen = bpftrace_.config_->get(ConfigKeyInt::max_strlen);
+  const auto max_strlen = bpftrace_.config_->max_strlen;
   const auto str_type = CreateArray(max_strlen, CreateInt8());
   return createAllocation(bpftrace::globalvars::GlobalVar::GET_STR_BUFFER,
                           GetType(str_type),
@@ -635,8 +635,7 @@ Value *IRBuilderBPF::createAllocation(
     std::optional<std::function<size_t(AsyncIds &)>> gen_async_id_cb)
 {
   const auto obj_size = module_.getDataLayout().getTypeAllocSize(obj_type);
-  const auto on_stack_limit = bpftrace_.config_->get(
-      ConfigKeyInt::on_stack_limit);
+  const auto on_stack_limit = bpftrace_.config_->on_stack_limit;
   if (obj_size > on_stack_limit) {
     return createScratchBuffer(
         globalvar, loc, gen_async_id_cb ? (*gen_async_id_cb)(async_ids_) : 0);
@@ -733,7 +732,7 @@ Value *IRBuilderBPF::CreateMapLookupElem(Value *ctx,
                                          const Location &loc)
 {
   assert(ctx && ctx->getType() == getPtrTy());
-  return CreateMapLookupElem(ctx, map.ident, key, map.type, loc);
+  return CreateMapLookupElem(ctx, map.ident, key, map.value_type, loc);
 }
 
 Value *IRBuilderBPF::CreateMapLookupElem(Value *ctx,
@@ -1435,7 +1434,7 @@ Value *IRBuilderBPF::CreateUSDTReadArgument(Value *ctx,
                                ctx,
                                getInt64(offset * sizeof(uintptr_t)),
                                "load_register");
-    AllocaInst *dst = CreateAllocaBPF(builtin.type, builtin.ident);
+    AllocaInst *dst = CreateAllocaBPF(builtin.builtin_type, builtin.ident);
     Value *index_offset = nullptr;
     if (argument->valid & BCC_USDT_ARGUMENT_INDEX_REGISTER_NAME) {
       int ioffset = arch::offset(argument->index_register_name);
@@ -2215,26 +2214,25 @@ void IRBuilderBPF::CreateAtomicIncCounter(const std::string &map_name,
   CreateLifetimeEnd(key);
 }
 
-void IRBuilderBPF::CreateMapElemInit(Value *ctx,
-                                     Map &map,
-                                     Value *key,
-                                     Value *val,
-                                     const Location &loc)
+void IRBuilderBPF::CreatePerCpuMapElemInit(Value *ctx,
+                                           Map &map,
+                                           Value *key,
+                                           Value *val,
+                                           const Location &loc)
 {
   AllocaInst *initValue = CreateAllocaBPF(val->getType(), "initial_value");
   CreateStore(val, initValue);
-  CreateMapUpdateElem(ctx, map.ident, key, initValue, loc, BPF_NOEXIST);
+  CreateMapUpdateElem(ctx, map.ident, key, initValue, loc, BPF_ANY);
   CreateLifetimeEnd(initValue);
 }
 
-void IRBuilderBPF::CreateMapElemAdd(Value *ctx,
-                                    Map &map,
-                                    Value *key,
-                                    Value *val,
-                                    const Location &loc)
+void IRBuilderBPF::CreatePerCpuMapElemAdd(Value *ctx,
+                                          Map &map,
+                                          Value *key,
+                                          Value *val,
+                                          const Location &loc)
 {
   CallInst *call = CreateMapLookup(map, key);
-  SizedType &type = map.type;
 
   llvm::Function *parent = GetInsertBlock()->getParent();
   BasicBlock *lookup_success_block = BasicBlock::Create(module_.getContext(),
@@ -2247,7 +2245,7 @@ void IRBuilderBPF::CreateMapElemAdd(Value *ctx,
                                                       "lookup_merge",
                                                       parent);
 
-  AllocaInst *value = CreateAllocaBPF(type, "lookup_elem_val");
+  AllocaInst *value = CreateAllocaBPF(map.value_type, "lookup_elem_val");
   Value *condition = CreateICmpNE(CreateIntCast(call, getPtrTy(), true),
                                   GetNull(),
                                   "map_lookup_cond");
@@ -2264,7 +2262,7 @@ void IRBuilderBPF::CreateMapElemAdd(Value *ctx,
 
   SetInsertPoint(lookup_failure_block);
 
-  CreateMapElemInit(ctx, map, key, val, loc);
+  CreatePerCpuMapElemInit(ctx, map, key, val, loc);
 
   CreateBr(lookup_merge_block);
   SetInsertPoint(lookup_merge_block);
@@ -2543,7 +2541,8 @@ void IRBuilderBPF::CreateHelperError(Value *ctx,
                                                   true);
   AllocaInst *buf = CreateAllocaBPF(helper_error_struct, "helper_error_t");
   CreateStore(
-      GetIntSameSize(asyncactionint(AsyncAction::helper_error), elements.at(0)),
+      GetIntSameSize(static_cast<int64_t>(AsyncAction::helper_error),
+                     elements.at(0)),
       CreateGEP(helper_error_struct, buf, { getInt64(0), getInt32(0) }));
   CreateStore(
       GetIntSameSize(error_id, elements.at(1)),

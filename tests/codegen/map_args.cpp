@@ -1,4 +1,4 @@
-#ifdef HAVE_LIBLLDB
+#if HAVE_LIBDW
 
 #include "../dwarf_common.h"
 #include "common.h"
@@ -19,4 +19,4 @@ TEST_F(codegen_dwarf, map_args)
 } // namespace test
 } // namespace bpftrace
 
-#endif // HAVE_LIBLLDB
+#endif // HAVE_LIBDW

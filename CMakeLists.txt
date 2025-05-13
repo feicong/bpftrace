@@ -5,12 +5,13 @@ cmake_policy(SET CMP0057 NEW)
 
 # bpftrace version number components.
 set(bpftrace_VERSION_MAJOR 0)
-set(bpftrace_VERSION_MINOR 22)
+set(bpftrace_VERSION_MINOR 23)
 set(bpftrace_VERSION_PATCH 0)
 
 include(GNUInstallDirs)
 
 set(WARNINGS_AS_ERRORS OFF CACHE BOOL "Build with -Werror")
+set(HARDENED_STDLIB OFF CACHE BOOL "Enable hardened definitions for standard library (for development use only)")
 set(STATIC_LINKING OFF CACHE BOOL "Build bpftrace as a statically linked executable")
 
 set(BUILD_ASAN OFF CACHE BOOL "Build bpftrace with -fsanitize=address")
@@ -42,6 +43,15 @@ add_compile_options("-Wunreachable-code")
 #add_compile_options("-Wformat=2")
 add_compile_options("-Wdisabled-optimization")
 
+if(HARDENED_STDLIB)
+  add_compile_definitions("-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG")
+  add_compile_definitions("-D_GLIBCXX_ASSERTIONS")
+  if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
+    # _FORTIFY_SOURCE requires at least -O1
+    add_compile_definitions("-D_FORTIFY_SOURCE=3")
+  endif()
+endif()
+
 if (WARNINGS_AS_ERRORS)
   add_compile_options("-Werror")
 endif()
@@ -53,6 +63,7 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
 endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/src)
+include_directories(${CMAKE_BINARY_DIR}/src)
 include_directories(${CMAKE_BINARY_DIR})
 
 # Ninja buffers output so gcc/clang think it's not an interactive session.
@@ -119,6 +130,7 @@ set(CMAKE_REQUIRED_DEFINITIONS)
 
 find_package(LibBfd)
 find_package(LibOpcodes)
+find_package(LibDw)
 
 if(ENABLE_SKB_OUTPUT)
   find_package(LibPcap)
@@ -174,8 +186,6 @@ add_definitions(${LLVM_DEFINITIONS})
 find_package(Clang REQUIRED)
 include_directories(SYSTEM ${CLANG_INCLUDE_DIRS})
 
-find_package(LLDB)
-
 # BPFtrace compile definitions
 
 set(BPFTRACE_FLAGS)
@@ -194,9 +204,9 @@ if(HAVE_BFD_DISASM)
   endif(LIBBFD_INIT_DISASM_INFO_FOUR_ARGS_SIGNATURE)
 endif(HAVE_BFD_DISASM)
 
-if (LLDB_FOUND)
-  set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_LIBLLDB)
-endif ()
+if(LIBDW_FOUND)
+  set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_LIBDW)
+endif()
 
 if(LIBPCAP_FOUND)
   set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_LIBPCAP)

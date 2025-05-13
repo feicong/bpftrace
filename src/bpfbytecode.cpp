@@ -1,6 +1,7 @@
 #include "bpfbytecode.h"
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 
 #include "bpftrace.h"
@@ -54,7 +55,8 @@ BpfBytecode::BpfBytecode(std::span<const std::byte> elf)
   bpf_object_ = std::unique_ptr<struct bpf_object, bpf_object_deleter>(
       bpf_object__open_mem(elf.data(), elf.size(), &opts));
   if (!bpf_object_)
-    LOG(BUG) << "The produced ELF is not a valid BPF object";
+    LOG(BUG) << "The produced ELF is not a valid BPF object: "
+             << std::strerror(errno);
 
   const auto section_names = globalvars::get_section_names();
 
@@ -182,8 +184,7 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
 {
   std::unordered_map<std::string_view, std::vector<char>> log_bufs;
   for (auto &[name, prog] : programs_) {
-    log_bufs[name] = std::vector<char>(config.get(ConfigKeyInt::log_size),
-                                       '\0');
+    log_bufs[name] = std::vector<char>(config.log_size, '\0');
     auto &log_buf = log_bufs[name];
     bpf_program__set_log_buf(prog.bpf_prog(), log_buf.data(), log_buf.size());
   }
@@ -192,6 +193,7 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
   for (auto probe : resources.special_probes)
     special_probes.push_back(probe.second);
   prepare_progs(special_probes, btf, feature, config);
+  prepare_progs(resources.signal_probes, btf, feature, config);
   prepare_progs(resources.probes, btf, feature, config);
   prepare_progs(resources.watchpoint_probes, btf, feature, config);
 
@@ -236,7 +238,7 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
       if (err_pos != std::string_view::npos) {
         LOG(ERROR) << "Your bpftrace program cannot load because you are using "
                       "a license that is non-GPL compatible. License: "
-                   << config.get(ConfigKeyString::license);
+                   << config.license;
         LOG(HINT)
             << "Read more about BPF programs and licensing: "
                "https://docs.kernel.org/bpf/"
@@ -300,12 +302,12 @@ bool BpfBytecode::all_progs_loaded()
 
 bool BpfBytecode::hasMap(MapType internal_type) const
 {
-  return maps_.find(to_string(internal_type)) != maps_.end();
+  return maps_.contains(to_string(internal_type));
 }
 
 bool BpfBytecode::hasMap(const StackType &stack_type) const
 {
-  return maps_.find(stack_type.name()) != maps_.end();
+  return maps_.contains(stack_type.name());
 }
 
 const BpfMap &BpfBytecode::getMap(const std::string &name) const

@@ -5,6 +5,7 @@
 #include "bpftrace.h"
 #include "clang_parser.h"
 #include "driver.h"
+#include "mocks.h"
 #include "struct.h"
 #include "gtest/gtest.h"
 
@@ -12,10 +13,10 @@ namespace bpftrace::test::clang_parser {
 
 #include "btf_common.h"
 
-static void parse(const std::string &input,
-                  BPFtrace &bpftrace,
-                  bool result = true,
-                  const std::string &probe = "kprobe:sys_read { 1 }")
+static CDefinitions parse(const std::string &input,
+                          BPFtrace &bpftrace,
+                          bool result = true,
+                          const std::string &probe = "kprobe:sys_read { 1 }")
 {
   auto extended_input = input + probe;
   ast::ASTContext ast("stdin", extended_input);
@@ -28,7 +29,11 @@ static void parse(const std::string &input,
                 .add(ast::CreateFieldAnalyserPass())
                 .add(CreateClangPass())
                 .run();
-  ASSERT_EQ(ok && ast.diagnostics().ok(), result);
+  EXPECT_EQ(ok && ast.diagnostics().ok(), result);
+  if (ok) {
+    return std::move(ok->get<CDefinitions>());
+  }
+  return {};
 }
 
 TEST(clang_parser, integers)
@@ -93,7 +98,8 @@ TEST(clang_parser, c_union)
 TEST(clang_parser, c_enum)
 {
   BPFtrace bpftrace;
-  parse("enum E { NONE, SOME = 99, }; struct Foo { enum E e; }", bpftrace);
+  auto c_defs = parse("enum E { NONE, SOME = 99, }; struct Foo { enum E e; }",
+                      bpftrace);
 
   ASSERT_TRUE(bpftrace.structs.Has("struct Foo"));
   auto foo = bpftrace.structs.Lookup("struct Foo").lock();
@@ -106,91 +112,91 @@ TEST(clang_parser, c_enum)
   EXPECT_EQ(foo->GetField("e").type.GetSize(), 4U);
   EXPECT_EQ(foo->GetField("e").offset, 0);
 
-  ASSERT_TRUE(bpftrace.enums_.contains("NONE"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["NONE"]), 0);
-  EXPECT_EQ(std::get<1>(bpftrace.enums_["NONE"]), "E");
-  ASSERT_TRUE(bpftrace.enums_.contains("SOME"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["SOME"]), 99);
-  EXPECT_EQ(std::get<1>(bpftrace.enums_["SOME"]), "E");
+  ASSERT_TRUE(c_defs.enums.contains("NONE"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["NONE"]), 0);
+  EXPECT_EQ(std::get<1>(c_defs.enums["NONE"]), "E");
+  ASSERT_TRUE(c_defs.enums.contains("SOME"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["SOME"]), 99);
+  EXPECT_EQ(std::get<1>(c_defs.enums["SOME"]), "E");
 
-  ASSERT_TRUE(bpftrace.enum_defs_.contains("E"));
-  ASSERT_TRUE(bpftrace.enum_defs_["E"].contains(0));
-  EXPECT_EQ(bpftrace.enum_defs_["E"][0], "NONE");
-  ASSERT_TRUE(bpftrace.enum_defs_["E"].contains(99));
-  EXPECT_EQ(bpftrace.enum_defs_["E"][99], "SOME");
+  ASSERT_TRUE(c_defs.enum_defs.contains("E"));
+  ASSERT_TRUE(c_defs.enum_defs["E"].contains(0));
+  EXPECT_EQ(c_defs.enum_defs["E"][0], "NONE");
+  ASSERT_TRUE(c_defs.enum_defs["E"].contains(99));
+  EXPECT_EQ(c_defs.enum_defs["E"][99], "SOME");
 }
 
 TEST(clang_parser, c_enum_anonymous)
 {
   BPFtrace bpftrace;
-  parse(
+  auto c_defs = parse(
       "enum { ANON_A_VARIANT_1 = 0, ANON_A_VARIANT_2, ANON_A_CONFLICT = 99, }; "
       "enum { ANON_B_VARIANT_1 = 0, ANON_B_CONFLICT = 99, }; ",
       bpftrace);
 
-  ASSERT_EQ(bpftrace.enums_.size(), 5);
-  ASSERT_EQ(bpftrace.enum_defs_.size(), 2);
+  ASSERT_EQ(c_defs.enums.size(), 5);
+  ASSERT_EQ(c_defs.enum_defs.size(), 2);
 
   //
   // Check enums_ contains first anonymous enum
   //
 
   // Check first variant present
-  ASSERT_TRUE(bpftrace.enums_.contains("ANON_A_VARIANT_1"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["ANON_A_VARIANT_1"]), 0);
-  auto anon_a_name = std::get<1>(bpftrace.enums_["ANON_A_VARIANT_1"]);
+  ASSERT_TRUE(c_defs.enums.contains("ANON_A_VARIANT_1"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["ANON_A_VARIANT_1"]), 0);
+  auto anon_a_name = std::get<1>(c_defs.enums["ANON_A_VARIANT_1"]);
   ASSERT_FALSE(anon_a_name.empty());
 
   // Check second variant present
-  ASSERT_TRUE(bpftrace.enums_.contains("ANON_A_VARIANT_2"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["ANON_A_VARIANT_2"]), 1);
-  EXPECT_EQ(std::get<1>(bpftrace.enums_["ANON_A_CONFLICT"]), anon_a_name);
+  ASSERT_TRUE(c_defs.enums.contains("ANON_A_VARIANT_2"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["ANON_A_VARIANT_2"]), 1);
+  EXPECT_EQ(std::get<1>(c_defs.enums["ANON_A_CONFLICT"]), anon_a_name);
 
   // Check conflict variant present
-  ASSERT_TRUE(bpftrace.enums_.contains("ANON_A_CONFLICT"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["ANON_A_CONFLICT"]), 99);
-  EXPECT_EQ(std::get<1>(bpftrace.enums_["ANON_A_CONFLICT"]), anon_a_name);
+  ASSERT_TRUE(c_defs.enums.contains("ANON_A_CONFLICT"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["ANON_A_CONFLICT"]), 99);
+  EXPECT_EQ(std::get<1>(c_defs.enums["ANON_A_CONFLICT"]), anon_a_name);
 
   //
   // Check enum_defs_ contains first anonymous enum, with ANON_A_CONFLICT
   // value resolving correctly to the this enum and not the other.
   //
 
-  ASSERT_TRUE(bpftrace.enum_defs_.contains(anon_a_name));
-  ASSERT_EQ(bpftrace.enum_defs_[anon_a_name].size(), 3);
-  ASSERT_TRUE(bpftrace.enum_defs_[anon_a_name].contains(0));
-  EXPECT_EQ(bpftrace.enum_defs_[anon_a_name][0], "ANON_A_VARIANT_1");
-  ASSERT_TRUE(bpftrace.enum_defs_[anon_a_name].contains(1));
-  EXPECT_EQ(bpftrace.enum_defs_[anon_a_name][1], "ANON_A_VARIANT_2");
-  ASSERT_TRUE(bpftrace.enum_defs_[anon_a_name].contains(99));
-  EXPECT_EQ(bpftrace.enum_defs_[anon_a_name][99], "ANON_A_CONFLICT");
+  ASSERT_TRUE(c_defs.enum_defs.contains(anon_a_name));
+  ASSERT_EQ(c_defs.enum_defs[anon_a_name].size(), 3);
+  ASSERT_TRUE(c_defs.enum_defs[anon_a_name].contains(0));
+  EXPECT_EQ(c_defs.enum_defs[anon_a_name][0], "ANON_A_VARIANT_1");
+  ASSERT_TRUE(c_defs.enum_defs[anon_a_name].contains(1));
+  EXPECT_EQ(c_defs.enum_defs[anon_a_name][1], "ANON_A_VARIANT_2");
+  ASSERT_TRUE(c_defs.enum_defs[anon_a_name].contains(99));
+  EXPECT_EQ(c_defs.enum_defs[anon_a_name][99], "ANON_A_CONFLICT");
 
   //
   // Check enums_ contains second anonymous enum
   //
 
   // Check first variant present
-  ASSERT_TRUE(bpftrace.enums_.contains("ANON_B_VARIANT_1"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["ANON_B_VARIANT_1"]), 0);
-  auto anon_b_name = std::get<1>(bpftrace.enums_["ANON_B_VARIANT_1"]);
+  ASSERT_TRUE(c_defs.enums.contains("ANON_B_VARIANT_1"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["ANON_B_VARIANT_1"]), 0);
+  auto anon_b_name = std::get<1>(c_defs.enums["ANON_B_VARIANT_1"]);
   ASSERT_FALSE(anon_b_name.empty());
 
   // Check conflict variant present
-  ASSERT_TRUE(bpftrace.enums_.contains("ANON_B_CONFLICT"));
-  EXPECT_EQ(std::get<0>(bpftrace.enums_["ANON_B_CONFLICT"]), 99);
-  EXPECT_EQ(std::get<1>(bpftrace.enums_["ANON_B_CONFLICT"]), anon_b_name);
+  ASSERT_TRUE(c_defs.enums.contains("ANON_B_CONFLICT"));
+  EXPECT_EQ(std::get<0>(c_defs.enums["ANON_B_CONFLICT"]), 99);
+  EXPECT_EQ(std::get<1>(c_defs.enums["ANON_B_CONFLICT"]), anon_b_name);
 
   //
   // Check enum_defs_ contains second anonymous enum, with ANON_B_CONFLICT
   // value resolving correctly to the this enum and not the first.
   //
 
-  ASSERT_TRUE(bpftrace.enum_defs_.contains(anon_b_name));
-  ASSERT_EQ(bpftrace.enum_defs_[anon_b_name].size(), 2);
-  ASSERT_TRUE(bpftrace.enum_defs_[anon_b_name].contains(0));
-  EXPECT_EQ(bpftrace.enum_defs_[anon_b_name][0], "ANON_B_VARIANT_1");
-  ASSERT_TRUE(bpftrace.enum_defs_[anon_b_name].contains(99));
-  EXPECT_EQ(bpftrace.enum_defs_[anon_b_name][99], "ANON_B_CONFLICT");
+  ASSERT_TRUE(c_defs.enum_defs.contains(anon_b_name));
+  ASSERT_EQ(c_defs.enum_defs[anon_b_name].size(), 2);
+  ASSERT_TRUE(c_defs.enum_defs[anon_b_name].contains(0));
+  EXPECT_EQ(c_defs.enum_defs[anon_b_name][0], "ANON_B_VARIANT_1");
+  ASSERT_TRUE(c_defs.enum_defs[anon_b_name].contains(99));
+  EXPECT_EQ(c_defs.enum_defs[anon_b_name][99], "ANON_B_CONFLICT");
 }
 
 TEST(clang_parser, integer_ptr)
@@ -602,16 +608,14 @@ TEST(clang_parser, builtin_headers)
 TEST(clang_parser, macro_preprocessor)
 {
   BPFtrace bpftrace;
-  parse("#define FOO size_t\n k:f { 0 }", bpftrace);
-  parse("#define _UNDERSCORE 314\n k:f { 0 }", bpftrace);
 
-  auto &macros = bpftrace.macros_;
+  auto c_defs = parse("#define FOO size_t\n k:f { 0 }", bpftrace);
+  ASSERT_EQ(c_defs.macros.count("FOO"), 1U);
+  EXPECT_EQ(c_defs.macros["FOO"], "size_t");
 
-  ASSERT_EQ(macros.count("FOO"), 1U);
-  EXPECT_EQ(macros["FOO"], "size_t");
-
-  ASSERT_EQ(macros.count("_UNDERSCORE"), 1U);
-  EXPECT_EQ(macros["_UNDERSCORE"], "314");
+  c_defs = parse("#define _UNDERSCORE 314\n k:f { 0 }", bpftrace);
+  ASSERT_EQ(c_defs.macros.count("_UNDERSCORE"), 1U);
+  EXPECT_EQ(c_defs.macros["_UNDERSCORE"], "314");
 }
 
 TEST(clang_parser, parse_fail)
@@ -624,24 +628,23 @@ class clang_parser_btf : public test_btf {};
 
 TEST_F(clang_parser_btf, btf)
 {
-  BPFtrace bpftrace;
-  bpftrace.parse_btf({});
+  auto bpftrace = get_mock_bpftrace();
   parse("struct Foo { "
         "  struct Foo1 f1;"
         "  struct Foo2 f2;"
         "  struct Foo3 f3;"
-        "  struct task_struct t;"
+        "  struct Foo4 f4;"
         "}",
-        bpftrace);
+        *bpftrace);
 
-  ASSERT_TRUE(bpftrace.structs.Has("struct Foo1"));
-  ASSERT_TRUE(bpftrace.structs.Has("struct Foo2"));
-  ASSERT_TRUE(bpftrace.structs.Has("struct Foo3"));
-  ASSERT_TRUE(bpftrace.structs.Has("struct task_struct"));
-  auto foo1 = bpftrace.structs.Lookup("struct Foo1").lock();
-  auto foo2 = bpftrace.structs.Lookup("struct Foo2").lock();
-  auto foo3 = bpftrace.structs.Lookup("struct Foo3").lock();
-  auto task_struct = bpftrace.structs.Lookup("struct task_struct").lock();
+  ASSERT_TRUE(bpftrace->structs.Has("struct Foo1"));
+  ASSERT_TRUE(bpftrace->structs.Has("struct Foo2"));
+  ASSERT_TRUE(bpftrace->structs.Has("struct Foo3"));
+  ASSERT_TRUE(bpftrace->structs.Has("struct Foo4"));
+  auto foo1 = bpftrace->structs.Lookup("struct Foo1").lock();
+  auto foo2 = bpftrace->structs.Lookup("struct Foo2").lock();
+  auto foo3 = bpftrace->structs.Lookup("struct Foo3").lock();
+  auto foo4 = bpftrace->structs.Lookup("struct Foo4").lock();
 
   EXPECT_EQ(foo1->size, 16);
   ASSERT_EQ(foo1->fields.size(), 3U);
@@ -684,14 +687,14 @@ TEST_F(clang_parser_btf, btf)
   ASSERT_TRUE(foo3->HasField("foo1"));
   ASSERT_TRUE(foo3->HasField("foo2"));
 
-  EXPECT_EQ(task_struct->size, 16);
-  ASSERT_EQ(task_struct->fields.size(), 7U);
-  ASSERT_TRUE(task_struct->HasField("pid"));
-  ASSERT_TRUE(task_struct->HasField("pgid"));
-  ASSERT_TRUE(task_struct->HasField("a"));
-  ASSERT_TRUE(task_struct->HasField("b"));
-  ASSERT_TRUE(task_struct->HasField("c"));
-  ASSERT_TRUE(task_struct->HasField("d"));
+  EXPECT_EQ(foo4->size, 16);
+  ASSERT_EQ(foo4->fields.size(), 7U);
+  ASSERT_TRUE(foo4->HasField("pid"));
+  ASSERT_TRUE(foo4->HasField("pgid"));
+  ASSERT_TRUE(foo4->HasField("a"));
+  ASSERT_TRUE(foo4->HasField("b"));
+  ASSERT_TRUE(foo4->HasField("c"));
+  ASSERT_TRUE(foo4->HasField("d"));
 
   auto foo1_field = foo3->GetField("foo1");
   auto foo2_field = foo3->GetField("foo2");
@@ -707,12 +710,11 @@ TEST_F(clang_parser_btf, btf)
 // Disabled because BTF flattens multi-dimensional arrays #3082.
 TEST_F(clang_parser_btf, DISABLED_btf_arrays_multi_dim)
 {
-  BPFtrace bpftrace;
-  bpftrace.parse_btf({});
-  parse("struct Foo { struct Arrays a; };", bpftrace);
+  auto bpftrace = get_mock_bpftrace();
+  parse("struct Foo { struct Arrays a; };", *bpftrace);
 
-  ASSERT_TRUE(bpftrace.structs.Has("struct Arrays"));
-  auto arrs = bpftrace.structs.Lookup("struct Arrays").lock();
+  ASSERT_TRUE(bpftrace->structs.Has("struct Arrays"));
+  auto arrs = bpftrace->structs.Lookup("struct Arrays").lock();
 
   ASSERT_TRUE(arrs->HasField("multi_dim"));
   EXPECT_TRUE(arrs->GetField("multi_dim").type.IsArrayTy());
@@ -740,15 +742,14 @@ TEST(clang_parser, btf_unresolved_typedef)
 {
   // size_t is defined in stddef.h, but if we have BTF, it should be possible to
   // extract it from there
-  BPFtrace bpftrace;
-  bpftrace.parse_btf({});
-  if (!bpftrace.has_btf_data())
+  auto bpftrace = get_mock_bpftrace();
+  if (!bpftrace->has_btf_data())
     GTEST_SKIP();
 
-  parse("struct Foo { size_t x; };", bpftrace);
+  parse("struct Foo { size_t x; };", *bpftrace);
 
-  ASSERT_TRUE(bpftrace.structs.Has("struct Foo"));
-  auto foo = bpftrace.structs.Lookup("struct Foo").lock();
+  ASSERT_TRUE(bpftrace->structs.Has("struct Foo"));
+  auto foo = bpftrace->structs.Lookup("struct Foo").lock();
 
   EXPECT_EQ(foo->size, 8);
   ASSERT_EQ(foo->fields.size(), 1U);
@@ -762,31 +763,30 @@ TEST(clang_parser, btf_unresolved_typedef)
 TEST_F(clang_parser_btf, btf_type_override)
 {
   // It should be possible to override types from BTF, ...
-  BPFtrace bpftrace;
-  bpftrace.parse_btf({});
+  auto bpftrace = get_mock_bpftrace();
   parse("struct Foo1 { int a; };\n",
-        bpftrace,
+        *bpftrace,
         true,
         "kprobe:sys_read { @x = ((struct Foo1 *)curtask); }");
 
-  ASSERT_TRUE(bpftrace.structs.Has("struct Foo1"));
-  auto foo1 = bpftrace.structs.Lookup("struct Foo1").lock();
+  ASSERT_TRUE(bpftrace->structs.Has("struct Foo1"));
+  auto foo1 = bpftrace->structs.Lookup("struct Foo1").lock();
   ASSERT_EQ(foo1->fields.size(), 1U);
   ASSERT_TRUE(foo1->HasField("a"));
 
   // ... however, in such case, no other types are taken from BTF and the
   // following will fail since Foo2 will be undefined
-  bpftrace.btf_set_.clear();
+  bpftrace->btf_set_.clear();
   parse("struct Foo1 { struct Foo2 foo2; };\n",
-        bpftrace,
+        *bpftrace,
         false,
         "kprobe:sys_read { @x = ((struct Foo1 *)curtask); }");
 
   // Here, Foo1 redefinition will take place when resolving incomplete types
   // (since Foo3 contains a pointer to Foo1)
-  bpftrace.btf_set_.clear();
+  bpftrace->btf_set_.clear();
   parse("struct Foo1 { struct Foo2 foo2; };\n",
-        bpftrace,
+        *bpftrace,
         false,
         "kprobe:sys_read { @x1 = ((struct Foo3 *)curtask); }");
 }

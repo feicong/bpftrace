@@ -26,21 +26,28 @@ public:
   {
     return msg_.str();
   }
-  std::string hint() const
+  std::vector<std::string> hints() const
   {
-    return hint_.str();
+    std::vector<std::string> msgs;
+    for (const auto& hint : hints_) {
+      msgs.emplace_back(hint.str());
+    }
+    return msgs;
   }
   const Location& loc() const
   {
     return loc_;
   }
 
-  // Each diagnostic can potentially have a hint attached, which is how to
+  // Each diagnostic can potentially have hints attached, which is how to
   // effectively resolve this issue.
   std::stringstream& addHint()
   {
-    return hint_;
+    return hints_.emplace_back();
   }
+
+  // Add additional context for the error.
+  std::stringstream& addContext(Location loc);
 
   template <typename T>
   Diagnostic& operator<<(const T& t)
@@ -51,13 +58,23 @@ public:
 
 private:
   std::stringstream msg_;
-  std::stringstream hint_;
-  const Location loc_;
+  std::vector<std::stringstream> hints_;
+  Location loc_;
 };
 
 class Diagnostics {
 public:
   using Severity = Diagnostic::Severity;
+
+  // Note that the state of the diagnostics is really only a vector, which
+  // provides well-defined `move` semantics. After the move, the vector is
+  // guaranteed to be empty, which matches the state required for an empty
+  // Diagnostics object.
+  Diagnostics() = default;
+  Diagnostics(Diagnostics&& other) = default;
+  Diagnostics(const Diagnostics& other) = delete;
+  Diagnostics& operator=(const Diagnostics& other) = delete;
+  Diagnostics& operator=(Diagnostics&& other) = delete;
 
   template <typename... Args>
   Diagnostic& add(Severity severity, Args... args)
@@ -106,6 +123,9 @@ public:
   void emit(std::ostream& out) const;
   void emit(std::ostream& out, Severity s) const;
   void emit(std::ostream& out, Severity s, const Diagnostic& d) const;
+
+  // adds all diagnostics from some other set.
+  void add(Diagnostics&& other);
 
 private:
   void foreach(Severity severity,

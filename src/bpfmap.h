@@ -13,8 +13,6 @@ namespace libbpf {
 #include "libbpf/bpf.h"
 } // namespace libbpf
 
-#include "container/cstring_view.h"
-
 namespace bpftrace {
 
 class BpfMap {
@@ -30,12 +28,12 @@ public:
   }
 
   BpfMap(libbpf::bpf_map_type type,
-         cstring_view name,
+         std::string name,
          uint32_t key_size,
          uint32_t value_size,
          uint32_t max_entries)
       : type_(type),
-        name_(name),
+        name_(std::move(name)),
         key_size_(key_size),
         value_size_(value_size),
         max_entries_(max_entries)
@@ -44,7 +42,7 @@ public:
 
   int fd() const;
   libbpf::bpf_map_type type() const;
-  cstring_view bpf_name() const;
+  const std::string &bpf_name() const;
   std::string name() const;
   uint32_t key_size() const;
   uint32_t value_size() const;
@@ -58,7 +56,7 @@ public:
 private:
   struct bpf_map *bpf_map_;
   libbpf::bpf_map_type type_;
-  cstring_view name_;
+  std::string name_;
   uint32_t key_size_;
   uint32_t value_size_;
   uint32_t max_entries_;
@@ -101,14 +99,13 @@ inline bool is_bpf_map_clearable(libbpf::bpf_map_type map_type)
          map_type != libbpf::BPF_MAP_TYPE_PERCPU_ARRAY;
 }
 
-libbpf::bpf_map_type get_bpf_map_type(const SizedType &val_type,
-                                      const SizedType &key_type);
+libbpf::bpf_map_type get_bpf_map_type(const SizedType &val_type, bool scalar);
 std::optional<libbpf::bpf_map_type> get_bpf_map_type(const std::string &name);
 std::string get_bpf_map_type_str(libbpf::bpf_map_type map_type);
 void add_bpf_map_types_hint(std::stringstream &hint);
-bool is_array_map(const SizedType &val_type, const SizedType &key_type);
+bool is_array_map(const SizedType &val_type, bool scalar);
 bool bpf_map_types_compatible(const SizedType &val_type,
-                              const SizedType &key_type,
+                              bool scalar,
                               libbpf::bpf_map_type kind);
 
 } // namespace bpftrace

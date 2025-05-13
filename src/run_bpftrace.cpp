@@ -34,7 +34,7 @@ void check_is_root()
   }
 }
 
-int run_bpftrace(BPFtrace &bpftrace, BpfBytecode &bytecode)
+int run_bpftrace(BPFtrace &bpftrace, Output &output, BpfBytecode &bytecode)
 {
   int err;
 
@@ -48,7 +48,7 @@ int run_bpftrace(BPFtrace &bpftrace, BpfBytecode &bytecode)
   act.sa_handler = [](int) { BPFtrace::sigusr1_recv = true; };
   sigaction(SIGUSR1, &act, nullptr);
 
-  err = bpftrace.run(std::move(bytecode));
+  err = bpftrace.run(output, std::move(bytecode));
   if (err)
     return err;
 
@@ -60,8 +60,8 @@ int run_bpftrace(BPFtrace &bpftrace, BpfBytecode &bytecode)
   std::cout << "\n\n";
 
   // Print maps if needed (true by default).
-  if (bpftrace.config_->get(ConfigKeyBool::print_maps_on_exit))
-    err = bpftrace.print_maps();
+  if (bpftrace.config_->print_maps_on_exit)
+    err = bpftrace.print_maps(output);
 
   if (bpftrace.child_) {
     auto val = 0;

@@ -29,6 +29,11 @@ public:
   MOCK_CONST_METHOD2(get_func_symbols_from_file,
                      std::unique_ptr<std::istream>(std::optional<int> pid,
                                                    const std::string &path));
+  MOCK_CONST_METHOD0(get_raw_tracepoint_symbols,
+                     std::unique_ptr<std::istream>());
+
+  MOCK_CONST_METHOD0(get_fentry_symbols, std::unique_ptr<std::istream>());
+
 #pragma GCC diagnostic pop
 };
 
@@ -74,17 +79,17 @@ public:
     return { "mock_vmlinux" };
   }
 
-  const struct stat &get_pidns_self_stat() const override
+  const std::optional<struct stat> &get_pidns_self_stat() const override
   {
-    static const struct stat init_pid_namespace = []() {
-      struct stat s {};
+    static const std::optional<struct stat> init_pid_namespace = []() {
+      struct stat s{};
       s.st_ino = 0xeffffffc; // PROC_PID_INIT_INO
-      return s;
+      return std::optional{ s };
     }();
-    static const struct stat child_pid_namespace = []() {
-      struct stat s {};
+    static const std::optional<struct stat> child_pid_namespace = []() {
+      struct stat s{};
       s.st_ino = 0xf0000011; // Arbitrary user namespace
-      return s;
+      return std::optional{ s };
     }();
 
     if (mock_in_init_pid_ns)
@@ -105,9 +110,12 @@ public:
 std::unique_ptr<MockBPFtrace> get_mock_bpftrace();
 std::unique_ptr<MockBPFtrace> get_strict_mock_bpftrace();
 
+static auto bpf_nofeature = BPFnofeature();
+static auto btf_obj = BTF(nullptr);
+
 class MockBPFfeature : public BPFfeature {
 public:
-  MockBPFfeature(bool has_features = true)
+  MockBPFfeature(bool has_features = true) : BPFfeature(bpf_nofeature, btf_obj)
   {
     has_send_signal_ = std::make_optional<bool>(has_features);
     has_get_current_cgroup_id_ = std::make_optional<bool>(has_features);
@@ -130,9 +138,23 @@ public:
     has_map_lookup_percpu_elem_ = std::make_optional<bool>(has_features);
   };
 
-  void mock_missing_kernel_func(Kfunc kfunc)
+  bool has_fentry() override
   {
-    available_kernel_funcs_.emplace(kfunc, false);
+    return has_features_;
+  }
+
+  void add_to_available_kernel_funcs(Kfunc kfunc, bool available)
+  {
+    available_kernel_funcs_.emplace(kfunc, available);
+  }
+
+  bool has_kernel_func(Kfunc kfunc) override
+  {
+    auto find_kfunc = available_kernel_funcs_.find(kfunc);
+    if (find_kfunc != available_kernel_funcs_.end())
+      return find_kfunc->second;
+
+    return false;
   }
 
   bool has_features_;

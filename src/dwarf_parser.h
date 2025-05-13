@@ -1,15 +1,16 @@
 #pragma once
 
+#include "struct.h"
+#include "types.h"
+
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "struct.h"
-#include "types.h"
-
-#ifdef HAVE_LIBLLDB
-#include <lldb/API/SBDebugger.h>
-#include <lldb/API/SBTarget.h>
+#ifdef HAVE_LIBDW
+#include <elfutils/libdwfl.h>
+#include <optional>
+#include <unordered_map>
 
 namespace bpftrace {
 
@@ -17,100 +18,91 @@ class BPFtrace;
 
 class Dwarf {
 public:
+  virtual ~Dwarf();
+
   static std::unique_ptr<Dwarf> GetFromBinary(BPFtrace *bpftrace,
-                                              std::string file_path);
+                                              const std::string &file_path);
 
-  bool has_debug_info();
+  std::vector<std::string> get_function_params(
+      const std::string &function) const;
+  std::shared_ptr<Struct> resolve_args(const std::string &function);
 
-  std::vector<uint64_t> get_function_locations(const std::string &function,
-                                               bool include_inlined);
-  std::vector<std::string> get_function_params(const std::string &function);
-  Struct resolve_args(const std::string &function);
-
-  SizedType get_stype(const std::string &type_name);
-  void resolve_fields(const SizedType &type);
+  SizedType get_stype(const std::string &type_name) const;
+  void resolve_fields(const SizedType &type) const;
 
 private:
-  Dwarf(BPFtrace *bpftrace, std::string file_path);
+  Dwarf(BPFtrace *bpftrace, const std::string &file_path);
 
-  lldb::SBValueList function_params(const std::string &function);
+  std::vector<Dwarf_Die> function_param_dies(const std::string &function) const;
+  std::optional<Dwarf_Die> get_func_die(const std::string &function) const;
+  std::string get_type_name(Dwarf_Die &type_die) const;
+  Dwarf_Word get_type_encoding(Dwarf_Die &type_die) const;
+  std::optional<Dwarf_Die> find_type(const std::string &name) const;
+  static ssize_t get_array_size(Dwarf_Die &subrange_die);
+  static ssize_t get_field_byte_offset(Dwarf_Die &field_die);
+  static ssize_t get_field_bit_offset(Dwarf_Die &field_die);
+  static ssize_t get_bitfield_size(Dwarf_Die &field_die);
+  std::optional<Bitfield> resolve_bitfield(Dwarf_Die &field_die) const;
 
-  std::string get_type_name(lldb::SBType type);
-  SizedType get_stype(lldb::SBType type, bool resolve_structs = true);
-  void resolve_fields(std::shared_ptr<Struct> str, lldb::SBType type);
-  std::optional<Bitfield> resolve_bitfield(lldb::SBTypeMember field);
+  SizedType get_stype(Dwarf_Die &type_die, bool resolve_structs = true) const;
 
-  // Initialize/Terminate liblldb globally with RAII
-  class InstanceCounter final {
-  private:
-    static std::atomic<size_t> count;
+  static std::optional<Dwarf_Die> get_child_with_tagname(
+      Dwarf_Die *die,
+      int tag,
+      const std::string &name);
+  static std::vector<Dwarf_Die> get_all_children_with_tag(Dwarf_Die *die,
+                                                          int tag);
 
-  public:
-    InstanceCounter();
-    ~InstanceCounter();
-  };
+  Dwfl *dwfl = nullptr;
+  Dwfl_Callbacks callbacks;
 
-  InstanceCounter counter_;
   BPFtrace *bpftrace_;
   std::string file_path_;
-
-  lldb::SBDebugger debugger_;
-  lldb::SBTarget target_;
 };
 
 } // namespace bpftrace
 
-#else // HAVE_LIBLLDB
+#else // HAVE_LIBDW
+
+#include "log.h"
 
 namespace bpftrace {
+
 class BPFtrace;
 
 class Dwarf {
 public:
-  Dwarf() = delete;
-
   static std::unique_ptr<Dwarf> GetFromBinary(BPFtrace *bpftrace
                                               __attribute__((unused)),
-                                              std::string file_path_
+                                              const std::string &file_path_
                                               __attribute__((unused)))
   {
     return nullptr;
   }
 
-  bool has_debug_info()
-  {
-    return false;
-  }
-
-  std::vector<uint64_t> get_function_locations(const std::string &function
-                                               __attribute__((unused)),
-                                               bool include_inlined
-                                               __attribute__((unused)))
-  {
-    return {};
-  }
-
   std::vector<std::string> get_function_params(const std::string &function
-                                               __attribute__((unused)))
+                                               __attribute__((unused))) const
   {
     return {};
   }
 
-  Struct resolve_args(const std::string &function __attribute__((unused)))
+  std::shared_ptr<Struct> resolve_args(const std::string &function
+                                       __attribute__((unused)))
   {
-    return {};
+    return nullptr;
   }
 
-  SizedType get_stype(const std::string &type_name __attribute__((unused)))
+  SizedType get_stype(const std::string &type_name
+                      __attribute__((unused))) const
   {
     return CreateNone();
   }
 
-  void resolve_fields(const SizedType &type __attribute__((unused)))
+  void resolve_fields(const SizedType &type __attribute__((unused))) const
   {
   }
 };
 
 } // namespace bpftrace
 
-#endif // HAVE_LIBLLDB
+#endif // HAVE_LIBDW

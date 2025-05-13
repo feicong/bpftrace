@@ -6,7 +6,6 @@
  * This is a bpftrace version of the bcc tool of the same name.
  *
  * Copyright 2018 Netflix, Inc.
- * Licensed under the Apache License, Version 2.0 (the "License")
  *
  * 07-Oct-2018	Brendan Gregg	Created this.
  */
@@ -14,13 +13,13 @@
 #ifndef BPFTRACE_HAVE_BTF
 #include <linux/sched.h>
 
-// Until BTF is available, we'll need to declare some of this struct manually,
+// Without BTF, we'll need to declare some of this struct manually,
 // since it isn't available to be #included. This will need maintenance to match
 // your kernel version. It is from kernel/sched/sched.h:
 struct cfs_rq {
 	struct load_weight load;
-	unsigned int nr_running;
-	unsigned int h_nr_running;
+	unsigned int nr_queued;
+	unsigned int h_nr_queued;
 };
 #endif
 
@@ -33,7 +32,7 @@ profile:hz:99
 {
 	$task = (struct task_struct *)curtask;
 	$my_q = (struct cfs_rq *)$task->se.cfs_rq;
-	$len = (uint64)$my_q->nr_running;
+	$len = (uint64)$my_q->nr_queued;
 	$len = $len > 0 ? $len - 1 : 0;	// subtract currently running task
 	@runqlen = lhist($len, 0, 100, 1);
 }

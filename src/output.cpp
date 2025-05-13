@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <bpf/libbpf.h>
 #include <iomanip>
+#include <string>
 
 #include "ast/async_event_types.h"
 #include "bpftrace.h"
 #include "log.h"
 #include "output.h"
+#include "required_resources.h"
 #include "util/format.h"
 #include "util/stats.h"
 
@@ -44,7 +46,6 @@ bool is_quoted_type(const SizedType &ty)
     case Type::max_t:
     case Type::min_t:
     case Type::pointer:
-    case Type::reference:
     case Type::record:
     case Type::stack_mode:
     case Type::stats_t:
@@ -423,7 +424,6 @@ std::string Output::value_to_str(BPFtrace &bpftrace,
     case Type::lhist_t:
     case Type::stack_mode:
     case Type::pointer:
-    case Type::reference:
     case Type::stats_t:
     case Type::timestamp_mode: {
       LOG(BUG) << "Invalid value type: " << type;
@@ -474,7 +474,6 @@ std::string Output::map_key_str(BPFtrace &bpftrace,
     case Type::hist_t:
     case Type::lhist_t:
     case Type::none:
-    case Type::reference:
     case Type::stack_mode:
     case Type::stats_t:
     case Type::timestamp_mode:
@@ -556,14 +555,16 @@ void Output::map_hist_contents(
     auto key_str = map_key_to_str(bpftrace, map, key);
     std::string val_str;
     if (map_type.IsHistTy()) {
-      if (!map_info.hist_bits_arg.has_value())
+      if (!std::holds_alternative<HistogramArgs>(map_info.detail))
         LOG(BUG) << "call to hist with missing \"bits\" argument";
-      val_str = hist_to_str(value, div, *map_info.hist_bits_arg);
+      val_str = hist_to_str(value,
+                            div,
+                            std::get<HistogramArgs>(map_info.detail).bits);
     } else {
-      const auto &args = map_info.lhist_args;
-      if (!args.has_value())
+      if (!std::holds_alternative<LinearHistogramArgs>(map_info.detail))
         LOG(BUG) << "call to lhist with missing arguments";
-      val_str = lhist_to_str(value, args->min, args->max, args->step);
+      const auto &args = std::get<LinearHistogramArgs>(map_info.detail);
+      val_str = lhist_to_str(value, args.min, args.max, args.step);
     }
     map_key_val(map_type, key_str, val_str);
   }
@@ -768,8 +769,7 @@ std::string TextOutput::value_to_str(BPFtrace &bpftrace,
                                      bool is_map_key) const
 {
   switch (type.GetTy()) {
-    case Type::pointer:
-    case Type::reference: {
+    case Type::pointer: {
       std::ostringstream res;
       res << "0x" << std::hex << util::read_data<uint64_t>(value.data());
       return res.str();
@@ -779,7 +779,7 @@ std::string TextOutput::value_to_str(BPFtrace &bpftrace,
         assert(!is_per_cpu);
 
         const auto *data = value.data();
-        auto enum_name = type.GetName();
+        const auto &enum_name = type.GetName();
         uint64_t enum_val;
         switch (type.GetIntBitWidth()) {
           case 64:
@@ -800,9 +800,9 @@ std::string TextOutput::value_to_str(BPFtrace &bpftrace,
             return {};
         }
 
-        if (bpftrace.enum_defs_.contains(enum_name) &&
-            bpftrace.enum_defs_[enum_name].contains(enum_val)) {
-          return bpftrace.enum_defs_[enum_name][enum_val];
+        if (c_definitions_.enum_defs.contains(enum_name) &&
+            c_definitions_.enum_defs[enum_name].contains(enum_val)) {
+          return c_definitions_.enum_defs[enum_name][enum_val];
         } else {
           // Fall back to something comprehensible in case user somehow
           // tricked the type system into accepting an invalid enum.
@@ -870,8 +870,9 @@ std::string TextOutput::map_key_to_str(BPFtrace &bpftrace,
                                        const BpfMap &map,
                                        const std::vector<uint8_t> &key) const
 {
-  const auto &key_type = bpftrace.resources.maps_info.at(map.name()).key_type;
-  if (key_type.IsNoneTy())
+  const auto &map_info = bpftrace.resources.maps_info.at(map.name());
+  const auto &key_type = map_info.key_type;
+  if (map_info.is_scalar)
     return map.name();
 
   return map.name() + "[" + map_key_str(bpftrace, key_type, key) + "]";
@@ -954,16 +955,16 @@ void JsonOutput::map(
   if (values_by_key.empty())
     return;
 
-  const auto &map_key = bpftrace.resources.maps_info.at(map.name()).key_type;
+  const auto &map_info = bpftrace.resources.maps_info.at(map.name());
 
   out_ << R"({"type": ")" << MessageType::map << R"(", "data": {)";
   out_ << "\"" << json_escape(map.name()) << "\": ";
-  if (!map_key.IsNoneTy()) // check if this map has keys
+  if (!map_info.is_scalar)
     out_ << "{";
 
   map_contents(bpftrace, map, top, div, values_by_key);
 
-  if (!map_key.IsNoneTy())
+  if (!map_info.is_scalar)
     out_ << "}";
   out_ << "}}" << std::endl;
 }
@@ -1065,17 +1066,17 @@ void JsonOutput::map_hist(
   if (total_counts_by_key.empty())
     return;
 
-  const auto &map_key = bpftrace.resources.maps_info.at(map.name()).key_type;
+  const auto &map_info = bpftrace.resources.maps_info.at(map.name());
 
   out_ << R"({"type": ")" << MessageType::hist << R"(", "data": {)";
   out_ << "\"" << json_escape(map.name()) << "\": ";
-  if (!map_key.IsNoneTy()) // check if this map has keys
+  if (!map_info.is_scalar)
     out_ << "{";
 
   map_hist_contents(
       bpftrace, map, top, div, values_by_key, total_counts_by_key);
 
-  if (!map_key.IsNoneTy())
+  if (!map_info.is_scalar)
     out_ << "}";
   out_ << "}}" << std::endl;
 }
@@ -1091,16 +1092,16 @@ void JsonOutput::map_stats(
   if (values_by_key.empty())
     return;
 
-  const auto &map_key = bpftrace.resources.maps_info.at(map.name()).key_type;
+  const auto &map_info = bpftrace.resources.maps_info.at(map.name());
 
   out_ << R"({"type": ")" << MessageType::stats << R"(", "data": {)";
   out_ << "\"" << json_escape(map.name()) << "\": ";
-  if (!map_key.IsNoneTy()) // check if this map has keys
+  if (!map_info.is_scalar)
     out_ << "{";
 
   map_stats_contents(bpftrace, map, top, div, values_by_key);
 
-  if (!map_key.IsNoneTy())
+  if (!map_info.is_scalar)
     out_ << "}";
   out_ << "}}" << std::endl;
 }
@@ -1175,7 +1176,6 @@ std::string JsonOutput::value_to_str(BPFtrace &bpftrace,
 
   switch (type.GetTy()) {
     case Type::pointer:
-    case Type::reference:
       str = std::to_string(util::read_data<uint64_t>(value.data()));
       break;
     default:
@@ -1198,11 +1198,12 @@ std::string JsonOutput::map_key_to_str(BPFtrace &bpftrace,
                                        const BpfMap &map,
                                        const std::vector<uint8_t> &key) const
 {
-  const auto &key_type = bpftrace.resources.maps_info.at(map.name()).key_type;
-  if (key_type.IsNoneTy()) {
+  const auto &map_info = bpftrace.resources.maps_info.at(map.name());
+  if (map_info.is_scalar)
     return "";
-  }
-  return "\"" + json_escape(map_key_str(bpftrace, key_type, key)) + "\"";
+
+  return "\"" + json_escape(map_key_str(bpftrace, map_info.key_type, key)) +
+         "\"";
 }
 
 void JsonOutput::map_key_val(const SizedType &map_type __attribute__((unused)),

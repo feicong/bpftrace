@@ -35,6 +35,8 @@ void BpfProgram::set_expected_attach_type(const Probe &probe,
     attach_type = libbpf::BPF_TRACE_FEXIT;
   else if (probe.type == ProbeType::iter)
     attach_type = libbpf::BPF_TRACE_ITER;
+  else if (probe.type == ProbeType::rawtracepoint)
+    attach_type = libbpf::BPF_TRACE_RAW_TP;
 
   // We want to avoid kprobe_multi when a module is specified
   // because the BPF_TRACE_KPROBE_MULTI link type does not
@@ -60,26 +62,34 @@ void BpfProgram::set_attach_target(const Probe &probe,
                                    const Config &config)
 {
   if (probe.type != ProbeType::fentry && probe.type != ProbeType::fexit &&
-      probe.type != ProbeType::iter)
+      probe.type != ProbeType::iter && probe.type != ProbeType::rawtracepoint)
     return;
 
   const std::string &mod = probe.path;
   const std::string &fun = probe.attach_point;
   const std::string attach_target = !mod.empty() ? mod + ":" + fun : fun;
 
-  const std::string &btf_fun = probe.type == ProbeType::iter ? "bpf_iter_" + fun
-                                                             : fun;
-  if (btf.get_btf_id(btf_fun, mod) < 0) {
+  std::string btf_fun;
+  __u32 btf_kind = BTF_KIND_FUNC;
+
+  if (probe.type == ProbeType::iter) {
+    btf_fun = "bpf_iter_" + fun;
+  } else if (probe.type == ProbeType::rawtracepoint) {
+    btf_fun = "btf_trace_" + fun;
+    btf_kind = BTF_KIND_TYPEDEF;
+  } else {
+    btf_fun = fun;
+  }
+
+  if (btf.get_btf_id(btf_fun, mod, btf_kind) < 0) {
     const std::string msg = "No BTF found for " + attach_target;
     if (probe.orig_name != probe.name &&
-        config.get(ConfigKeyMissingProbes::default_) !=
-            ConfigMissingProbes::error) {
+        config.missing_probes != ConfigMissingProbes::error) {
       // One attach point in a multi-attachpoint probe failed and the user
       // requested not to error out. Show a warning (if requested) and continue
       // but disable auto-loading of the program as it would make the entire BPF
       // object loading fail.
-      if (config.get(ConfigKeyMissingProbes::default_) ==
-          ConfigMissingProbes::warn)
+      if (config.missing_probes == ConfigMissingProbes::warn)
         LOG(WARNING) << msg << ", skipping.";
       bpf_program__set_autoload(bpf_prog_, false);
     } else {

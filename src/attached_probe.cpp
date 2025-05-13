@@ -72,7 +72,7 @@ libbpf::bpf_prog_type progtype(ProbeType t)
     case ProbeType::fentry:     return libbpf::BPF_PROG_TYPE_TRACING; break;
     case ProbeType::fexit:      return libbpf::BPF_PROG_TYPE_TRACING; break;
     case ProbeType::iter:       return libbpf::BPF_PROG_TYPE_TRACING; break;
-    case ProbeType::rawtracepoint: return libbpf::BPF_PROG_TYPE_RAW_TRACEPOINT; break;
+    case ProbeType::rawtracepoint: return libbpf::BPF_PROG_TYPE_TRACING; break;
     // clang-format on
     case ProbeType::invalid:
       LOG(BUG) << "program type invalid";
@@ -147,7 +147,7 @@ int AttachedProbe::detach_iter()
 
 void AttachedProbe::attach_raw_tracepoint()
 {
-  tracing_fd_ = bpf_raw_tracepoint_open(probe_.attach_point.c_str(), progfd_);
+  tracing_fd_ = bpf_raw_tracepoint_open(nullptr, progfd_);
   if (tracing_fd_ < 0) {
     if (tracing_fd_ == -ENOENT)
       throw util::FatalUserException("Probe does not exist: " + probe_.name);
@@ -352,11 +352,7 @@ static constexpr std::string_view hint_unsafe =
     "\nUse --unsafe to force attachment. WARNING: This option could lead to "
     "data corruption in the target process.";
 
-static constexpr std::string_view hint_symbol_source =
-    "\nUse config 'symbol_source = \"symbol_table\"' in case of bad DebugInfo.";
-
-static void check_alignment(std::string &orig_name,
-                            std::string &path,
+static void check_alignment(std::string &path,
                             std::string &symbol,
                             uint64_t sym_offset,
                             uint64_t func_offset,
@@ -376,13 +372,9 @@ static void check_alignment(std::string &orig_name,
         auto msg = "Could not add " + probetypeName(type) +
                    " into middle of instruction: " + tmp +
                    std::string{ hint_unsafe };
-        if (orig_name.find('*') != std::string::npos)
-          msg += hint_symbol_source;
         throw util::FatalUserException(std::move(msg));
       } else {
         std::string_view hint;
-        if (orig_name.find('*') != std::string::npos)
-          hint = hint_symbol_source;
         LOG(WARNING) << "Unsafe " << type
                      << " in the middle of the instruction: " << tmp << hint;
       }
@@ -450,8 +442,7 @@ bool AttachedProbe::resolve_offset_uprobe(bool safe_mode, bool has_multiple_aps)
     if (!sym.start) {
       const std::string msg = "Could not resolve symbol: " + probe_.path + ":" +
                               symbol;
-      auto missing_probes = bpftrace_.config_->get(
-          ConfigKeyMissingProbes::default_);
+      const auto missing_probes = bpftrace_.config_->missing_probes;
       if (!has_multiple_aps || missing_probes == ConfigMissingProbes::error) {
         throw util::FatalUserException(msg + ", cannot attach probe.");
       } else {
@@ -498,13 +489,8 @@ bool AttachedProbe::resolve_offset_uprobe(bool safe_mode, bool has_multiple_aps)
   if (func_offset == 0)
     return true;
 
-  check_alignment(probe_.orig_name,
-                  probe_.path,
-                  symbol,
-                  sym_offset,
-                  func_offset,
-                  safe_mode,
-                  probe_.type);
+  check_alignment(
+      probe_.path, symbol, sym_offset, func_offset, safe_mode, probe_.type);
   return true;
 }
 
@@ -623,8 +609,7 @@ void AttachedProbe::attach_kprobe()
   // If the user requested to ignore warnings on non-existing probes and the
   // function is not traceable, do not even try to attach as that would yield
   // warnings from BCC which we don't want to see.
-  if (bpftrace_.config_->get(ConfigKeyMissingProbes::default_) ==
-          ConfigMissingProbes::ignore &&
+  if (bpftrace_.config_->missing_probes == ConfigMissingProbes::ignore &&
       probe_.name != probe_.orig_name &&
       (!funcname.empty() || probe_.address != 0) &&
       !bpftrace_.is_traceable_func(funcname))
@@ -650,8 +635,7 @@ void AttachedProbe::attach_kprobe()
 
   if (perf_event_fd < 0) {
     if (probe_.orig_name != probe_.name &&
-        bpftrace_.config_->get(ConfigKeyMissingProbes::default_) ==
-            ConfigMissingProbes::warn) {
+        bpftrace_.config_->missing_probes == ConfigMissingProbes::warn) {
       // a wildcard expansion couldn't probe something, just print a warning
       // as this is normal for some kernel functions (eg, do_debug())
       LOG(WARNING) << "could not attach probe " << probe_.name << ", skipping.";

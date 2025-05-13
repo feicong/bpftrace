@@ -9,6 +9,65 @@ and this project adheres to
 ## Unreleased
 
 #### Breaking Changes
+- Drop majority of DWARF support. Only uprobe argument parsing remains.
+  - [#3921](https://github.com/bpftrace/bpftrace/pull/3921)
+  - [#3950](https://github.com/bpftrace/bpftrace/pull/3950)
+- Removed config option 'symbol_source' - it no longer has any effect
+  - [#3925](https://github.com/bpftrace/bpftrace/pull/3925)
+- Rawtracepoints now require kernel BTF
+  - [#3944](https://github.com/bpftrace/bpftrace/pull/3944)
+- Ustack and kstack symbols are automatically enhanced with debug info if available
+  - [#3999](https://github.com/bpftrace/bpftrace/pull/3999)
+#### Added
+- Use blazesym for user space address symbolization
+  - [#3884](https://github.com/bpftrace/bpftrace/pull/3884)
+- Add simple block expressions
+  - [#3780](https://github.com/bpftrace/bpftrace/pull/3780)
+- Add map declaration syntax (behind an "unstable" config flag)
+  - [#3863](https://github.com/bpftrace/bpftrace/pull/3863)
+- Add license config to specify BPF license
+  - [#3905](https://github.com/bpftrace/bpftrace/pull/3905)
+- Rawtracepoints can now use `args` builtin and list params
+  - [#3918](https://github.com/bpftrace/bpftrace/pull/3918)
+- Add ability to specify rawtracepoint modules
+  - [#3944](https://github.com/bpftrace/bpftrace/pull/3944)
+- Add 'show_debug_info' config for blazesym
+  - [#3999](https://github.com/bpftrace/bpftrace/pull/3999)
+- Add hygienic macros (behind an "unstable" config flag)
+  - [#4037](https://github.com/bpftrace/bpftrace/pull/4037)
+- Add warning when unset or empty positional parameters are used
+  - [#4095](https://github.com/bpftrace/bpftrace/pull/4095)
+#### Changed
+- `-p` CLI flag now applies to all probes (except BEGIN/END)
+  - [#3800](https://github.com/bpftrace/bpftrace/pull/3800)
+- Introduce automatic session probes
+  - [#3772](https://github.com/bpftrace/bpftrace/pull/3772)
+- Positional params can be used in any part of a probe string
+  - [#3956](https://github.com/bpftrace/bpftrace/pull/3956)
+#### Deprecated
+#### Removed
+#### Fixed
+- Fix build failures due to missing location.hh
+  - [#3987](https://github.com/bpftrace/bpftrace/pull/3987)
+- Fix 32-bit build failures due to missing cast
+  - [#4006](https://github.com/bpftrace/bpftrace/pull/4006)
+- Don't crash if kernel isn't built with PID namespaces
+  - [#3976](https://github.com/bpftrace/bpftrace/pull/3976)
+- Allow sized_type idents to be used for field access
+  - [#4064](https://github.com/bpftrace/bpftrace/pull/4064)
+- Fix per-cpu map update warning
+  - [#4047](https://github.com/bpftrace/bpftrace/pull/4074)
+- Fix probe firing order for fexit and software
+  - [#4113](https://github.com/bpftrace/bpftrace/pull/4113)
+#### Security
+#### Docs
+#### Tools
+- Fix biosnoop.bt to print comm from block_io_start probe
+  - [#4013](https://github.com/bpftrace/bpftrace/pull/4013)
+
+## [0.23.0] 2025-03-25
+
+#### Breaking Changes
 - Remove '-kk' command line opt, surface some BPF errors by default, and make '-k' surface probe read errors
   - [#3784](https://github.com/bpftrace/bpftrace/pull/3784)
 #### Added
@@ -21,7 +80,6 @@ and this project adheres to
 - `blazesym` will be used for address symbolication if found during build
   - [#3760](https://github.com/bpftrace/bpftrace/pull/3760)
   - [#3787](https://github.com/bpftrace/bpftrace/pull/3787)
-  - [#3884](https://github.com/bpftrace/bpftrace/pull/3884)
 - Published aarch64 appimage builds from master
   - [#3795](https://github.com/bpftrace/bpftrace/pull/3795)
 - Add ability to cast int to an enum
@@ -30,12 +88,6 @@ and this project adheres to
   - [#3811](https://github.com/bpftrace/bpftrace/pull/3811)
 - Add support for LLVM 20
   - [#3841](https://github.com/bpftrace/bpftrace/pull/3841)
-- Add simple block expressions
-  - [#3780](https://github.com/bpftrace/bpftrace/pull/3780)
-- Add map declaration syntax (behind an "unstable" config flag)
-  - [#3863](https://github.com/bpftrace/bpftrace/pull/3863)
-- Add license config to specify BPF license
-  - [#3905](https://github.com/bpftrace/bpftrace/pull/3905)
 #### Changed
 - `probe` builtin is now represented as a string type
   - [#3638](https://github.com/bpftrace/bpftrace/pull/3638)
@@ -47,12 +99,8 @@ and this project adheres to
   - [#3752](https://github.com/bpftrace/bpftrace/pull/3752)
 - Increase default values for max_bpf_progs and max_probes
   - [#3808](https://github.com/bpftrace/bpftrace/pull/3808)
-- `-p` CLI flag now applies to all probes (except BEGIN/END)
-  - [#3800](https://github.com/bpftrace/bpftrace/pull/3800)
 - Allow use of variables before they are assigned
   - [#3832](https://github.com/bpftrace/bpftrace/pull/3832)
-- Introduce automatic session probes
-  - [#3772](https://github.com/bpftrace/bpftrace/pull/3772)
 #### Deprecated
 #### Removed
 - Drop support for LLVM 14 and 15

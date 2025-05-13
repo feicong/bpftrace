@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "bpftrace.h"
+#include "btf.h"
 #include "cxxdemangler/cxxdemangler.h"
 #include "dwarf_parser.h"
 #include "log.h"
@@ -130,9 +131,19 @@ std::set<std::string> ProbeMatcher::get_matches_for_probetype(
       symbol_stream = get_symbols_from_file(tracefs::available_events());
       break;
     }
+    // The two `has_btf_data` checks below for fentry/fexit/rawtracepoints
+    // are more about ordering than system properties.
+    // Initially, before BTF is loaded and we want to determine what modules to
+    // load BTF from we check "/sys/kernel/tracing/available_filter_functions".
+    // Then we check the BTF to filter out functions from that list that don't
+    // have any BTF definitions.
     case ProbeType::rawtracepoint: {
-      symbol_stream = get_symbols_from_file(tracefs::available_events());
-      symbol_stream = adjust_rawtracepoint(*symbol_stream);
+      symbol_stream = get_raw_tracepoint_symbols();
+      break;
+    }
+    case ProbeType::fentry:
+    case ProbeType::fexit: {
+      symbol_stream = get_fentry_symbols();
       break;
     }
     case ProbeType::usdt: {
@@ -145,18 +156,6 @@ std::set<std::string> ProbeMatcher::get_matches_for_probetype(
     }
     case ProbeType::hardware: {
       symbol_stream = get_symbols_from_list(HW_PROBE_LIST);
-      break;
-    }
-    case ProbeType::fentry:
-    case ProbeType::fexit: {
-      // If BTF is not parsed, yet, read available_filter_functions instead.
-      // This is useful as we will use the result to extract the list of
-      // potentially used kernel modules and then only parse BTF for them.
-      if (bpftrace_->has_btf_data())
-        symbol_stream = bpftrace_->btf_->get_all_funcs();
-      else {
-        symbol_stream = get_symbols_from_traceable_funcs(true);
-      }
       break;
     }
     case ProbeType::iter: {
@@ -240,6 +239,29 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_traceable_funcs(
     }
   }
   return std::make_unique<std::istringstream>(funcs);
+}
+
+std::unique_ptr<std::istream> ProbeMatcher::get_fentry_symbols() const
+{
+  if (bpftrace_->btf_->has_data() && bpftrace_->btf_->modules_loaded())
+    return bpftrace_->btf_->get_all_funcs();
+  else {
+    return get_symbols_from_traceable_funcs(true);
+  }
+}
+
+std::unique_ptr<std::istream> ProbeMatcher::get_raw_tracepoint_symbols() const
+{
+  if (bpftrace_->btf_->has_data() && bpftrace_->btf_->modules_loaded()) {
+    return bpftrace_->btf_->get_all_raw_tracepoints();
+  } else {
+    std::string rts;
+    for (const auto& rt_mod : bpftrace_->get_raw_tracepoints()) {
+      for (const auto& mod : rt_mod.second)
+        rts += mod + ":" + rt_mod.first + "\n";
+    }
+    return std::make_unique<std::istringstream>(rts);
+  }
 }
 
 std::unique_ptr<std::istream> ProbeMatcher::get_func_symbols_from_file(
@@ -432,18 +454,13 @@ FuncParamLists ProbeMatcher::get_uprobe_params(
   for (const auto& match : uprobes) {
     std::string fun = match;
     std::string path = util::erase_prefix(fun);
-    if (auto dwarf = Dwarf::GetFromBinary(nullptr, path)) {
+    auto dwarf = Dwarf::GetFromBinary(nullptr, path);
+    if (dwarf)
       params.emplace(match, dwarf->get_function_params(fun));
-    } else {
-      if (warned_paths.insert(path).second) {
-#ifdef HAVE_LIBLLDB
+    else {
+      if (warned_paths.insert(path).second)
         LOG(WARNING) << "No DWARF found for \"" << path << "\""
                      << ", cannot show parameter info";
-#else
-        LOG(WARNING) << "bpftrace was compiled without liblldb, "
-                     << "cannot show parameter info for \"" << path << "\"";
-#endif
-      }
     }
   }
 
@@ -463,6 +480,8 @@ void ProbeMatcher::list_probes(ast::Program* prog)
         else if (probe_type == ProbeType::fentry ||
                  probe_type == ProbeType::fexit)
           param_lists = bpftrace_->btf_->get_params(matches);
+        else if (probe_type == ProbeType::rawtracepoint)
+          param_lists = bpftrace_->btf_->get_rawtracepoint_params(matches);
         else if (probe_type == ProbeType::iter)
           param_lists = get_iters_params(matches);
         else if (probe_type == ProbeType::uprobe)
@@ -511,8 +530,11 @@ std::set<std::string> ProbeMatcher::get_matches_for_ap(
         search_input = attach_point.func;
       break;
     }
-    case ProbeType::iter:
     case ProbeType::rawtracepoint: {
+      search_input = attach_point.target + ":" + attach_point.func;
+      break;
+    }
+    case ProbeType::iter: {
       search_input = attach_point.func;
       break;
     }
@@ -596,21 +618,6 @@ void ProbeMatcher::list_structs(const std::string& search)
 
   for (const auto& match : get_matches_in_set(search_input, structs))
     std::cout << match << std::endl;
-}
-
-std::unique_ptr<std::istream> ProbeMatcher::adjust_rawtracepoint(
-    std::istream& symbol_list) const
-{
-  auto new_list = std::make_unique<std::stringstream>();
-  std::string line;
-  while (std::getline(symbol_list, line, '\n')) {
-    if ((line.find("syscalls:sys_enter_") != std::string::npos) ||
-        (line.find("syscalls:sys_exit_") != std::string::npos))
-      continue;
-    util::erase_prefix(line);
-    *new_list << line << "\n";
-  }
-  return new_list;
 }
 
 } // namespace bpftrace

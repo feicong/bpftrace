@@ -120,4 +120,33 @@ TEST(Log, disable_log_type)
   ss.str({});
 }
 
+TEST(LogStreamBug, log_stream_bug_should_be_aborted)
+{
+  const std::string content = "I'm gonna die";
+
+  auto output = [&content](int line) {
+    const std::string filename = __FILE__;
+    return "BUG: \\[" + filename + ":" + std::to_string(line) + "\\] " +
+           content;
+  };
+  EXPECT_DEATH(LOG(BUG) << content, output(__LINE__));
+}
+
+TEST(LogStreamBug, log_stream_bug_colorized)
+{
+  Log::get().set_colorize(true);
+  const std::string content = "I'm gonna die";
+
+  auto output = [&content](int line) {
+    // Escape [ to avoid being captured by regex
+    const std::string bug_color = "\033\\[31m";
+    const std::string default_color = "\033\\[0m";
+    const std::string filename = __FILE__;
+    return bug_color + "BUG: \\[" + filename + ":" + std::to_string(line) +
+           "\\] " + content + default_color;
+  };
+  EXPECT_DEATH(LOG(BUG) << content, output(__LINE__));
+  Log::get().set_colorize(false);
+}
+
 } // namespace bpftrace::test::log

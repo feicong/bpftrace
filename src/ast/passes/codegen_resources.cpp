@@ -21,8 +21,7 @@ void CodegenResourceAnalyser::visit(Builtin &builtin)
   if (builtin.ident == "elapsed") {
     resources_.needs_elapsed_map = true;
   } else if (builtin.ident == "kstack" || builtin.ident == "ustack") {
-    resources_.stackid_maps.insert(
-        StackType{ .mode = config_.get(ConfigKeyStackMode::default_) });
+    resources_.stackid_maps.insert(StackType{ .mode = config_.stack_mode });
   }
 }
 
@@ -33,7 +32,7 @@ void CodegenResourceAnalyser::visit(Call &call)
   if (call.func == "join") {
     resources_.needs_join_map = true;
   } else if (call.func == "kstack" || call.func == "ustack") {
-    resources_.stackid_maps.insert(call.type.stack_type);
+    resources_.stackid_maps.insert(call.return_type.stack_type);
   }
 }
 

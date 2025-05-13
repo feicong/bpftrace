@@ -33,6 +33,7 @@
 
 #include "ast/async_event_types.h"
 #include "ast/context.h"
+#include "async_action.h"
 #include "bpfmap.h"
 #include "bpfprogram.h"
 #include "bpftrace.h"
@@ -46,7 +47,6 @@
 #include "util/exceptions.h"
 #include "util/format.h"
 #include "util/int_parser.h"
-#include "util/io.h"
 #include "util/kernel.h"
 #include "util/paths.h"
 #include "util/stats.h"
@@ -90,7 +90,7 @@ Probe BPFtrace::generate_probe(const ast::AttachPoint &ap,
   probe.path = ap.target;
   probe.attach_point = ap.func;
   probe.type = probetype(ap.provider);
-  probe.log_size = config_->get(ConfigKeyInt::log_size);
+  probe.log_size = config_->log_size;
   probe.orig_name = p.name();
   probe.ns = ap.ns;
   probe.name = ap.name();
@@ -118,11 +118,15 @@ int BPFtrace::add_probe(ast::ASTContext &ctx,
   auto probe = generate_probe(ap, p, usdt_location_idx);
 
   // Add the new probe(s) to resources
-  if (ap.provider == "BEGIN" || ap.provider == "END" || ap.provider == "self") {
+  if (ap.provider == "BEGIN" || ap.provider == "END") {
     // special probes
     auto target = ap.target.empty() ? "" : "_" + ap.target;
     auto name = ap.provider + target;
     resources.special_probes[name] = std::move(probe);
+  } else if (ap.provider == "self") {
+    if (ap.target == "signal") {
+      resources.signal_probes.emplace_back(std::move(probe));
+    }
   } else if ((type == ProbeType::watchpoint ||
               type == ProbeType::asyncwatchpoint) &&
              !ap.func.empty()) {
@@ -161,48 +165,6 @@ int BPFtrace::add_probe(ast::ASTContext &ctx,
       probe.funcs = std::vector<std::string>(matches.begin(), matches.end());
       resources.probes.push_back(std::move(probe));
     }
-  } else if (probetype(ap.provider) == ProbeType::uprobe ||
-             probetype(ap.provider) == ProbeType::kprobe) {
-    bool locations_from_dwarf = false;
-
-    // Don't set the DWARF target when the user wants to use the symbol table.
-    std::optional<std::string> target;
-    if (config_->get(ConfigKeySymbolSource::default_) ==
-        ConfigSymbolSource::dwarf) {
-      if (probetype(ap.provider) == ProbeType::uprobe) {
-        target = probe.path;
-      } else {
-        // Only use the DWARF information of the Kernel,
-        // if the user wants to to probe inlined kprobes.
-        // Otherwise, fall back to using the symbol table.
-        if (config_->get(ConfigKeyBool::probe_inline))
-          target = util::find_vmlinux();
-      }
-    }
-
-    // If the user specified an address/offset, do not overwrite
-    // their choice with locations from the DebugInfo.
-    if (probe.address == 0 && probe.func_offset == 0 && target.has_value()) {
-      // Get function locations from the DebugInfo, as it skips the
-      // prologue and also returns locations of inlined function calls.
-      if (auto *dwarf = get_dwarf(target.value())) {
-        const auto locations = dwarf->get_function_locations(
-            probe.attach_point, config_->get(ConfigKeyBool::probe_inline));
-        for (const auto loc : locations) {
-          // Clear the attach point, so the address will be used instead
-          Probe probe_copy = probe;
-          probe_copy.attach_point.clear();
-          probe_copy.address = loc;
-          resources.probes.push_back(std::move(probe_copy));
-
-          locations_from_dwarf = true;
-        }
-      }
-    }
-
-    // Otherwise, use the location from the symbol table.
-    if (!locations_from_dwarf)
-      resources.probes.push_back(std::move(probe));
   } else {
     resources.probes.emplace_back(std::move(probe));
   }
@@ -211,9 +173,7 @@ int BPFtrace::add_probe(ast::ASTContext &ctx,
     has_iter_ = true;
 
   // Preload symbol tables if necessary
-  if (resources.probes_using_usym.find(&p) !=
-          resources.probes_using_usym.end() &&
-      util::is_exe(ap.target)) {
+  if (resources.probes_using_usym.contains(&p) && util::is_exe(ap.target)) {
     usyms_.cache(ap.target);
   }
 
@@ -222,7 +182,8 @@ int BPFtrace::add_probe(ast::ASTContext &ctx,
 
 int BPFtrace::num_probes() const
 {
-  return resources.special_probes.size() + resources.probes.size();
+  return resources.special_probes.size() + resources.probes.size() +
+         resources.signal_probes.size();
 }
 
 void BPFtrace::request_finalize()
@@ -232,6 +193,13 @@ void BPFtrace::request_finalize()
   if (child_)
     child_->terminate();
 }
+
+// PerfEventContext is our callback wrapper.
+struct PerfEventContext {
+  PerfEventContext(BPFtrace &b, Output &o) : bpftrace(b), output(o) {};
+  BPFtrace &bpftrace;
+  Output &output;
+};
 
 void perf_event_printer(void *cb_cookie, void *data, int size)
 {
@@ -243,115 +211,76 @@ void perf_event_printer(void *cb_cookie, void *data, int size)
   data_aligned.resize(size);
   memcpy(data_aligned.data(), data, size);
 
-  auto *bpftrace = static_cast<BPFtrace *>(cb_cookie);
+  auto *ctx = static_cast<PerfEventContext *>(cb_cookie);
   auto *arg_data = data_aligned.data();
 
-  auto printf_id = *reinterpret_cast<uint64_t *>(arg_data);
+  auto printf_id = AsyncAction(*reinterpret_cast<uint64_t *>(arg_data));
 
   int err;
 
   // Ignore the remaining events if perf_event_printer is called during
   // finalization stage (exit() builtin has been called)
-  if (bpftrace->finalize_)
+  if (ctx->bpftrace.finalize_)
     return;
 
   if (bpftrace::BPFtrace::exitsig_recv) {
-    bpftrace->request_finalize();
+    ctx->bpftrace.request_finalize();
     return;
   }
 
   // async actions
-  if (printf_id == asyncactionint(AsyncAction::exit)) {
+  if (printf_id == AsyncAction::exit) {
     auto *exit = static_cast<AsyncEvent::Exit *>(data);
     BPFtrace::exit_code = exit->exit_code;
-    bpftrace->request_finalize();
+    ctx->bpftrace.request_finalize();
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::print)) {
+  } else if (printf_id == AsyncAction::print) {
     auto *print = static_cast<AsyncEvent::Print *>(data);
-    const auto &map = bpftrace->bytecode_.getMap(print->mapid);
+    const auto &map = ctx->bpftrace.bytecode_.getMap(print->mapid);
 
-    err = bpftrace->print_map(map, print->top, print->div);
+    err = ctx->bpftrace.print_map(ctx->output, map, print->top, print->div);
 
     if (err)
       LOG(BUG) << "Could not print map with ident \"" << map.name()
                << "\", err=" << std::to_string(err);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::print_non_map)) {
-    auto *print = static_cast<AsyncEvent::PrintNonMap *>(data);
-    const SizedType &ty = bpftrace->resources.non_map_print_args.at(
-        print->print_id);
-
-    std::vector<uint8_t> bytes;
-    for (size_t i = 0; i < ty.GetSize(); ++i)
-      bytes.emplace_back(print->content[i]);
-
-    bpftrace->out_->value(*bpftrace, ty, bytes);
-
+  } else if (printf_id == AsyncAction::print_non_map) {
+    async_action::print_non_map_handler(ctx->bpftrace, ctx->output, data);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::clear)) {
+  } else if (printf_id == AsyncAction::clear) {
     auto *mapevent = static_cast<AsyncEvent::MapEvent *>(data);
-    const auto &map = bpftrace->bytecode_.getMap(mapevent->mapid);
+    const auto &map = ctx->bpftrace.bytecode_.getMap(mapevent->mapid);
 
-    err = bpftrace->clear_map(map);
+    err = ctx->bpftrace.clear_map(map);
     if (err)
       LOG(BUG) << "Could not clear map with ident \"" << map.name()
                << "\", err=" << std::to_string(err);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::zero)) {
+  } else if (printf_id == AsyncAction::zero) {
     auto *mapevent = static_cast<AsyncEvent::MapEvent *>(data);
-    const auto &map = bpftrace->bytecode_.getMap(mapevent->mapid);
+    const auto &map = ctx->bpftrace.bytecode_.getMap(mapevent->mapid);
 
-    err = bpftrace->zero_map(map);
+    err = ctx->bpftrace.zero_map(map);
     if (err)
       LOG(BUG) << "Could not zero map with ident \"" << map.name()
                << "\", err=" << std::to_string(err);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::time)) {
-    char timestr[64]; // not respecting config_->get(ConfigKeyInt::max_strlen)
-    time_t t;
-    struct tm tmp;
-    t = time(nullptr);
-    if (!localtime_r(&t, &tmp)) {
-      LOG(WARNING) << "localtime_r: " << strerror(errno);
-      return;
-    }
-    auto *time = static_cast<AsyncEvent::Time *>(data);
-    const auto *fmt = bpftrace->resources.time_args[time->time_id].c_str();
-    if (strftime(timestr, sizeof(timestr), fmt, &tmp) == 0) {
-      LOG(WARNING) << "strftime returned 0";
-      return;
-    }
-    bpftrace->out_->message(MessageType::time, timestr, false);
+  } else if (printf_id == AsyncAction::time) {
+    async_action::time_handler(ctx->bpftrace, ctx->output, data);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::join)) {
-    uint64_t join_id = *(static_cast<uint64_t *>(data) + 1);
-    const auto *delim = bpftrace->resources.join_args[join_id].c_str();
-    std::stringstream joined;
-    for (unsigned int i = 0; i < bpftrace->join_argnum_; i++) {
-      auto *arg = arg_data + (2 * sizeof(uint64_t)) +
-                  (i * bpftrace->join_argsize_);
-      if (arg[0] == 0)
-        break;
-      if (i)
-        joined << delim;
-      joined << arg;
-    }
-    bpftrace->out_->message(MessageType::join, joined.str());
+  } else if (printf_id == AsyncAction::join) {
+    async_action::join_handler(ctx->bpftrace, ctx->output, data);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::helper_error)) {
-    auto *helpererror = static_cast<AsyncEvent::HelperError *>(data);
-    auto error_id = helpererror->error_id;
-    auto return_value = helpererror->return_value;
-    auto &info = bpftrace->resources.helper_error_info[error_id];
-    bpftrace->out_->helper_error(return_value, info);
+  } else if (printf_id == AsyncAction::helper_error) {
+    async_action::helper_error_handler(ctx->bpftrace, ctx->output, data);
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::watchpoint_attach)) {
+  } else if (printf_id == AsyncAction::watchpoint_attach) {
     bool abort = false;
     auto *watchpoint = static_cast<AsyncEvent::Watchpoint *>(data);
     uint64_t probe_idx = watchpoint->watchpoint_idx;
     uint64_t addr = watchpoint->addr;
 
-    if (probe_idx >= bpftrace->resources.watchpoint_probes.size()) {
+    if (probe_idx >= ctx->bpftrace.resources.watchpoint_probes.size()) {
       LOG(ERROR) << "Invalid watchpoint probe idx=" << probe_idx;
       abort = true;
       goto out;
@@ -363,22 +292,22 @@ void perf_event_printer(void *cb_cookie, void *data, int size)
     // NB: this check works b/c we set Probe::addr below
     //
     // TODO: Should we be printing a warning or info message out here?
-    if (bpftrace->resources.watchpoint_probes[probe_idx].address == addr)
+    if (ctx->bpftrace.resources.watchpoint_probes[probe_idx].address == addr)
       goto out;
 
     // Attach the real watchpoint probe
     {
       bool registers_available = true;
-      Probe &wp_probe = bpftrace->resources.watchpoint_probes[probe_idx];
+      Probe &wp_probe = ctx->bpftrace.resources.watchpoint_probes[probe_idx];
       wp_probe.address = addr;
       std::vector<std::unique_ptr<AttachedProbe>> aps;
       try {
-        aps = bpftrace->attach_probe(wp_probe, bpftrace->bytecode_);
+        aps = ctx->bpftrace.attach_probe(wp_probe, ctx->bpftrace.bytecode_);
       } catch (const util::EnospcException &ex) {
         registers_available = false;
-        bpftrace->out_->message(MessageType::lost_events,
-                                "Failed to attach watchpoint probe. You are "
-                                "out of watchpoint registers.");
+        ctx->output.message(MessageType::lost_events,
+                            "Failed to attach watchpoint probe. You are "
+                            "out of watchpoint registers.");
         goto out;
       }
 
@@ -389,18 +318,19 @@ void perf_event_printer(void *cb_cookie, void *data, int size)
       }
 
       for (auto &ap : aps)
-        bpftrace->attached_probes_.emplace_back(std::move(ap));
+        ctx->bpftrace.attached_probes_.emplace_back(std::move(ap));
     }
 
   out:
     // Async watchpoints are not SIGSTOP'd
-    if (bpftrace->resources.watchpoint_probes[probe_idx].async)
+    if (ctx->bpftrace.resources.watchpoint_probes[probe_idx].async)
       return;
 
     // Let the tracee continue
-    pid_t pid = bpftrace->child_
-                    ? bpftrace->child_->pid()
-                    : (bpftrace->procmon_ ? bpftrace->procmon_->pid() : -1);
+    pid_t pid = ctx->bpftrace.child_
+                    ? ctx->bpftrace.child_->pid()
+                    : (ctx->bpftrace.procmon_ ? ctx->bpftrace.procmon_->pid()
+                                              : -1);
     if (pid == -1 || ::kill(pid, SIGCONT) != 0) {
       std::cerr << "Failed to SIGCONT tracee: " << strerror(errno) << std::endl;
       abort = true;
@@ -410,7 +340,7 @@ void perf_event_printer(void *cb_cookie, void *data, int size)
       std::abort();
 
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::watchpoint_detach)) {
+  } else if (printf_id == AsyncAction::watchpoint_detach) {
     auto *unwatch = static_cast<AsyncEvent::WatchpointUnwatch *>(data);
     uint64_t addr = unwatch->addr;
 
@@ -418,14 +348,14 @@ void perf_event_printer(void *cb_cookie, void *data, int size)
     // (ie invalid addr). This lets script writers be a bit more aggressive
     // when unwatch'ing addresses, especially if they're sampling a portion
     // of addresses they're interested in watching.
-    auto it = std::ranges::remove_if(bpftrace->attached_probes_,
+    auto it = std::ranges::remove_if(ctx->bpftrace.attached_probes_,
                                      [&](const auto &ap) {
                                        return ap->probe().address == addr;
                                      });
-    bpftrace->attached_probes_.erase(it.begin(), it.end());
+    ctx->bpftrace.attached_probes_.erase(it.begin(), it.end());
 
     return;
-  } else if (printf_id == asyncactionint(AsyncAction::skboutput)) {
+  } else if (printf_id == AsyncAction::skboutput) {
     struct hdr_t {
       uint64_t aid;
       uint64_t id;
@@ -435,52 +365,29 @@ void perf_event_printer(void *cb_cookie, void *data, int size)
 
     hdr = static_cast<struct hdr_t *>(data);
 
-    int offset = std::get<1>(bpftrace->resources.skboutput_args_.at(hdr->id));
+    int offset = std::get<1>(
+        ctx->bpftrace.resources.skboutput_args_.at(hdr->id));
 
-    bpftrace->write_pcaps(
+    ctx->bpftrace.write_pcaps(
         hdr->id, hdr->ns, hdr->pkt + offset, size - sizeof(*hdr));
     return;
-  } else if (printf_id >= asyncactionint(AsyncAction::syscall) &&
-             printf_id < asyncactionint(AsyncAction::syscall) +
-                             RESERVED_IDS_PER_ASYNCACTION) {
-    if (bpftrace->safe_mode_) {
-      throw util::FatalUserException(
-          "syscall() not allowed in safe mode. Use '--unsafe'.");
-    }
-
-    auto id = printf_id - asyncactionint(AsyncAction::syscall);
-    auto &fmt = std::get<0>(bpftrace->resources.system_args[id]);
-    auto &args = std::get<1>(bpftrace->resources.system_args[id]);
-    auto arg_values = bpftrace->get_arg_values(args, arg_data);
-
-    bpftrace->out_->message(MessageType::syscall,
-                            util::exec_system(
-                                fmt.format_str(arg_values).c_str()),
-                            false);
+  } else if (printf_id >= AsyncAction::syscall &&
+             printf_id <= AsyncAction::syscall_end) {
+    async_action::syscall_handler(
+        ctx->bpftrace, ctx->output, printf_id, arg_data);
     return;
-  } else if (printf_id >= asyncactionint(AsyncAction::cat)) {
-    auto id = printf_id - asyncactionint(AsyncAction::cat);
-    auto &fmt = std::get<0>(bpftrace->resources.cat_args[id]);
-    auto &args = std::get<1>(bpftrace->resources.cat_args[id]);
-    auto arg_values = bpftrace->get_arg_values(args, arg_data);
-
-    std::stringstream buf;
-    util::cat_file(fmt.format_str(arg_values).c_str(),
-                   bpftrace->config_->get(ConfigKeyInt::max_cat_bytes),
-                   buf);
-    bpftrace->out_->message(MessageType::cat, buf.str(), false);
-
+  } else if (printf_id >= AsyncAction::cat &&
+             printf_id <= AsyncAction::cat_end) {
+    async_action::cat_handler(ctx->bpftrace, ctx->output, printf_id, arg_data);
     return;
+  } else if (printf_id >= AsyncAction::printf &&
+             printf_id <= AsyncAction::printf_end) {
+    async_action::printf_handler(
+        ctx->bpftrace, ctx->output, printf_id, arg_data);
+    return;
+  } else {
+    LOG(BUG) << "Unknown printf_id: " << static_cast<int64_t>(printf_id);
   }
-
-  // printf
-  auto &fmt = std::get<0>(bpftrace->resources.printf_args[printf_id]);
-  auto &args = std::get<1>(bpftrace->resources.printf_args[printf_id]);
-  auto arg_values = bpftrace->get_arg_values(args, arg_data);
-
-  bpftrace->out_->message(MessageType::printf,
-                          fmt.format_str(arg_values),
-                          false);
 }
 
 int ringbuf_printer(void *cb_cookie, void *data, size_t size)
@@ -490,6 +397,7 @@ int ringbuf_printer(void *cb_cookie, void *data, size_t size)
 }
 
 std::vector<std::unique_ptr<IPrintable>> BPFtrace::get_arg_values(
+    Output &output,
     const std::vector<Field> &args,
     uint8_t *arg_data)
 {
@@ -549,13 +457,16 @@ std::vector<std::unique_ptr<IPrintable>> BPFtrace::get_arg_values(
           }
 
           // bpftrace represents enums as unsigned integers
+          const auto &c_definitions = output.c_definitions();
           if (arg.type.IsEnumTy()) {
             auto enum_name = arg.type.GetName();
-            if (enum_defs_.contains(enum_name) &&
-                enum_defs_[enum_name].contains(val)) {
-              arg_values.push_back(
-                  std::make_unique<PrintableEnum>(val,
-                                                  enum_defs_[enum_name][val]));
+            if (c_definitions.enum_defs.contains(enum_name) &&
+                c_definitions.enum_defs.find(enum_name)->second.contains(val)) {
+              arg_values.push_back(std::make_unique<PrintableEnum>(
+                  val,
+                  c_definitions.enum_defs.find(enum_name)
+                      ->second.find(val)
+                      ->second));
             } else {
               arg_values.push_back(
                   std::make_unique<PrintableEnum>(val, std::to_string(val)));
@@ -569,8 +480,8 @@ std::vector<std::unique_ptr<IPrintable>> BPFtrace::get_arg_values(
         auto *p = reinterpret_cast<char *>(arg_data + arg.offset);
         arg_values.push_back(std::make_unique<PrintableString>(
             std::string(p, strnlen(p, arg.type.GetSize())),
-            config_->get(ConfigKeyInt::max_strlen),
-            config_->get(ConfigKeyString::str_trunc_trailer).c_str()));
+            config_->max_strlen,
+            config_->str_trunc_trailer.c_str()));
         break;
       }
       case Type::buffer: {
@@ -666,10 +577,10 @@ void BPFtrace::add_param(const std::string &param)
   params_.emplace_back(param);
 }
 
-std::string BPFtrace::get_param(size_t i, bool is_str) const
+std::string BPFtrace::get_param(size_t i) const
 {
   if (params_.size() < i) {
-    return is_str ? "" : "0";
+    return "";
   }
   return params_.at(i - 1);
 }
@@ -681,8 +592,8 @@ size_t BPFtrace::num_params() const
 
 void perf_event_lost(void *cb_cookie, uint64_t lost)
 {
-  auto *bpftrace = static_cast<BPFtrace *>(cb_cookie);
-  bpftrace->out_->lost_events(lost);
+  auto *ctx = static_cast<PerfEventContext *>(cb_cookie);
+  ctx->output.lost_events(lost);
 }
 
 std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_usdt_probe(
@@ -810,11 +721,10 @@ bool attach_reverse(const Probe &p)
     case ProbeType::uprobe:
     case ProbeType::uretprobe:
     case ProbeType::usdt:
-    case ProbeType::software:
     case ProbeType::fentry:
+    case ProbeType::fexit:
     case ProbeType::iter:
       return true;
-    case ProbeType::fexit:
     case ProbeType::kretprobe:
     case ProbeType::tracepoint:
     case ProbeType::profile:
@@ -823,6 +733,7 @@ bool attach_reverse(const Probe &p)
     case ProbeType::asyncwatchpoint:
     case ProbeType::hardware:
     case ProbeType::rawtracepoint:
+    case ProbeType::software:
       return false;
     case ProbeType::invalid:
       LOG(BUG) << "Unknown probe type";
@@ -884,10 +795,10 @@ int BPFtrace::run_iter()
   return 0;
 }
 
-int BPFtrace::prerun() const
+int BPFtrace::prerun(Output &out) const
 {
   uint64_t num_probes = this->num_probes();
-  uint64_t max_probes = config_->get(ConfigKeyInt::max_probes);
+  const auto max_probes = config_->max_probes;
   if (num_probes == 0) {
     if (!bt_quiet)
       std::cout << "No probes to attach" << std::endl;
@@ -901,14 +812,14 @@ int BPFtrace::prerun() const
         << "attached can cause your system to crash.";
     return 1;
   } else if (!bt_quiet)
-    out_->attached_probes(num_probes);
+    out.attached_probes(num_probes);
 
   return 0;
 }
 
-int BPFtrace::run(BpfBytecode bytecode)
+int BPFtrace::run(Output &out, BpfBytecode bytecode)
 {
-  int err = prerun();
+  int err = prerun(out);
   if (err)
     return err;
 
@@ -933,7 +844,8 @@ int BPFtrace::run(BpfBytecode bytecode)
     return -1;
   }
 
-  err = setup_output();
+  PerfEventContext ctx(*this, out);
+  err = setup_output(&ctx);
   if (err)
     return err;
   SCOPE_EXIT
@@ -965,12 +877,13 @@ int BPFtrace::run(BpfBytecode bytecode)
     auto &begin_prog = bytecode_.getProgramForProbe((*begin_probe).second);
     if (::bpf_prog_test_run_opts(begin_prog.fd(), nullptr))
       return -1;
+
+    LOG(V1) << "Attaching BEGIN";
   }
 
-  auto signal_probe = resources.special_probes.find("self_signal");
-  if (signal_probe != resources.special_probes.end()) {
-    auto &sig_prog = bytecode_.getProgramForProbe((*signal_probe).second);
-    sigusr1_prog_fd_ = sig_prog.fd();
+  for (auto &probe : resources.signal_probes) {
+    auto &sig_prog = bytecode_.getProgramForProbe(probe);
+    sigusr1_prog_fds_.emplace_back(sig_prog.fd());
   }
 
   if (child_ && has_usdt_) {
@@ -1054,7 +967,7 @@ int BPFtrace::run(BpfBytecode bytecode)
     if (err)
       return err;
   } else {
-    poll_output();
+    poll_output(out);
   }
 
 #ifdef HAVE_LIBSYSTEMD
@@ -1075,28 +988,30 @@ int BPFtrace::run(BpfBytecode bytecode)
     auto &end_prog = bytecode_.getProgramForProbe((*end_probe).second);
     if (::bpf_prog_test_run_opts(end_prog.fd(), nullptr))
       return -1;
+
+    LOG(V1) << "Attaching END";
   }
 
-  poll_output(/* drain */ true);
+  poll_output(out, /* drain */ true);
 
   return 0;
 }
 
-int BPFtrace::setup_output()
+int BPFtrace::setup_output(void *ctx)
 {
   if (is_ringbuf_enabled()) {
-    setup_ringbuf();
+    setup_ringbuf(ctx);
   }
   int err = setup_event_loss();
   if (err)
     return err;
   if (is_perf_event_enabled()) {
-    return setup_perf_events();
+    return setup_perf_events(ctx);
   }
   return 0;
 }
 
-int BPFtrace::setup_perf_events()
+int BPFtrace::setup_perf_events(void *ctx)
 {
   epollfd_ = epoll_create1(EPOLL_CLOEXEC);
   if (epollfd_ == -1) {
@@ -1109,11 +1024,10 @@ int BPFtrace::setup_perf_events()
   for (int cpu : cpus) {
     void *reader = bpf_open_perf_buffer(&perf_event_printer,
                                         &perf_event_lost,
-                                        this,
+                                        ctx,
                                         -1,
                                         cpu,
-                                        config_->get(
-                                            ConfigKeyInt::perf_rb_pages));
+                                        config_->perf_rb_pages);
     if (reader == nullptr) {
       LOG(ERROR) << "Failed to open perf buffer";
       return -1;
@@ -1138,10 +1052,10 @@ int BPFtrace::setup_perf_events()
   return 0;
 }
 
-void BPFtrace::setup_ringbuf()
+void BPFtrace::setup_ringbuf(void *ctx)
 {
   ringbuf_ = ring_buffer__new(
-      bytecode_.getMap(MapType::Ringbuf).fd(), ringbuf_printer, this, nullptr);
+      bytecode_.getMap(MapType::Ringbuf).fd(), ringbuf_printer, ctx, nullptr);
 }
 
 int BPFtrace::setup_event_loss()
@@ -1166,7 +1080,7 @@ void BPFtrace::teardown_output()
     open_perf_buffers_.clear();
 }
 
-void BPFtrace::poll_output(bool drain)
+void BPFtrace::poll_output(Output &out, bool drain)
 {
   int ready;
   bool do_poll_perf_event = is_perf_event_enabled();
@@ -1206,7 +1120,7 @@ void BPFtrace::poll_output(bool drain)
     }
 
     // print loss events
-    handle_event_loss();
+    handle_event_loss(out);
 
     if (do_poll_ringbuf) {
       ready = ring_buffer__poll(ringbuf_, timeout_ms);
@@ -1231,11 +1145,12 @@ void BPFtrace::poll_output(bool drain)
     if (BPFtrace::sigusr1_recv) {
       BPFtrace::sigusr1_recv = false;
 
-      if (sigusr1_prog_fd_.has_value()) {
-        if (::bpf_prog_test_run_opts(*sigusr1_prog_fd_, nullptr)) {
+      for (auto fd : sigusr1_prog_fds_) {
+        if (::bpf_prog_test_run_opts(fd, nullptr)) {
           LOG(ERROR) << "Failed to run signal probe";
           return;
         }
+        LOG(V1) << "Attaching self:signal";
       }
     }
   }
@@ -1254,7 +1169,7 @@ int BPFtrace::poll_perf_events()
   return ready;
 }
 
-void BPFtrace::handle_event_loss()
+void BPFtrace::handle_event_loss(Output &out)
 {
   uint64_t current_value = 0;
   if (bpf_lookup_elem(bytecode_.getMap(MapType::EventLossCounter).fd(),
@@ -1264,7 +1179,7 @@ void BPFtrace::handle_event_loss()
   }
   if (current_value) {
     if (current_value > event_loss_count_) {
-      out_->lost_events(current_value - event_loss_count_);
+      out.lost_events(current_value - event_loss_count_);
       event_loss_count_ = current_value;
     } else if (current_value < event_loss_count_) {
       LOG(ERROR) << "Invalid event loss count value: " << current_value
@@ -1273,7 +1188,7 @@ void BPFtrace::handle_event_loss()
   }
 }
 
-int BPFtrace::print_maps()
+int BPFtrace::print_maps(Output &out)
 {
   if (dry_run)
     return 0;
@@ -1282,7 +1197,7 @@ int BPFtrace::print_maps()
     if (!map.second.is_printable())
       continue;
 
-    int err = print_map(map.second, 0, 0);
+    int err = print_map(out, map.second, 0, 0);
     if (err)
       return err;
   }
@@ -1346,12 +1261,15 @@ int BPFtrace::zero_map(const BpfMap &map)
   return 0;
 }
 
-int BPFtrace::print_map(const BpfMap &map, uint32_t top, uint32_t div)
+int BPFtrace::print_map(Output &out,
+                        const BpfMap &map,
+                        uint32_t top,
+                        uint32_t div)
 {
   const auto &map_info = resources.maps_info.at(map.name());
   const auto &value_type = map_info.value_type;
   if (value_type.IsHistTy() || value_type.IsLhistTy())
-    return print_map_hist(map, top, div);
+    return print_map_hist(out, map, top, div);
 
   uint64_t nvalues = map.is_per_cpu_type() ? ncpus_ : 1;
 
@@ -1423,15 +1341,18 @@ int BPFtrace::print_map(const BpfMap &map, uint32_t top, uint32_t div)
     div = 1;
 
   if (value_type.IsAvgTy() || value_type.IsStatsTy()) {
-    out_->map_stats(*this, map, top, div, values_by_key);
+    out.map_stats(*this, map, top, div, values_by_key);
     return 0;
   }
 
-  out_->map(*this, map, top, div, values_by_key);
+  out.map(*this, map, top, div, values_by_key);
   return 0;
 }
 
-int BPFtrace::print_map_hist(const BpfMap &map, uint32_t top, uint32_t div)
+int BPFtrace::print_map_hist(Output &out,
+                             const BpfMap &map,
+                             uint32_t top,
+                             uint32_t div)
 {
   // A hist-map adds an extra 8 bytes onto the end of its key for storing
   // the bucket number.
@@ -1493,7 +1414,7 @@ int BPFtrace::print_map_hist(const BpfMap &map, uint32_t top, uint32_t div)
 
   if (div == 0)
     div = 1;
-  out_->map_hist(*this, map, top, div, values_by_key, total_counts_by_key);
+  out.map_hist(*this, map, top, div, values_by_key, total_counts_by_key);
   return 0;
 }
 
@@ -1538,31 +1459,45 @@ std::string BPFtrace::get_stack(int64_t stackid,
   std::string padding(indent, ' ');
 
   stack << "\n";
-  for (uint32_t i = 0; i < nr_stack_frames; ++i) {
+  for (uint32_t i = 0; i < nr_stack_frames;) {
     uint64_t addr = stack_trace.at(i);
     if (stack_type.mode == StackMode::raw) {
       stack << std::hex << addr << std::endl;
+      ++i;
       continue;
     }
-    std::string sym;
+    std::vector<std::string> syms;
     if (!ustack)
-      sym = resolve_ksym(addr, true);
+      syms = resolve_ksym_stack(addr,
+                                true,
+                                stack_type.mode == StackMode::perf,
+                                config_->show_debug_info);
     else
-      sym = resolve_usym(
-          addr, pid, probe_id, true, stack_type.mode == StackMode::perf);
+      syms = resolve_usym_stack(addr,
+                                pid,
+                                probe_id,
+                                true,
+                                stack_type.mode == StackMode::perf,
+                                config_->show_debug_info);
 
-    switch (stack_type.mode) {
-      case StackMode::bpftrace:
-        stack << padding << sym << std::endl;
-        break;
-      case StackMode::perf:
-        stack << "\t" << std::hex << addr << std::dec << " " << sym
-              << std::endl;
-        break;
-      case StackMode::raw:
-        LOG(BUG) << "StackMode::raw should have been processed before "
-                    "symbolication.";
-        break;
+    std::string sym;
+    for (size_t sym_idx = 0; i < nr_stack_frames && sym_idx < syms.size();) {
+      sym = syms.at(sym_idx);
+      switch (stack_type.mode) {
+        case StackMode::bpftrace:
+          stack << padding << sym << std::endl;
+          break;
+        case StackMode::perf:
+          stack << "\t" << std::hex << addr << std::dec << " " << sym
+                << std::endl;
+          break;
+        case StackMode::raw:
+          LOG(BUG) << "StackMode::raw should have been processed before "
+                      "symbolication.";
+          break;
+      }
+      ++i;
+      ++sym_idx;
     }
   }
 
@@ -1633,7 +1568,7 @@ std::string BPFtrace::resolve_timestamp(uint32_t mode,
   snprintf(usecs_buf, sizeof(usecs_buf), "%06" PRIu64, us);
   auto fmt = std::regex_replace(raw_fmt, usec_regex, usecs_buf);
 
-  uint64_t timestr_size = config_->get(ConfigKeyInt::max_strlen);
+  const auto timestr_size = config_->max_strlen;
   std::string timestr(timestr_size, '\0');
   size_t timestr_len = strftime(
       timestr.data(), timestr_size, fmt.c_str(), &tmp);
@@ -1652,9 +1587,19 @@ std::string BPFtrace::resolve_buf(const char *buf, size_t size)
   return util::hex_format_buffer(buf, size);
 }
 
-std::string BPFtrace::resolve_ksym(uint64_t addr, bool show_offset)
+std::string BPFtrace::resolve_ksym(uint64_t addr)
 {
-  return ksyms_.resolve(addr, show_offset);
+  auto syms = resolve_ksym_stack(addr, false, false, false);
+  assert(syms.size() == 1);
+  return syms.front();
+}
+
+std::vector<std::string> BPFtrace::resolve_ksym_stack(uint64_t addr,
+                                                      bool show_offset,
+                                                      bool perf_mode,
+                                                      bool show_debug_info)
+{
+  return ksyms_.resolve(addr, show_offset, perf_mode, show_debug_info);
 }
 
 uint64_t BPFtrace::resolve_kname(const std::string &name) const
@@ -1777,38 +1722,39 @@ std::string BPFtrace::resolve_inet(int af, const uint8_t *inet) const
   return addrstr;
 }
 
-std::string BPFtrace::resolve_usym(uint64_t addr,
-                                   int32_t pid,
-                                   int32_t probe_id,
-                                   bool show_offset,
-                                   bool show_module)
+std::string BPFtrace::resolve_usym(uint64_t addr, int32_t pid, int32_t probe_id)
 {
-  if (resolve_user_symbols_) {
-    std::string pid_exe = util::get_pid_exe(pid);
-    if (pid_exe.empty() && probe_id != -1) {
-      // sometimes program cannot be determined from PID, typically when the
-      // process does not exist anymore; in that case, try to get program name
-      // from probe
-      // note: this fails if the probe contains a wildcard, since the probe id
-      // is not generated per match
-      auto probe_full = resolve_probe(probe_id);
-      if (probe_full.find(',') == std::string::npos &&
-          !util::has_wildcard(probe_full)) {
-        // only find program name for probes that contain one program name,
-        // to avoid incorrect symbol resolutions
-        size_t start = probe_full.find(':') + 1;
-        size_t end = probe_full.find(':', start);
-        pid_exe = probe_full.substr(start, end - start);
-      }
+  auto syms = resolve_usym_stack(addr, pid, probe_id, false, false, false);
+  assert(syms.size() == 1);
+  return syms.front();
+}
+
+std::vector<std::string> BPFtrace::resolve_usym_stack(uint64_t addr,
+                                                      int32_t pid,
+                                                      int32_t probe_id,
+                                                      bool show_offset,
+                                                      bool perf_mode,
+                                                      bool show_debug_info)
+{
+  std::string pid_exe = util::get_pid_exe(pid);
+  if (pid_exe.empty() && probe_id != -1) {
+    // sometimes program cannot be determined from PID, typically when the
+    // process does not exist anymore; in that case, try to get program name
+    // from probe
+    // note: this fails if the probe contains a wildcard, since the probe id
+    // is not generated per match
+    auto probe_full = resolve_probe(probe_id);
+    if (probe_full.find(',') == std::string::npos &&
+        !util::has_wildcard(probe_full)) {
+      // only find program name for probes that contain one program name,
+      // to avoid incorrect symbol resolutions
+      size_t start = probe_full.find(':') + 1;
+      size_t end = probe_full.find(':', start);
+      pid_exe = probe_full.substr(start, end - start);
     }
-    return usyms_.resolve(addr, pid, pid_exe, show_offset, show_module);
-  } else {
-    std::ostringstream symbol;
-    symbol << reinterpret_cast<void *>(addr);
-    if (show_module)
-      symbol << " ([unknown])";
-    return symbol.str();
   }
+  return usyms_.resolve(
+      addr, pid, pid_exe, show_offset, perf_mode, show_debug_info);
 }
 
 std::string BPFtrace::resolve_probe(uint64_t probe_id) const
@@ -1899,61 +1845,20 @@ void BPFtrace::sort_by_key(
   }
 }
 
-std::string BPFtrace::get_string_literal(const ast::Expression *expr) const
-{
-  if (expr->is_literal) {
-    if (const auto *string = dynamic_cast<const ast::String *>(expr))
-      return string->str;
-    else if (const auto *str_call = dynamic_cast<const ast::Call *>(expr)) {
-      // Positional parameters in the form str($1) can be used as literals
-      if (str_call->func == "str") {
-        if (const auto *pos_param =
-                dynamic_cast<const ast::PositionalParameter *>(
-                    str_call->vargs.at(0)))
-          return get_param(pos_param->n, true);
-      }
-    }
-  }
-
-  LOG(ERROR) << "Expected string literal, got " << expr->type;
-  return "";
-}
-
-std::optional<int64_t> BPFtrace::get_int_literal(
-    const ast::Expression *expr) const
-{
-  if (expr->is_literal) {
-    if (const auto *integer = dynamic_cast<const ast::Integer *>(expr))
-      return integer->n;
-    else if (const auto *pos_param =
-                 dynamic_cast<const ast::PositionalParameter *>(expr)) {
-      if (pos_param->ptype == PositionalParameterType::positional) {
-        auto param_str = get_param(pos_param->n, false);
-        auto param_int = util::get_int_from_str(param_str);
-        if (!param_int.has_value()) {
-          // This case has to be handled at a higher layer, and it is also
-          // duplicated exactly in the semantic analyzer.
-          return std::nullopt;
-        }
-        if (std::holds_alternative<int64_t>(*param_int)) {
-          return std::get<int64_t>(*param_int);
-        } else {
-          return static_cast<int64_t>(std::get<uint64_t>(*param_int));
-        }
-      } else
-        return static_cast<int64_t>(num_params());
-    }
-  }
-
-  return std::nullopt;
-}
-
 const util::FuncsModulesMap &BPFtrace::get_traceable_funcs() const
 {
   if (traceable_funcs_.empty())
     traceable_funcs_ = util::parse_traceable_funcs();
 
   return traceable_funcs_;
+}
+
+const util::FuncsModulesMap &BPFtrace::get_raw_tracepoints() const
+{
+  if (raw_tracepoints_.empty())
+    raw_tracepoints_ = util::parse_rawtracepoints();
+
+  return raw_tracepoints_;
 }
 
 bool BPFtrace::is_traceable_func(const std::string &func_name) const
@@ -1970,14 +1875,25 @@ std::unordered_set<std::string> BPFtrace::get_func_modules(
   return mod != funcs.end() ? mod->second : std::unordered_set<std::string>();
 }
 
-const struct stat &BPFtrace::get_pidns_self_stat() const
+std::unordered_set<std::string> BPFtrace::get_raw_tracepoint_modules(
+    const std::string &name) const
 {
-  static struct stat pidns = []() -> auto {
+  const auto &rts = get_raw_tracepoints();
+  auto mod = rts.find(name);
+  return mod != rts.end() ? mod->second : std::unordered_set<std::string>();
+}
+
+const std::optional<struct stat> &BPFtrace::get_pidns_self_stat() const
+{
+  static std::optional<struct stat> pidns = []() -> std::optional<struct stat> {
     struct stat s;
-    if (::stat("/proc/self/ns/pid", &s))
+    if (::stat("/proc/self/ns/pid", &s)) {
+      if (errno == ENOENT)
+        return std::nullopt;
       throw std::runtime_error(
           std::string("Failed to stat /proc/self/ns/pid: ") +
           std::strerror(errno));
+    }
     return s;
   }();
 
@@ -2045,19 +1961,20 @@ bool BPFtrace::write_pcaps(uint64_t id,
   return writer->write(ns, pkt, size);
 }
 
-void BPFtrace::parse_btf(const std::set<std::string> &modules)
+void BPFtrace::parse_module_btf(const std::set<std::string> &modules)
 {
-  btf_ = std::make_unique<BTF>(this, modules);
+  btf_->load_module_btfs(modules);
 }
 
 bool BPFtrace::has_btf_data() const
 {
-  return btf_ && btf_->has_data();
+  return btf_->has_data();
 }
 
 // Retrieves the list of kernel modules for all attachpoints. Will be used to
 // identify modules whose BTF we need to parse.
-// Currently, this is useful for fentry/fexit, k(ret)probes, and tracepoints.
+// Currently, this is useful for fentry/fexit, k(ret)probes, tracepoints,
+// and raw tracepoints
 std::set<std::string> BPFtrace::list_modules(const ast::ASTContext &ctx)
 {
   std::set<std::string> modules;
@@ -2065,6 +1982,7 @@ std::set<std::string> BPFtrace::list_modules(const ast::ASTContext &ctx)
     for (const auto &ap : probe->attach_points) {
       auto probe_type = probetype(ap->provider);
       if (probe_type == ProbeType::fentry || probe_type == ProbeType::fexit ||
+          probe_type == ProbeType::rawtracepoint ||
           ((probe_type == ProbeType::kprobe ||
             probe_type == ProbeType::kretprobe) &&
            !ap->target.empty())) {
@@ -2072,7 +1990,9 @@ std::set<std::string> BPFtrace::list_modules(const ast::ASTContext &ctx)
           for (const auto &match : probe_matcher_->get_matches_for_ap(*ap)) {
             std::string func = match;
             util::erase_prefix(func);
-            auto match_modules = get_func_modules(func);
+            auto match_modules = probe_type == ProbeType::rawtracepoint
+                                     ? get_raw_tracepoint_modules(func)
+                                     : get_func_modules(func);
             modules.insert(match_modules.begin(), match_modules.end());
           }
         } else

@@ -9,19 +9,20 @@ namespace bpftrace::test::output {
 
 TEST(TextOutput, lhist_no_suffix)
 {
+  CDefinitions c_definitions;
   std::stringstream out;
   std::stringstream err;
-  TextOutput output{ out, err };
+  TextOutput output{ c_definitions, out, err };
 
-  MockBPFtrace bpftrace;
-  bpftrace.resources.maps_info["@mymap"] = MapInfo{
-    .key_type = CreateNone(),
+  auto bpftrace = get_mock_bpftrace();
+  bpftrace->resources.maps_info["@mymap"] = MapInfo{
+    .key_type = CreateInt64(),
     .value_type = SizedType{ Type::lhist_t, 8 },
-    .lhist_args = LinearHistogramArgs{ .min = 610000,
-                                       .max = 670000,
-                                       .step = 10000 },
-    .hist_bits_arg = {},
-    .id = {}
+    .detail = LinearHistogramArgs{ .min = 610000,
+                                   .max = 670000,
+                                   .step = 10000 },
+    .id = {},
+    .is_scalar = true,
   };
   BpfMap map{ libbpf::BPF_MAP_TYPE_HASH, "@mymap", 8, 8, 1000 };
 
@@ -36,7 +37,7 @@ TEST(TextOutput, lhist_no_suffix)
     { { 0 }, 6 }
   };
 
-  output.map_hist(bpftrace, map, 0, 0, values_by_key, total_counts_by_key);
+  output.map_hist(*bpftrace, map, 0, 0, values_by_key, total_counts_by_key);
 
   // The buckets for this test case have been specifically chosen: 640000 can
   // also be written as 625K, while the other bucket boundaries can not be
@@ -57,19 +58,18 @@ TEST(TextOutput, lhist_no_suffix)
 
 TEST(TextOutput, lhist_suffix)
 {
+  CDefinitions c_definitions;
   std::stringstream out;
   std::stringstream err;
-  TextOutput output{ out, err };
+  TextOutput output{ c_definitions, out, err };
 
-  MockBPFtrace bpftrace;
-  bpftrace.resources.maps_info["@mymap"] = MapInfo{
-    .key_type = CreateNone(),
+  auto bpftrace = get_mock_bpftrace();
+  bpftrace->resources.maps_info["@mymap"] = MapInfo{
+    .key_type = CreateInt64(),
     .value_type = SizedType{ Type::lhist_t, 8 },
-    .lhist_args = LinearHistogramArgs{ .min = 0,
-                                       .max = 5 * 1024,
-                                       .step = 1024 },
-    .hist_bits_arg = {},
-    .id = {}
+    .detail = LinearHistogramArgs{ .min = 0, .max = 5 * 1024, .step = 1024 },
+    .id = {},
+    .is_scalar = true,
   };
   BpfMap map{ libbpf::BPF_MAP_TYPE_HASH, "@mymap", 8, 8, 1000 };
 
@@ -84,7 +84,7 @@ TEST(TextOutput, lhist_suffix)
     { { 0 }, 5 }
   };
 
-  output.map_hist(bpftrace, map, 0, 0, values_by_key, total_counts_by_key);
+  output.map_hist(*bpftrace, map, 0, 0, values_by_key, total_counts_by_key);
 
   EXPECT_EQ(R"(@mymap:
 [0, 1K)                1 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|

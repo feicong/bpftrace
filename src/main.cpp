@@ -20,12 +20,15 @@
 #include "ast/pass_manager.h"
 #include "ast/passes/codegen_llvm.h"
 #include "ast/passes/config_analyser.h"
+#include "ast/passes/fold_literals.h"
+#include "ast/passes/map_sugar.h"
 #include "ast/passes/parser.h"
 #include "ast/passes/pid_filter_pass.h"
 #include "ast/passes/portability_analyser.h"
 #include "ast/passes/printer.h"
 #include "ast/passes/probe_analyser.h"
 #include "ast/passes/recursion_check.h"
+#include "ast/passes/resolve_imports.h"
 #include "ast/passes/resource_analyser.h"
 #include "ast/passes/return_path_analyser.h"
 #include "ast/passes/semantic_analyser.h"
@@ -87,6 +90,9 @@ enum Options {
   DEBUG,
   DRY_RUN,
 };
+
+constexpr auto FULL_SEARCH = "*:*";
+
 } // namespace
 
 void usage(std::ostream& out)
@@ -109,6 +115,8 @@ void usage(std::ostream& out)
   out << "                   list kernel probes or probes in a program" << std::endl;
   out << "    -p PID         filter actions and enable USDT probes on PID" << std::endl;
   out << "    -c 'CMD'       run CMD and enable USDT probes on resulting process" << std::endl;
+  out << "    --no-feature FEATURE[,FEATURE]" << std::endl;
+  out << "                   disable use of detected features" << std::endl;
   out << "    --usdt-file-activation" << std::endl;
   out << "                   activate usdt semaphores based on file path" << std::endl;
   out << "    --unsafe       allow unsafe/destructive functionality" << std::endl;
@@ -176,6 +184,8 @@ static void info(BPFnofeature no_feature)
   struct utsname utsname;
   uname(&utsname);
 
+  auto btf = bpftrace::BTF();
+
   std::cout << "System" << std::endl
             << "  OS: " << utsname.sysname << " " << utsname.release << " "
             << utsname.version << std::endl
@@ -185,7 +195,7 @@ static void info(BPFnofeature no_feature)
   std::cout << BuildInfo::report();
 
   std::cout << std::endl;
-  std::cout << BPFfeature(no_feature).report();
+  std::cout << BPFfeature(no_feature, btf).report();
 }
 
 static std::optional<struct timespec> get_delta_with_boottime(int clock_type)
@@ -257,105 +267,6 @@ static std::optional<struct timespec> get_delta_taitime()
   return get_delta_with_boottime(CLOCK_TAI);
 }
 
-static void parse_env(BPFtrace& bpftrace)
-{
-  ConfigSetter config_setter(*bpftrace.config_, ConfigSource::env_var);
-  util::get_uint64_env_var("BPFTRACE_MAX_STRLEN", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::max_strlen, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_STRLEN", [&](uint64_t x) {
-    LOG(WARNING) << "BPFTRACE_STRLEN is deprecated. Use "
-                    "BPFTRACE_MAX_STRLEN instead.";
-    config_setter.set(ConfigKeyInt::max_strlen, x);
-  });
-
-  if (const char* env_p = std::getenv("BPFTRACE_STR_TRUNC_TRAILER"))
-    config_setter.set(ConfigKeyString::str_trunc_trailer, std::string(env_p));
-
-  util::get_bool_env_var("BPFTRACE_CPP_DEMANGLE", [&](bool x) {
-    config_setter.set(ConfigKeyBool::cpp_demangle, x);
-  });
-
-  util::get_bool_env_var("BPFTRACE_DEBUG_OUTPUT",
-                         [&](bool x) { bpftrace.debug_output_ = x; });
-
-  util::get_bool_env_var("BPFTRACE_LAZY_SYMBOLICATION", [&](bool x) {
-    config_setter.set(ConfigKeyBool::lazy_symbolication, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_MAX_MAP_KEYS", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::max_map_keys, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_MAX_PROBES", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::max_probes, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_MAX_BPF_PROGS", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::max_bpf_progs, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_LOG_SIZE", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::log_size, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_PERF_RB_PAGES", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::perf_rb_pages, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_MAX_TYPE_RES_ITERATIONS", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::max_type_res_iterations, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_MAX_CAT_BYTES", [&](uint64_t x) {
-    config_setter.set(ConfigKeyInt::max_cat_bytes, x);
-  });
-
-  if (const char* env_p = std::getenv("BPFTRACE_CACHE_USER_SYMBOLS")) {
-    const std::string s(env_p);
-    if (!config_setter.set_user_symbol_cache_type(s))
-      exit(1);
-  }
-
-  util::get_uint64_env_var("BPFTRACE_MAX_AST_NODES",
-                           [&](uint64_t x) { bpftrace.max_ast_nodes_ = x; });
-
-  if (const char* stack_mode = std::getenv("BPFTRACE_STACK_MODE")) {
-    if (!config_setter.set_stack_mode(stack_mode))
-      exit(1);
-  }
-
-  util::get_bool_env_var("BPFTRACE_NO_CPP_DEMANGLE", [&](bool x) {
-    LOG(WARNING) << "BPFTRACE_NO_CPP_DEMANGLE is deprecated. Use "
-                    "BPFTRACE_CPP_DEMANGLE=0 instead.";
-    config_setter.set(ConfigKeyBool::cpp_demangle, !x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_CAT_BYTES_MAX", [&](uint64_t x) {
-    LOG(WARNING) << "BPFTRACE_CAT_BYTES_MAX is deprecated. Use "
-                    "BPFTRACE_MAX_CAT_BYTES instead.";
-    config_setter.set(ConfigKeyInt::max_cat_bytes, x);
-  });
-
-  util::get_uint64_env_var("BPFTRACE_MAP_KEYS_MAX", [&](uint64_t x) {
-    LOG(WARNING) << "BPFTRACE_MAP_KEYS_MAX is deprecated. Use "
-                    "BPFTRACE_MAX_MAP_KEYS instead.";
-    config_setter.set(ConfigKeyInt::max_map_keys, x);
-  });
-
-  util::get_bool_env_var("BPFTRACE_USE_BLAZESYM", [&](bool x) {
-#ifndef HAVE_BLAZESYM
-    if (x) {
-      LOG(ERROR) << "BPFTRACE_USE_BLAZESYM requires blazesym support enabled "
-                    "during build.";
-      exit(1);
-    }
-#endif
-    config_setter.set(ConfigKeyBool::use_blazesym, x);
-  });
-}
-
 std::vector<std::string> extra_flags(
     BPFtrace& bpftrace,
     const std::vector<std::string>& include_dirs,
@@ -385,7 +296,7 @@ std::vector<std::string> extra_flags(
 
 void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
 {
-  add(ast::CreateConfigPass());
+  add(ast::CreateFoldLiteralsPass());
   add(ast::CreatePidFilterPass());
   add(ast::CreateSemanticPass());
   add(ast::CreateResourcePass());
@@ -396,8 +307,9 @@ void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
 
 void CreateAotPasses(std::function<void(ast::Pass&& pass)> add)
 {
-  add(ast::CreateSemanticPass());
   add(ast::CreatePortabilityPass());
+  add(ast::CreateFoldLiteralsPass());
+  add(ast::CreateSemanticPass());
   add(ast::CreateResourcePass());
   add(ast::CreateRecursionCheckPass());
   add(ast::CreateReturnPathPass());
@@ -678,14 +590,14 @@ Args parse_args(int argc, char* argv[])
   if (args.listing) {
     // Expect zero or one positional arguments
     if (optind == argc) {
-      args.search = "*:*";
+      args.search = FULL_SEARCH;
     } else if (optind == argc - 1) {
       std::string val(argv[optind]);
       if (std::filesystem::exists(val)) {
         args.filename = val;
       } else {
         if (val == "*") {
-          args.search = "*:*";
+          args.search = FULL_SEARCH;
         } else {
           args.search = val;
         }
@@ -749,7 +661,9 @@ static ast::ASTContext buildListProgram(const std::string& search)
       ast::AttachPointList({ ap }), nullptr, nullptr, location());
   ast.root = ast.make_node<ast::Program>("",
                                          nullptr,
+                                         ast::ImportList(),
                                          ast::MapDeclList(),
+                                         ast::MacroList(),
                                          ast::SubprogList(),
                                          ast::ProbeList({ probe }),
                                          location());
@@ -772,17 +686,6 @@ int main(int argc, char* argv[])
     os = &outputstream;
   }
 
-  std::unique_ptr<Output> output;
-  if (args.output_format.empty() || args.output_format == "text") {
-    output = std::make_unique<TextOutput>(*os);
-  } else if (args.output_format == "json") {
-    output = std::make_unique<JsonOutput>(*os);
-  } else {
-    LOG(ERROR) << "Invalid output format \"" << args.output_format << "\"\n"
-               << "Valid formats: 'text', 'json'";
-    exit(1);
-  }
-
   switch (args.obc) {
     case OutputBufferConfig::UNSET:
     case OutputBufferConfig::LINE:
@@ -799,9 +702,15 @@ int main(int argc, char* argv[])
   libbpf_set_print(libbpf_print);
 
   auto config = std::make_unique<Config>(!args.cmd_str.empty());
-  BPFtrace bpftrace(std::move(output), args.no_feature, std::move(config));
+  BPFtrace bpftrace(args.no_feature, std::move(config));
 
-  parse_env(bpftrace);
+  // Most configuration can be applied during the configuration pass, however
+  // we need to extract a few bits of configuration up front, because they may
+  // affect the actual compilation process.
+  util::get_uint64_env_var("BPFTRACE_MAX_AST_NODES",
+                           [&](uint64_t x) { bpftrace.max_ast_nodes_ = x; });
+  util::get_bool_env_var("BPFTRACE_DEBUG_OUTPUT",
+                         [&](bool x) { bpftrace.debug_output_ = x; });
 
   bpftrace.usdt_file_activation_ = args.usdt_file_activation;
   bpftrace.safe_mode_ = args.safe_mode;
@@ -843,13 +752,6 @@ int main(int argc, char* argv[])
   if (args.listing && args.script.empty() && args.filename.empty()) {
     check_is_root();
 
-    if (is_type_name(args.search)) {
-      // Print structure definitions
-      bpftrace.parse_btf({});
-      bpftrace.probe_matcher_->list_structs(args.search);
-      return 0;
-    }
-
     if (args.search.find(".") != std::string::npos &&
         args.search.find_first_of(":*") == std::string::npos) {
       LOG(WARNING)
@@ -858,25 +760,38 @@ int main(int argc, char* argv[])
           << args.search << "\' as a search pattern.";
     }
 
+    bool is_search_a_type = is_type_name(args.search);
+
     // To list tracepoints, we construct a synthetic AST and then expand the
     // probe. The raw contents of the program are the initial search provided.
-    ast = buildListProgram(args.search);
+    ast = buildListProgram(is_search_a_type ? FULL_SEARCH : args.search);
+    CDefinitions no_c_defs; // No external C definitions may be used.
 
     // Parse and expand all the attachpoints. We don't need to descend into the
     // actual driver here, since we know that the program is already formed.
     auto ok = ast::PassManager()
                   .put(ast)
                   .put(bpftrace)
-                  .add(ast::CreateParseAttachpointsPass())
+                  .put(no_c_defs)
+                  .add(ast::CreateParseAttachpointsPass(args.listing))
                   .add(CreateParseBTFPass())
-                  .add(ast::CreateSemanticPass(true))
+                  .add(ast::CreateMapSugarPass())
+                  .add(ast::CreateSemanticPass(args.listing))
                   .run();
-    if (!ok || !ast.diagnostics().ok()) {
+    if (!ok) {
+      std::cerr << ok.takeError() << "\n";
+      return 2;
+    } else if (!ast.diagnostics().ok()) {
       ast.diagnostics().emit(std::cerr);
       return 1;
     }
 
-    bpftrace.probe_matcher_->list_probes(ast.root);
+    if (is_search_a_type) {
+      bpftrace.probe_matcher_->list_structs(args.search);
+    } else {
+      bpftrace.probe_matcher_->list_probes(ast.root);
+    }
+
     return 0;
   }
 
@@ -939,6 +854,27 @@ int main(int argc, char* argv[])
   pm.put(bpftrace);
   auto flags = extra_flags(bpftrace, args.include_dirs, args.include_files);
 
+  if (args.listing) {
+    CDefinitions no_c_defs; // See above.
+    pm.add(CreateParsePass())
+        .put(no_c_defs)
+        .add(ast::CreateParseAttachpointsPass(args.listing))
+        .add(CreateParseBTFPass())
+        .add(ast::CreateMapSugarPass())
+        .add(ast::CreateSemanticPass(args.listing));
+
+    auto ok = pm.run();
+    if (!ok) {
+      std::cerr << ok.takeError() << "\n";
+      return 2;
+    } else if (!ast.diagnostics().ok()) {
+      ast.diagnostics().emit(std::cerr);
+      return 1;
+    }
+    bpftrace.probe_matcher_->list_probes(ast.root);
+    return 0;
+  }
+
   // Wrap all added passes in passes that dump the intermediate state. These
   // could dump intermediate objects from the context as well, but preserve
   // existing behavior for now.
@@ -954,28 +890,11 @@ int main(int argc, char* argv[])
     addPass(std::move(pass));
   }
 
-  if (args.listing) {
-    auto ok = pm.run();
-    if (!ok || !ast.diagnostics().ok()) {
-      ast.diagnostics().emit(std::cerr);
-      return 1;
-    }
-    bpftrace.probe_matcher_->list_probes(ast.root);
-    return 0;
-  }
-
   switch (args.build_mode) {
     case BuildMode::DYNAMIC:
       CreateDynamicPasses(addPass);
       break;
     case BuildMode::AHEAD_OF_TIME:
-      if (bpftrace.has_dwarf_data()) {
-        // See #3392 to learn why AOT does not yet support uprobe+DebugInfo.
-        LOG(ERROR) << "AOT does not yet support uprobe probes using DebugInfo.";
-        if (std::getenv("__BPFTRACE_NOTIFY_AOT_PORTABILITY_DISABLED"))
-          std::cout << "__BPFTRACE_NOTIFY_AOT_PORTABILITY_DISABLED"
-                    << std::endl;
-      }
       CreateAotPasses(addPass);
       break;
   }
@@ -1027,13 +946,20 @@ int main(int argc, char* argv[])
       out.write(obj.data.data(), obj.data.size());
     }));
   }
+  pm.add(ast::CreateExternObjectPass());
   pm.add(ast::CreateLinkPass());
 
   auto pmresult = pm.run();
-  if (!pmresult || !ast.diagnostics().ok()) {
+  if (!pmresult) {
+    std::cerr << pmresult.takeError() << "\n";
+    return 2;
+  } else if (!ast.diagnostics().ok()) {
     ast.diagnostics().emit(std::cerr);
     return 1;
   }
+
+  // Emits warnings
+  ast.diagnostics().emit(std::cout);
 
   if (args.build_mode == BuildMode::AHEAD_OF_TIME) {
     // Note: this should use the fully-linked version in the future, but
@@ -1046,6 +972,21 @@ int main(int argc, char* argv[])
   if (args.test_mode == TestMode::CODEGEN)
     return 0;
 
+  // Our output requires the parsed C definitions in order to map enum values to
+  // the suitable display name.
+  auto& c_definitions = pmresult->get<CDefinitions>();
+  std::unique_ptr<Output> output;
+  if (args.output_format.empty() || args.output_format == "text") {
+    output = std::make_unique<TextOutput>(c_definitions, *os);
+  } else if (args.output_format == "json") {
+    output = std::make_unique<JsonOutput>(c_definitions, *os);
+  } else {
+    LOG(ERROR) << "Invalid output format \"" << args.output_format << "\"\n"
+               << "Valid formats: 'text', 'json'";
+    usage(std::cerr);
+    exit(1);
+  }
+
   auto& bytecode = pmresult->get<BpfBytecode>();
-  return run_bpftrace(bpftrace, bytecode);
+  return run_bpftrace(bpftrace, *output, bytecode);
 }

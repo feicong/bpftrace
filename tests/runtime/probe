@@ -425,13 +425,30 @@ AFTER ./testprogs/syscall nanosleep 1e8
 
 NAME rawtracepoint_missing
 PROG rawtracepoint:nonsense { print("hit"); exit(); }
-EXPECT ERROR: Probe does not exist: rawtracepoint:nonsense
+EXPECT No probes to attach
+REQUIRES_FEATURE btf
 WILL_FAIL
 
 NAME rawtracepoint_wildcard
 PROG rawtracepoint:sys_* { printf("SUCCESS %d\n", gid); exit(); }
 EXPECT_REGEX SUCCESS [0-9][0-9]*
 AFTER ./testprogs/syscall nanosleep
+
+NAME rawtracepoint_module_wildcard
+PROG rawtracepoint:vmlinu*:sys_exit { printf("SUCCESS %d\n", gid); exit(); }
+EXPECT_REGEX SUCCESS [0-9][0-9]*
+AFTER ./testprogs/syscall nanosleep 1e8
+
+NAME rawtracepoint_module_missing
+PROG rawtracepoint:nonsense:sys_exit { printf("SUCCESS %d\n", gid); exit(); }
+EXPECT ERROR: No BTF found for nonsense:sys_exit
+REQUIRES_FEATURE btf
+WILL_FAIL
+
+# Test that we get at least two characters out
+NAME rawtracepoint args
+PROG rawtracepoint:irq_handler_entry { print(str(((struct irqaction*)args.action)->name)); exit(); }
+EXPECT_REGEX ..+
 
 NAME profile
 PROG profile:hz:599 { print("hit"); exit(); }
@@ -531,3 +548,51 @@ EXPECT_NONE bad
 BEFORE ./testprogs/nanosleep_loop
 BEFORE ./testprogs/nanosleep_loop
 TIMEOUT 2
+
+NAME fentry_order
+RUN {{BPFTRACE}} runtime/scripts/fentry_order.bt
+EXPECT_REGEX (first)+ second
+AFTER ./testprogs/syscall nanosleep 233;
+
+NAME rawtracepoint_order
+RUN {{BPFTRACE}} runtime/scripts/rawtracepoint_order.bt
+EXPECT_REGEX (first)+ second
+AFTER ./testprogs/syscall nanosleep 233;
+
+NAME usdt_order
+RUN {{BPFTRACE}} runtime/scripts/usdt_order.bt
+EXPECT_REGEX (first)+ second
+AFTER ./testprogs/usdt_sized_args
+
+NAME interval_order
+RUN {{BPFTRACE}} runtime/scripts/interval_runtime_order.bt
+EXPECT_REGEX (first)+ second
+
+NAME hardware_order
+REQUIRES ls /sys/devices/cpu/events/cache-misses
+RUN {{BPFTRACE}} runtime/scripts/hardware_order.bt
+EXPECT_REGEX (first)+ second
+
+NAME profile_order
+RUN {{BPFTRACE}} runtime/scripts/profile_order.bt
+EXPECT_REGEX (first)+ second
+
+NAME watchpoint_order
+RUN {{BPFTRACE}} -e 'watchpoint:increment+arg1:4:w { printf("first") } watchpoint:increment+arg1:4:w { printf(" second\n"); exit(); }' -c ./testprogs/watchpoint_func
+EXPECT_REGEX (first)+ second
+ARCH aarch64|x86_64
+REQUIRES_FEATURE signal
+
+NAME fexit_order
+RUN {{BPFTRACE}} runtime/scripts/fexit_order.bt
+EXPECT_REGEX (first)+ second
+AFTER ./testprogs/syscall nanosleep 233;
+
+NAME software_order
+RUN {{BPFTRACE}} runtime/scripts/software_order.bt
+EXPECT_REGEX (first)+ second
+
+NAME signal_order
+RUN {{BPFTRACE}} -e 'self:signal:SIGUSR1 { printf("first"); } self:signal:SIGUSR1 { printf(" second\n"); exit(); }'
+AFTER kill -s USR1 $(pidof bpftrace)
+EXPECT_REGEX (first)+ second

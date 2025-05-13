@@ -84,12 +84,19 @@
           # Download statically linked vmtest binary
           arch = pkgs.lib.strings.removeSuffix "-linux" system;
           vmtestVersion = "0.18.0";
+          # Architecture-specific SHA values.
+          # You can get the sha by using the trick above and running `nix develop --system aarch64-linux`.
+          # It'll error out on the actual build, but the SHA check is done before that.
+          vmtestSha = {
+            "x86_64" = "sha256:1wv49fq7n820jj7zyvbvrrzg2vwvyy8kb3gfw1lg55rzfqzhl9v3";
+            "aarch64" = "sha256:1nsq32bn6pd1gmij1qlry8ydn4gp0jdcqs030ba6yh2c30rhi02d";
+          };
           vmtest = pkgs.stdenv.mkDerivation {
             name = "vmtest";
             version = vmtestVersion;
             src = builtins.fetchurl {
               url = "https://github.com/danobi/vmtest/releases/download/v${vmtestVersion}/vmtest-${arch}";
-              sha256 = "sha256:1wv49fq7n820jj7zyvbvrrzg2vwvyy8kb3gfw1lg55rzfqzhl9v3";
+              sha256 = vmtestSha.${arch};
             };
             # Remove all other phases b/c we already have a prebuilt binary
             phases = [ "installPhase" ];
@@ -139,11 +146,13 @@
 
                 nativeBuildInputs = [
                   pkgs.bison
-                  pkgs.clang
+                  pkgs.bpftools
+                  pkgs."llvmPackages_${toString llvmVersion}".clang
                   pkgs.cmake
                   pkgs.flex
                   pkgs.gcc
                   pkgs.ninja
+                  pkgs.pkg-config
                 ];
 
                 buildInputs = [
@@ -159,6 +168,7 @@
                   pkgs.libffi
                   pkgs.libopcodes
                   pkgs.libpcap
+                  pkgs.systemdLibs
                   pkgs.libsystemtap
                   pkgs."llvmPackages_${toString llvmVersion}".libclang
                   pkgs."llvmPackages_${toString llvmVersion}".llvm
@@ -170,6 +180,7 @@
                 # Release flags
                 cmakeFlags = [
                   "-DCMAKE_BUILD_TYPE=Release"
+                  "-DENABLE_SYSTEMD=1"
                 ];
 
                 # Technically not needed cuz package name matches mainProgram, but
@@ -178,9 +189,12 @@
               };
 
           # Define lambda that returns a devShell derivation with extra test-required packages
-          # given the bpftrace package derivation as input
+          # given the bpftrace LLVM version as input
           mkBpftraceDevShell =
-            pkg:
+            llvmVersion:
+            let
+              pkg = self.packages.${system}."bpftrace-llvm${toString llvmVersion}";
+            in
               with pkgs;
               pkgs.mkShell {
                 buildInputs = [
@@ -188,7 +202,7 @@
                   binutils
                   bpftools
                   coreutils
-                  clang-tools  # Needed for the nix-aware "wrapped" clang-tidy
+                  pkgs."llvmPackages_${toString llvmVersion}".clang-tools # Needed for the nix-aware "wrapped" clang-tidy
                   gawk
                   git
                   gnugrep
@@ -196,7 +210,7 @@
                   iproute2
                   kmod
                   # For git-clang-format
-                  libclang.python
+                  pkgs."llvmPackages_${toString llvmVersion}".libclang.python
                   nftables
                   procps
                   python3
@@ -288,15 +302,8 @@
               ];
             };
 
-            # Kernels to run runtime tests against.
-            #
-            # Right now these just mirror the published kernels at
-            # https://github.com/bpftrace/kernels. Over time we'll firm up our
-            # kernel test policy.
-            kernel-5_15 = mkKernel "5.15" "sha256:05awbz25mbiy47zl7xvaf9c37zb6z71sk12flbqli7yppi7ryd13";
-            kernel-6_1 = mkKernel "6.1" "sha256:1b7bal1l8zy2fkr1dbp0jxsrzjas4yna78psj9bwwbs9qzrcf5m9";
-            kernel-6_6 = mkKernel "6.6" "sha256:19chnfwv84mc0anyf263vgg2x7sczypx8rangd34nf3sywb5cv5y";
-            kernel-6_12 = mkKernel "6.12" "sha256:1va2jx3w70gaiqxa8mfl3db7axk2viys8qf65l9qyjy024vn26ib";
+            # Kernels to run runtime tests against
+            kernel-6_14 = mkKernel "6.14.4" "sha256:0gvbw38vmbccvz64b3ljqiwkkgil0hgnlakpdjang038pxsxddmr";
           };
 
           # Define apps that can be run with `nix run`
@@ -308,11 +315,11 @@
           devShells = rec {
             default = self.devShells.${system}."bpftrace-llvm${toString defaultLlvmVersion}";
 
-            bpftrace-llvm20 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm20;
-            bpftrace-llvm19 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm19;
-            bpftrace-llvm18 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm18;
-            bpftrace-llvm17 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm17;
-            bpftrace-llvm16 = mkBpftraceDevShell self.packages.${system}.bpftrace-llvm16;
+            bpftrace-llvm20 = mkBpftraceDevShell 20;
+            bpftrace-llvm19 = mkBpftraceDevShell 19;
+            bpftrace-llvm18 = mkBpftraceDevShell 18;
+            bpftrace-llvm17 = mkBpftraceDevShell 17;
+            bpftrace-llvm16 = mkBpftraceDevShell 16;
 
             # Note that we depend on LLVM 18 explicitly for the fuzz shell, and
             # this is managed separately. The version of LLVM used to build the

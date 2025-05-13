@@ -23,7 +23,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Self, Union
 
 BUILD_DIR = "build-ci"
 
@@ -88,6 +88,32 @@ def sudo() -> Path:
     return _which("sudo")
 
 
+class FoldOutput:
+    """
+    GitHub Actions output folding context manager.
+
+    Will automatically fold output for all operations. In an ideal world we'd
+    like to leave the failed operations unfolded, but there's currently no way
+    to do this in GHA without buffering output.
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+        self.in_ci = truthy(CI)
+
+    def __enter__(self) -> Self:
+        if self.in_ci:
+            # Start a collapsible section in GitHub Actions logs
+            print(f"::group::{self.name}")
+        else:
+            print(f"\n======= {self.name} ======")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.in_ci:
+            print("::endgroup::")
+
+
 def shell(
     cmd: List[str],
     as_root: bool = False,
@@ -131,7 +157,7 @@ def shell(
             # requires further investigation.
             "--preserve-env=PATH",
             "--preserve-env=PYTHONPATH",
-            "--preserve-env=" + ",".join([n for n in env])
+            "--preserve-env=" + ",".join([n for n in env]),
         ]
     c += cmd
 
@@ -149,32 +175,35 @@ def shell(
 
 def configure():
     """Run cmake configure step"""
-    # fmt: off
-    c = [
-        "cmake",
-        "-B",
-        BUILD_DIR,
+    with FoldOutput("configure"):
+        # fmt: off
+        c = [
+            "cmake",
+            "-B",
+            BUILD_DIR,
 
-        # Dynamic configs
-        f"-DCMAKE_C_COMPILER={CC}",
-        f"-DCMAKE_CXX_COMPILER={CXX}",
-        f"-DCMAKE_BUILD_TYPE={CMAKE_BUILD_TYPE}",
+            # Dynamic configs
+            f"-DCMAKE_C_COMPILER={CC}",
+            f"-DCMAKE_CXX_COMPILER={CXX}",
+            f"-DCMAKE_BUILD_TYPE={CMAKE_BUILD_TYPE}",
 
-        # Static configs
-        f"-DCMAKE_VERBOSE_MAKEFILE=1",
-        f"-DBUILD_TESTING=1",
-        f"-DENABLE_SKB_OUTPUT=1",
-        f"-DBUILD_ASAN=1",
-    ]
-    # fmt: on
+            # Static configs
+            f"-DCMAKE_VERBOSE_MAKEFILE=1",
+            f"-DBUILD_TESTING=1",
+            f"-DENABLE_SKB_OUTPUT=1",
+            f"-DBUILD_ASAN=1",
+            f"-DHARDENED_STDLIB=1",
+        ]
+        # fmt: on
 
-    shell(c)
+        shell(c)
 
 
 def build():
     """Build everything"""
-    cpus = multiprocessing.cpu_count()
-    shell(["make", "-C", BUILD_DIR, "-j", str(cpus)], env={"AFL_USE_ASAN": "1"})
+    with FoldOutput("build"):
+        cpus = multiprocessing.cpu_count()
+        shell(["make", "-C", BUILD_DIR, "-j", str(cpus)], env={"AFL_USE_ASAN": "1"})
 
 
 def test_one(name: str, cond: Callable[[], bool], fn: Callable[[], None]) -> TestResult:
@@ -182,10 +211,10 @@ def test_one(name: str, cond: Callable[[], bool], fn: Callable[[], None]) -> Tes
     status = TestStatus.PASSED
 
     if cond():
-        print(f"\n======= {name} ======")
         try:
-            fn()
-        except subprocess.CalledProcessError as e:
+            with FoldOutput(name):
+                fn()
+        except subprocess.CalledProcessError:
             status = TestStatus.FAILED
     else:
         status = TestStatus.SKIPPED
@@ -272,7 +301,7 @@ def fuzz():
             "fuzz",
             lambda: truthy(RUN_TESTS),
             lambda: shell(
-            # fmt: off
+                # fmt: off
                 cmd = [
                     "afl-fuzz",
                     "-M", "0",
@@ -299,7 +328,7 @@ def fuzz():
                     "AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES": "",
                 },
                 cwd=Path(BUILD_DIR),
-            # fmt: on
+                # fmt: on
             ),
         ),
     ]

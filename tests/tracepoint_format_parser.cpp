@@ -59,9 +59,9 @@ TEST(tracepoint_format_parser, tracepoint_struct)
 
   std::istringstream format_file(input);
 
-  MockBPFtrace bpftrace;
+  auto bpftrace = get_mock_bpftrace();
   std::string result = MockTracepointFormatParser::get_tracepoint_struct_public(
-      format_file, "syscalls", "sys_enter_read", bpftrace);
+      format_file, "syscalls", "sys_enter_read", *bpftrace);
 
   EXPECT_EQ(expected, result);
 }
@@ -80,9 +80,9 @@ TEST(tracepoint_format_parser, array)
 
   std::istringstream format_file(input);
 
-  MockBPFtrace bpftrace;
+  auto bpftrace = get_mock_bpftrace();
   std::string result = MockTracepointFormatParser::get_tracepoint_struct_public(
-      format_file, "syscalls", "sys_enter_read", bpftrace);
+      format_file, "syscalls", "sys_enter_read", *bpftrace);
 
   EXPECT_EQ(expected, result);
 }
@@ -100,9 +100,9 @@ TEST(tracepoint_format_parser, data_loc)
 
   std::istringstream format_file(input);
 
-  MockBPFtrace bpftrace;
+  auto bpftrace = get_mock_bpftrace();
   std::string result = MockTracepointFormatParser::get_tracepoint_struct_public(
-      format_file, "syscalls", "sys_enter_read", bpftrace);
+      format_file, "syscalls", "sys_enter_read", *bpftrace);
 
   EXPECT_EQ(expected, result);
 }
@@ -161,9 +161,9 @@ TEST(tracepoint_format_parser, adjust_integer_types)
 
   std::istringstream format_file(input);
 
-  MockBPFtrace bpftrace;
+  auto bpftrace = get_mock_bpftrace();
   std::string result = MockTracepointFormatParser::get_tracepoint_struct_public(
-      format_file, "syscalls", "sys_enter_read", bpftrace);
+      format_file, "syscalls", "sys_enter_read", *bpftrace);
 
   EXPECT_EQ(expected, result);
 }
@@ -208,9 +208,9 @@ TEST(tracepoint_format_parser, padding)
 
   std::istringstream format_file(input);
 
-  MockBPFtrace bpftrace;
+  auto bpftrace = get_mock_bpftrace();
   std::string result = MockTracepointFormatParser::get_tracepoint_struct_public(
-      format_file, "sched", "sched_wakeup", bpftrace);
+      format_file, "sched", "sched_wakeup", *bpftrace);
 
   EXPECT_EQ(expected, result);
 }
@@ -241,59 +241,19 @@ TEST(tracepoint_format_parser, tracepoint_struct_btf)
 
   std::istringstream format_file(input);
 
-  MockBPFtrace bpftrace;
+  auto bpftrace = get_mock_bpftrace();
   std::string result = MockTracepointFormatParser::get_tracepoint_struct_public(
-      format_file, "syscalls", "sys_enter_read", bpftrace);
+      format_file, "syscalls", "sys_enter_read", *bpftrace);
 
   // Check that BTF types are populated
-  EXPECT_THAT(bpftrace.btf_set_, Contains("unsigned short"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("unsigned char"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("int"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("u64"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("char *"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("size_t"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("char"));
-  EXPECT_THAT(bpftrace.btf_set_, Contains("TASK_COMM_LEN"));
-}
-
-static void test(const std::string &input,
-                 std::function<void(ast::ASTContext &)> validate)
-{
-  BPFtrace bpftrace;
-  ast::ASTContext ast("stdin", input);
-  Driver driver(ast, bpftrace);
-  driver.parse();
-  ASSERT_TRUE(ast.diagnostics().ok());
-
-  validate(ast);
-}
-
-TEST(tracepoint_format_parser, args_field_access)
-{
-  ast::TracepointArgsVisitor visitor;
-
-  test("BEGIN { args.f1->f2->f3 }", [&](ast::ASTContext &ast) {
-    visitor.visit(*ast.root->probes.at(0));
-    EXPECT_EQ(ast.root->probes.at(0)->tp_args_structs_level, 3);
-  });
-
-  // Should work via intermediary variable, too
-  test("BEGIN { $x = args.f1; $x->f2->f3 }", [&](ast::ASTContext &ast) {
-    visitor.visit(*ast.root->probes.at(0));
-    EXPECT_EQ(ast.root->probes.at(0)->tp_args_structs_level, 3);
-  });
-
-  // "args" used without field access => level should be 0
-  test("BEGIN { args }", [&](ast::ASTContext &ast) {
-    visitor.visit(*ast.root->probes.at(0));
-    EXPECT_EQ(ast.root->probes.at(0)->tp_args_structs_level, 0);
-  });
-
-  // "args" not used => level should be -1
-  test("BEGIN { x->f1->f2->f3 }", [&](ast::ASTContext &ast) {
-    visitor.visit(*ast.root->probes.at(0));
-    EXPECT_EQ(ast.root->probes.at(0)->tp_args_structs_level, -1);
-  });
+  EXPECT_THAT(bpftrace->btf_set_, Contains("unsigned short"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("unsigned char"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("int"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("u64"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("char *"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("size_t"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("char"));
+  EXPECT_THAT(bpftrace->btf_set_, Contains("TASK_COMM_LEN"));
 }
 
 } // namespace bpftrace::test::tracepoint_format_parser

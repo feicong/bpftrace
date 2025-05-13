@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "ast/ast.h"
-#include "ast/location.h"
 #include "types.h"
+#include "util/hash.h"
 
 namespace bpftrace {
 
@@ -127,8 +127,10 @@ private:
   public:
     size_t operator()(const FqName &fq_name) const
     {
-      return std::hash<std::string>()(fq_name.ns) ^
-             std::hash<std::string>()(fq_name.name);
+      std::size_t seed = 0;
+      util::hash_combine(seed, fq_name.ns);
+      util::hash_combine(seed, fq_name.name);
+      return seed;
     }
   };
 

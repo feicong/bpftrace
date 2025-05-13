@@ -1,12 +1,12 @@
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 #include <elf.h>
-#include <map>
 #include <sys/mman.h>
 
 #include "bpftrace.h"
 #include "globalvars.h"
 #include "log.h"
+#include "required_resources.h"
 #include "types.h"
 #include "util/exceptions.h"
 
@@ -80,7 +80,7 @@ static std::map<GlobalVar, int> find_btf_var_offsets(
     vars_and_offsets[global_var] = -1;
   }
 
-  int i;
+  uint16_t i;
   struct btf_var_secinfo *member;
 
   for (i = 0, member = btf_var_secinfos(section_type);
@@ -277,7 +277,7 @@ SizedType get_type(bpftrace::globalvars::GlobalVar global_var,
                           CreateArray(resources.max_tuple_size, CreateInt8()));
     case bpftrace::globalvars::GlobalVar::GET_STR_BUFFER: {
       assert(resources.str_buffers > 0);
-      const auto max_strlen = bpftrace_config.get(ConfigKeyInt::max_strlen);
+      const auto max_strlen = bpftrace_config.max_strlen;
       return make_rw_type(resources.str_buffers,
                           CreateArray(max_strlen, CreateInt8()));
     }

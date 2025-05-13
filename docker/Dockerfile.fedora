@@ -5,10 +5,12 @@
 FROM fedora:rawhide
 
 RUN dnf install -y \
+        awk \
         asciidoctor \
+        bcc-devel \
         bison \
         binutils-devel \
-        bcc-devel \
+        bpftool \
         cereal-devel \
         clang-devel \
         cmake \
@@ -22,7 +24,9 @@ RUN dnf install -y \
         libbpf-devel \
         llvm-devel \
         make \
+        pahole \
         systemtap-sdt-devel \
+        xxd \
         zlib-devel
 
 COPY . /src

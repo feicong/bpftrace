@@ -10,9 +10,11 @@
 #include <vector>
 
 #include <cereal/access.hpp>
+#include <cereal/types/variant.hpp>
 
 #include "ast/location.h"
 #include "format_string.h"
+#include "globalvars.h"
 #include "struct.h"
 #include "types.h"
 
@@ -31,11 +33,11 @@ public:
   // serialized and used by a separate runtime.
   HelperErrorInfo(int func_id, const ast::Location &loc)
       : func_id(func_id),
-        filename(loc.filename()),
-        line(loc.line()),
-        column(loc.column()),
-        source_location(loc.source_location()),
-        source_context(loc.source_context())
+        filename(loc->filename()),
+        line(loc->line()),
+        column(loc->column()),
+        source_location(loc->source_location()),
+        source_context(loc->source_context())
   {
   }
 
@@ -59,14 +61,38 @@ private:
   }
 };
 
+struct HistogramArgs {
+  long bits = -1;
+  bool scalar = true;
+
+  bool operator==(const HistogramArgs &other)
+  {
+    return bits == other.bits && scalar == other.scalar;
+  }
+  bool operator!=(const HistogramArgs &other)
+  {
+    return !(*this == other);
+  }
+
+private:
+  friend class cereal::access;
+  template <typename Archive>
+  void serialize(Archive &archive)
+  {
+    archive(bits, scalar);
+  }
+};
+
 struct LinearHistogramArgs {
   long min = -1;
   long max = -1;
   long step = -1;
+  bool scalar = true;
 
   bool operator==(const LinearHistogramArgs &other)
   {
-    return min == other.min && max == other.max && step == other.step;
+    return min == other.min && max == other.max && step == other.step &&
+           scalar == other.scalar;
   }
   bool operator!=(const LinearHistogramArgs &other)
   {
@@ -78,31 +104,25 @@ private:
   template <typename Archive>
   void serialize(Archive &archive)
   {
-    archive(min, max, step);
+    archive(min, max, step, scalar);
   }
 };
 
 struct MapInfo {
   SizedType key_type;
   SizedType value_type;
-  std::optional<LinearHistogramArgs> lhist_args;
-  std::optional<int> hist_bits_arg;
+  std::variant<std::monostate, HistogramArgs, LinearHistogramArgs> detail;
   int id = -1;
   int max_entries = -1;
   libbpf::bpf_map_type bpf_type = libbpf::BPF_MAP_TYPE_HASH;
+  bool is_scalar = false;
 
 private:
   friend class cereal::access;
   template <typename Archive>
   void serialize(Archive &archive)
   {
-    archive(key_type,
-            value_type,
-            lhist_args,
-            hist_bits_arg,
-            id,
-            max_entries,
-            bpf_type);
+    archive(key_type, value_type, detail, id, max_entries, bpf_type, is_scalar);
   }
 };
 
@@ -184,6 +204,7 @@ public:
   // be collecting this, but it's complex to move the logic.
   std::vector<Probe> probes;
   std::unordered_map<std::string, Probe> special_probes;
+  std::vector<Probe> signal_probes;
   std::vector<Probe> watchpoint_probes;
 
   // List of probes using userspace symbol resolution
@@ -209,6 +230,7 @@ private:
             needed_global_vars,
             needs_perf_event_map,
             probes,
+            signal_probes,
             special_probes);
   }
 };

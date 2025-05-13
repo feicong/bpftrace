@@ -27,17 +27,21 @@ endif()
 
 add_executable(bpftrace_test
   ast.cpp
+  async_action.cpp
   bpfbytecode.cpp
   bpftrace.cpp
   child.cpp
   clang_parser.cpp
   config.cpp
   collect_nodes.cpp
-  cstring_view.cpp
+  deprecated.cpp
   field_analyser.cpp
+  fold_literals.cpp
   function_registry.cpp
+  imports.cpp
   location.cpp
   log.cpp
+  macro_expansion.cpp
   main.cpp
   mocks.cpp
   output.cpp
@@ -55,8 +59,10 @@ add_executable(bpftrace_test
   return_path_analyser.cpp
   scopeguard.cpp
   semantic_analyser.cpp
+  temp.cpp
   tracepoint_format_parser.cpp
   types.cpp
+  unstable_feature.cpp
   utils.cpp
 
   ${CODEGEN_SRC}
@@ -64,11 +70,7 @@ add_executable(bpftrace_test
 add_test(NAME bpftrace_test COMMAND bpftrace_test)
 
 add_subdirectory(data)
-if(${LLDB_FOUND})
-  add_dependencies(bpftrace_test debuginfo_dwarf_data)
-  add_dependencies(bpftrace_test data_source_cxx)
-endif()
-add_dependencies(bpftrace_test debuginfo_btf_data)
+add_dependencies(bpftrace_test data_source_dwarf data_source_btf data_source_funcs parser)
 target_include_directories(bpftrace_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(bpftrace_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

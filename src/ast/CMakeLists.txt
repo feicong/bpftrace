@@ -17,23 +17,32 @@ add_library(ast STATIC
   pass_manager.cpp
   signal.cpp
 
+  passes/c_macro_expansion.cpp
   passes/codegen_resources.cpp
   passes/config_analyser.cpp
   passes/deprecated.cpp
   passes/field_analyser.cpp
+  passes/fold_literals.cpp
+  passes/import_scripts.cpp
+  passes/link.cpp
+  passes/map_sugar.cpp
+  passes/macro_expansion.cpp
   passes/portability_analyser.cpp
   passes/printer.cpp
   passes/probe_analyser.cpp
   passes/resource_analyser.cpp
   passes/semantic_analyser.cpp
   passes/codegen_llvm.cpp
+  passes/resolve_imports.cpp
   passes/return_path_analyser.cpp
   passes/pid_filter_pass.cpp
   passes/recursion_check.cpp
+  passes/unstable_feature.cpp
 )
 
+add_dependencies(ast parser)
 target_compile_definitions(ast PRIVATE ${BPFTRACE_FLAGS})
-target_link_libraries(ast PRIVATE debugfs tracefs util)
+target_link_libraries(ast PRIVATE debugfs tracefs util stdlib)
 target_link_libraries(ast PUBLIC ast_defs arch compiler_core parser)
 
 if(STATIC_LINKING)

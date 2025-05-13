@@ -1,8 +1,7 @@
-#include "ast/async_event_types.h"
-
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Type.h>
 
+#include "ast/async_event_types.h"
 #include "ast/irbuilderbpf.h"
 
 namespace bpftrace::AsyncEvent {
@@ -108,6 +107,15 @@ std::vector<llvm::Type*> Exit::asLLVMType(ast::IRBuilderBPF& b)
   return {
     b.getInt64Ty(), // asyncid
     b.getInt8Ty(),  // exit_code
+  };
+}
+
+std::vector<llvm::Type*> Join::asLLVMType(ast::IRBuilderBPF& b, uint32_t length)
+{
+  return {
+    b.getInt64Ty(),                              // action_id
+    b.getInt64Ty(),                              // join_id
+    llvm::ArrayType::get(b.getInt8Ty(), length), // join content
   };
 }
 

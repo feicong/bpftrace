@@ -1,9 +1,12 @@
 #include "ast/attachpoint_parser.h"
 #include "ast/passes/codegen_llvm.h"
 #include "ast/passes/field_analyser.h"
+#include "ast/passes/map_sugar.h"
+#include "ast/passes/resolve_imports.h"
 #include "ast/passes/resource_analyser.h"
 #include "ast/passes/semantic_analyser.h"
 #include "bpftrace.h"
+#include "btf.h"
 #include "driver.h"
 #include "mocks.h"
 #include "gtest/gtest.h"
@@ -21,12 +24,18 @@ void gen_bytecode(const std::string &input, std::stringstream &out)
   auto bpftrace = get_mock_bpftrace();
   ast::ASTContext ast("stdin", input);
 
+  CDefinitions no_c_defs; // Output from clang parser.
+
   // N.B. No macro or tracepoint expansion.
   auto ok = ast::PassManager()
                 .put(ast)
                 .put<BPFtrace>(*bpftrace)
+                .put(no_c_defs)
                 .add(CreateParsePass())
+                .add(ast::CreateResolveImportsPass({}))
                 .add(ast::CreateParseAttachpointsPass())
+                .add(CreateParseBTFPass())
+                .add(ast::CreateMapSugarPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())

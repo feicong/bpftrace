@@ -15,7 +15,6 @@
 #include <vector>
 
 #include "ast/ast.h"
-#include "ast/location.h"
 #include "ast/pass_manager.h"
 #include "attached_probe.h"
 #include "bpfbytecode.h"
@@ -99,11 +98,10 @@ private:
 
 class BPFtrace : public ast::State<"bpftrace"> {
 public:
-  BPFtrace(std::unique_ptr<Output> o = std::make_unique<TextOutput>(std::cout),
-           BPFnofeature no_feature = BPFnofeature(),
+  BPFtrace(BPFnofeature no_feature = BPFnofeature(),
            std::unique_ptr<Config> config = std::make_unique<Config>())
-      : out_(std::move(o)),
-        feature_(std::make_unique<BPFfeature>(no_feature)),
+      : btf_(std::make_unique<BTF>(this)),
+        feature_(std::make_unique<BPFfeature>(no_feature, *btf_)),
         probe_matcher_(std::make_unique<ProbeMatcher>(this)),
         ncpus_(util::get_possible_cpus().size()),
         max_cpu_id_(util::get_max_cpu_id()),
@@ -120,16 +118,16 @@ public:
   Probe generateWatchpointSetupProbe(const ast::AttachPoint &ap,
                                      const ast::Probe &probe);
   int num_probes() const;
-  int prerun() const;
-  int run(BpfBytecode bytecode);
+  int prerun(Output &out) const;
+  int run(Output &out, BpfBytecode bytecode);
   std::vector<std::unique_ptr<AttachedProbe>> attach_probe(
       Probe &probe,
       const BpfBytecode &bytecode);
   int run_iter();
-  int print_maps();
+  int print_maps(Output &out);
   int clear_map(const BpfMap &map);
   int zero_map(const BpfMap &map);
-  int print_map(const BpfMap &map, uint32_t top, uint32_t div);
+  int print_map(Output &out, const BpfMap &map, uint32_t top, uint32_t div);
   std::string get_stack(int64_t stackid,
                         uint32_t nr_stack_frames,
                         int32_t pid,
@@ -138,12 +136,8 @@ public:
                         StackType stack_type,
                         int indent = 0);
   std::string resolve_buf(const char *buf, size_t size);
-  std::string resolve_ksym(uint64_t addr, bool show_offset = false);
-  std::string resolve_usym(uint64_t addr,
-                           int32_t pid,
-                           int32_t probe_id,
-                           bool show_offset = false,
-                           bool show_module = false);
+  std::string resolve_ksym(uint64_t addr);
+  std::string resolve_usym(uint64_t addr, int32_t pid, int32_t probe_id);
   std::string resolve_inet(int af, const uint8_t *inet) const;
   std::string resolve_uid(uint64_t addr) const;
   std::string resolve_timestamp(uint32_t mode,
@@ -158,30 +152,27 @@ public:
                                   uint64_t cgroup_id) const;
   std::string resolve_probe(uint64_t probe_id) const;
   std::vector<std::unique_ptr<IPrintable>> get_arg_values(
+      Output &output,
       const std::vector<Field> &args,
       uint8_t *arg_data);
   void add_param(const std::string &param);
-  std::string get_param(size_t index, bool is_str) const;
+  std::string get_param(size_t index) const;
   size_t num_params() const;
   void request_finalize();
-  std::string get_string_literal(const ast::Expression *expr) const;
-  std::optional<int64_t> get_int_literal(const ast::Expression *expr) const;
   std::optional<std::string> get_watchpoint_binary_path() const;
   virtual bool is_traceable_func(const std::string &func_name) const;
   virtual std::unordered_set<std::string> get_func_modules(
       const std::string &func_name) const;
-  virtual const struct stat &get_pidns_self_stat() const;
+  virtual std::unordered_set<std::string> get_raw_tracepoint_modules(
+      const std::string &name) const;
+  virtual const std::optional<struct stat> &get_pidns_self_stat() const;
 
   bool write_pcaps(uint64_t id, uint64_t ns, uint8_t *pkt, unsigned int size);
 
-  void parse_btf(const std::set<std::string> &modules);
+  void parse_module_btf(const std::set<std::string> &modules);
   bool has_btf_data() const;
   Dwarf *get_dwarf(const std::string &filename);
   Dwarf *get_dwarf(const ast::AttachPoint &attachpoint);
-  bool has_dwarf_data() const
-  {
-    return !dwarves_.empty();
-  }
   std::set<std::string> list_modules(const ast::ASTContext &ctx);
 
   std::string cmd_;
@@ -195,24 +186,20 @@ public:
   BpfBytecode bytecode_;
   StructManager structs;
   FunctionRegistry functions;
-  std::map<std::string, std::string> macros_;
-  // Map of enum variant_name to (variant_value, enum_name).
-  std::map<std::string, std::tuple<uint64_t, std::string>> enums_;
-  // Map of enum_name to map of variant_value to variant_name.
-  std::map<std::string, std::map<uint64_t, std::string>> enum_defs_;
   // For each helper, list of all generated call sites.
   std::map<libbpf::bpf_func_id, std::vector<HelperErrorInfo>> helper_use_loc_;
   const util::FuncsModulesMap &get_traceable_funcs() const;
+  const util::FuncsModulesMap &get_raw_tracepoints() const;
   util::KConfig kconfig;
   std::vector<std::unique_ptr<AttachedProbe>> attached_probes_;
-  std::optional<int> sigusr1_prog_fd_;
+  std::vector<int> sigusr1_prog_fds_;
 
   unsigned int join_argnum_ = 16;
   unsigned int join_argsize_ = 1024;
   std::unique_ptr<Output> out_;
+  std::unique_ptr<BTF> btf_;
   std::unique_ptr<BPFfeature> feature_;
 
-  bool resolve_user_symbols_ = true;
   bool safe_mode_ = true;
   bool has_usdt_ = false;
   bool usdt_file_activation_ = false;
@@ -232,7 +219,6 @@ public:
 
   std::unique_ptr<ProbeMatcher> probe_matcher_;
 
-  std::unique_ptr<BTF> btf_;
   std::unordered_set<std::string> btf_set_;
   std::unique_ptr<ChildProcBase> child_;
   std::unique_ptr<ProcMonBase> procmon_;
@@ -263,9 +249,9 @@ private:
       bool file_activation);
   int create_pcaps();
   void close_pcaps();
-  int setup_output();
-  int setup_perf_events();
-  void setup_ringbuf();
+  int setup_output(void *ctx);
+  int setup_perf_events(void *ctx);
+  void setup_ringbuf(void *ctx);
   int setup_event_loss();
   // when the ringbuf feature is available, enable ringbuf for built-ins like
   // printf, cat.
@@ -279,11 +265,24 @@ private:
   {
     return !feature_->has_map_ringbuf() || resources.needs_perf_event_map;
   }
+  std::vector<std::string> resolve_ksym_stack(uint64_t addr,
+                                              bool show_offset,
+                                              bool perf_mode,
+                                              bool show_debug_info);
+  std::vector<std::string> resolve_usym_stack(uint64_t addr,
+                                              int32_t pid,
+                                              int32_t probe_id,
+                                              bool show_offset,
+                                              bool perf_mode,
+                                              bool show_debug_info);
   void teardown_output();
-  void poll_output(bool drain = false);
+  void poll_output(Output &out, bool drain = false);
   int poll_perf_events();
-  void handle_event_loss();
-  int print_map_hist(const BpfMap &map, uint32_t top, uint32_t div);
+  void handle_event_loss(Output &out);
+  int print_map_hist(Output &out,
+                     const BpfMap &map,
+                     uint32_t top,
+                     uint32_t div);
   static uint64_t read_address_from_output(std::string output);
   struct bcc_symbol_option &get_symbol_opts();
   Probe generate_probe(const ast::AttachPoint &ap,
@@ -298,7 +297,7 @@ private:
   // Needs to be mutable to allow lazy loading of the mapping from const lookup
   // functions.
   mutable util::FuncsModulesMap traceable_funcs_;
-
+  mutable util::FuncsModulesMap raw_tracepoints_;
   std::unordered_map<std::string, std::unique_ptr<Dwarf>> dwarves_;
 };
 

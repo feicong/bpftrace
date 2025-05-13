@@ -1,5 +1,6 @@
 #include <vector>
 
+#include "ast/ast.h"
 #include "ast/passes/deprecated.h"
 #include "ast/visitor.h"
 
@@ -17,6 +18,9 @@ public:
 struct DeprecatedName {
   std::string old_name;
   std::string new_name;
+
+  // True if this name no longer exists - there is no `new_name`.
+  bool deleted;
 
   bool matches(const std::string &name) const
   {
@@ -41,10 +45,15 @@ static void check(const std::vector<DeprecatedName> &list,
       continue;
     }
 
-    auto &warn = node.addWarning();
-    warn << item.old_name
-         << " is deprecated and will be removed in the future.";
-    warn.addHint() << "Use " << item.new_name << " instead.";
+    if (item.deleted) {
+      auto &err = node.addError();
+      err << item.old_name << " is deprecated and has no effect.";
+    } else {
+      auto &warn = node.addWarning();
+      warn << item.old_name
+           << " is deprecated and will be removed in the future.";
+      warn.addHint() << "Use " << item.new_name << " instead.";
+    }
   }
 }
 
@@ -52,6 +61,7 @@ static std::vector<DeprecatedName> DEPRECATED_BUILTINS = {
   {
       .old_name = "sarg*",
       .new_name = "*(reg(\"sp\") + <stack_offset>)",
+      .deleted = false,
   },
 };
 

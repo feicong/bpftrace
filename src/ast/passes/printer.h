@@ -14,7 +14,9 @@ public:
 
   using Visitor<Printer>::visit;
   void visit(Integer &integer);
+  void visit(NegativeInteger &integer);
   void visit(PositionalParameter &param);
+  void visit(PositionalParameterCount &param);
   void visit(String &string);
   void visit(StackMode &mode);
   void visit(Identifier &identifier);
@@ -30,10 +32,13 @@ public:
   void visit(Ternary &ternary);
   void visit(FieldAccess &acc);
   void visit(ArrayAccess &arr);
+  void visit(TupleAccess &acc);
+  void visit(MapAccess &acc);
   void visit(Cast &cast);
   void visit(Tuple &tuple);
   void visit(ExprStatement &expr);
   void visit(AssignMapStatement &assignment);
+  void visit(AssignScalarMapStatement &assignment);
   void visit(AssignVarStatement &assignment);
   void visit(AssignConfigVarStatement &assignment);
   void visit(VarDeclStatement &decl);
@@ -47,6 +52,7 @@ public:
   void visit(AttachPoint &ap);
   void visit(Probe &probe);
   void visit(Subprog &subprog);
+  void visit(Import &imp);
   void visit(Program &program);
 
 private:

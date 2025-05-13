@@ -4,12 +4,12 @@
 #include "ast/attachpoint_parser.h"
 #include "ast/passes/codegen_llvm.h"
 #include "ast/passes/field_analyser.h"
+#include "ast/passes/map_sugar.h"
 #include "ast/passes/probe_analyser.h"
 #include "ast/passes/semantic_analyser.h"
 #include "bpftrace.h"
 #include "clang_parser.h"
 #include "driver.h"
-#include "dwarf_common.h"
 #include "mocks.h"
 #include "tracefs/tracefs.h"
 #include "gmock/gmock-matchers.h"
@@ -53,6 +53,7 @@ static auto parse_probe(const std::string &str,
                 .add(ast::CreateParseAttachpointsPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(CreateClangPass())
+                .add(ast::CreateMapSugarPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateProbePass())
                 .add(ast::CreateLLVMInitPass())
@@ -144,16 +145,6 @@ void check_tracepoint(Probe &p,
   EXPECT_EQ("tracepoint:" + target + ":" + func, p.name);
 }
 
-void check_rawtracepoint(Probe &p,
-                         const std::string &func,
-                         const std::string &orig_name)
-{
-  EXPECT_EQ(ProbeType::rawtracepoint, p.type);
-  EXPECT_EQ(func, p.attach_point);
-  EXPECT_EQ(orig_name, p.orig_name);
-  EXPECT_EQ("rawtracepoint:" + func, p.name);
-}
-
 void check_profile(Probe &p,
                    const std::string &unit,
                    int freq,
@@ -207,46 +198,46 @@ void check_special_probe(Probe &p, const std::string &orig_name)
 
 TEST(bpftrace, add_begin_probe)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("BEGIN{}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("BEGIN{}", *bpftrace);
 
-  ASSERT_EQ(0U, bpftrace.get_probes().size());
-  ASSERT_EQ(1U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_special_probes().size());
 
-  check_special_probe(bpftrace.get_special_probes()["BEGIN"], "BEGIN");
+  check_special_probe(bpftrace->get_special_probes()["BEGIN"], "BEGIN");
 }
 
 TEST(bpftrace, add_end_probe)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("END{}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("END{}", *bpftrace);
 
-  ASSERT_EQ(0U, bpftrace.get_probes().size());
-  ASSERT_EQ(1U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_special_probes().size());
 
-  check_special_probe(bpftrace.get_special_probes()["END"], "END");
+  check_special_probe(bpftrace->get_special_probes()["END"], "END");
 }
 
 TEST(bpftrace, add_probes_single)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("kprobe:sys_read {}", bpftrace);
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("kprobe:sys_read {}", *bpftrace);
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
-  check_kprobe(bpftrace.get_probes().at(0), "sys_read", "kprobe:sys_read");
+  check_kprobe(bpftrace->get_probes().at(0), "sys_read", "kprobe:sys_read");
 }
 
 TEST(bpftrace, add_probes_multiple)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("kprobe:sys_read,kprobe:sys_write{}", bpftrace);
-  ASSERT_EQ(2U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("kprobe:sys_read,kprobe:sys_write{}", *bpftrace);
+  ASSERT_EQ(2U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "kprobe:sys_read,kprobe:sys_write";
-  check_kprobe(bpftrace.get_probes().at(0), "sys_read", probe_orig_name);
-  check_kprobe(bpftrace.get_probes().at(1), "sys_write", probe_orig_name);
+  check_kprobe(bpftrace->get_probes().at(0), "sys_read", probe_orig_name);
+  check_kprobe(bpftrace->get_probes().at(1), "sys_write", probe_orig_name);
 }
 
 TEST(bpftrace, add_probes_wildcard)
@@ -422,24 +413,24 @@ TEST(bpftrace, add_probes_kernel_module_function_wildcard)
 TEST(bpftrace, add_probes_offset)
 {
   auto offset = 10;
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("kprobe:sys_read+10{}", bpftrace);
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("kprobe:sys_read+10{}", *bpftrace);
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "kprobe:sys_read+" + std::to_string(offset);
   check_kprobe(
-      bpftrace.get_probes().at(0), "sys_read", probe_orig_name, offset);
+      bpftrace->get_probes().at(0), "sys_read", probe_orig_name, offset);
 }
 
 TEST(bpftrace, add_probes_uprobe)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("uprobe:/bin/sh:foo {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("uprobe:/bin/sh:foo {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
-  check_uprobe(bpftrace.get_probes().at(0),
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
+  check_uprobe(bpftrace->get_probes().at(0),
                "/bin/sh",
                "foo",
                "uprobe:/bin/sh:foo",
@@ -580,12 +571,12 @@ TEST(bpftrace, add_probes_uprobe_wildcard_no_matches_multi)
 
 TEST(bpftrace, add_probes_uprobe_address)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("uprobe:/bin/sh:1024 {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("uprobe:/bin/sh:1024 {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
-  check_uprobe(bpftrace.get_probes().at(0),
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
+  check_uprobe(bpftrace->get_probes().at(0),
                "/bin/sh",
                "",
                "uprobe:/bin/sh:1024",
@@ -595,12 +586,12 @@ TEST(bpftrace, add_probes_uprobe_address)
 
 TEST(bpftrace, add_probes_uprobe_string_offset)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("uprobe:/bin/sh:foo+10{}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("uprobe:/bin/sh:foo+10{}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
-  check_uprobe(bpftrace.get_probes().at(0),
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
+  check_uprobe(bpftrace->get_probes().at(0),
                "/bin/sh",
                "foo",
                "uprobe:/bin/sh:foo+10",
@@ -714,51 +705,14 @@ TEST(bpftrace, add_probes_uprobe_no_demangling)
                "uprobe:/bin/sh:cpp_mangled");
 }
 
-#ifdef HAVE_LIBLLDB
-class bpftrace_dwarf : public test_dwarf {};
-
-TEST_F(bpftrace_dwarf, add_probes_uprobe_symbol_source)
-{
-  auto uprobe = "uprobe:" + std::string(bin_) + ":func_1 {}";
-
-  {
-    BPFtrace bpftrace;
-    ConfigSetter configs{ *bpftrace.config_, ConfigSource::script };
-    configs.set_symbol_source_config("dwarf");
-    parse_probe(uprobe, bpftrace);
-
-    ASSERT_EQ(bpftrace.resources.probes.size(), 1);
-    ASSERT_EQ(bpftrace.resources.special_probes.size(), 0);
-
-    auto &probe = bpftrace.resources.probes.at(0);
-    ASSERT_TRUE(probe.attach_point.empty());
-    ASSERT_NE(probe.address, 0);
-  }
-
-  {
-    BPFtrace bpftrace;
-    ConfigSetter configs{ *bpftrace.config_, ConfigSource::script };
-    configs.set_symbol_source_config("symbol_table");
-    parse_probe(uprobe, bpftrace);
-
-    ASSERT_EQ(bpftrace.resources.probes.size(), 1);
-    ASSERT_EQ(bpftrace.resources.special_probes.size(), 0);
-
-    auto &probe = bpftrace.resources.probes.at(0);
-    ASSERT_FALSE(probe.attach_point.empty());
-    ASSERT_EQ(probe.address, 0);
-  }
-}
-#endif
-
 TEST(bpftrace, add_probes_usdt)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("usdt:/bin/sh:prov1:mytp {}", bpftrace, 1);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("usdt:/bin/sh:prov1:mytp {}", *bpftrace, 1);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
-  check_usdt(bpftrace.get_probes().at(0),
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
+  check_usdt(bpftrace->get_probes().at(0),
              "/bin/sh",
              "prov1",
              "mytp",
@@ -842,15 +796,15 @@ TEST(bpftrace, add_probes_usdt_duplicate_markers)
 
 TEST(bpftrace, add_probes_tracepoint)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("tracepoint:sched:sched_switch {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("tracepoint:sched:sched_switch {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "tracepoint:sched:sched_switch";
   check_tracepoint(
-      bpftrace.get_probes().at(0), "sched", "sched_switch", probe_orig_name);
+      bpftrace->get_probes().at(0), "sched", "sched_switch", probe_orig_name);
 }
 
 TEST(bpftrace, add_probes_tracepoint_wildcard)
@@ -910,50 +864,50 @@ TEST(bpftrace, add_probes_tracepoint_wildcard_no_matches)
 
 TEST(bpftrace, add_probes_profile)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("profile:ms:997 {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("profile:ms:997 {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "profile:ms:997";
-  check_profile(bpftrace.get_probes().at(0), "ms", 997, probe_orig_name);
+  check_profile(bpftrace->get_probes().at(0), "ms", 997, probe_orig_name);
 }
 
 TEST(bpftrace, add_probes_interval)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("i:s:1 {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("i:s:1 {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "interval:s:1";
-  check_interval(bpftrace.get_probes().at(0), "s", 1, probe_orig_name);
+  check_interval(bpftrace->get_probes().at(0), "s", 1, probe_orig_name);
 }
 
 TEST(bpftrace, add_probes_software)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("software:faults:1000 {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("software:faults:1000 {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "software:faults:1000";
-  check_software(bpftrace.get_probes().at(0), "faults", 1000, probe_orig_name);
+  check_software(bpftrace->get_probes().at(0), "faults", 1000, probe_orig_name);
 }
 
 TEST(bpftrace, add_probes_hardware)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("hardware:cache-references:1000000 {}", bpftrace);
+  auto bpftrace = get_strict_mock_bpftrace();
+  parse_probe("hardware:cache-references:1000000 {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
   std::string probe_orig_name = "hardware:cache-references:1000000";
-  check_hardware(bpftrace.get_probes().at(0),
+  check_hardware(bpftrace->get_probes().at(0),
                  "cache-references",
                  1000000,
                  probe_orig_name);
@@ -962,25 +916,24 @@ TEST(bpftrace, add_probes_hardware)
 TEST(bpftrace, trailing_comma)
 {
   ast::ASTContext ast("stdin", "kprobe:f1, {}");
-  StrictMock<MockBPFtrace> bpftrace;
-  Driver driver(ast, bpftrace);
+  Driver driver(ast);
 
   // Trailing comma is fine
-  driver.parse();
+  driver.parse_program();
   ASSERT_TRUE(ast.diagnostics().ok());
 }
 
 TEST(bpftrace, empty_attachpoint)
 {
   ast::ASTContext ast("stdin", "{}");
-  StrictMock<MockBPFtrace> bpftrace;
-  Driver driver(ast, bpftrace);
+  Driver driver(ast);
 
   // Empty attach point should fail...
-  driver.parse();
+  ast.root = driver.parse_program();
 
   // ... ah, but it doesn't really. What fails is the attachpoint parser. The
   // above is a valid program, it is just not a valid attachpoint.
+  StrictMock<MockBPFtrace> bpftrace;
   ast::AttachPointParser ap_parser(ast, bpftrace, false);
   ap_parser.parse();
   EXPECT_FALSE(ast.diagnostics().ok());
@@ -1053,7 +1006,7 @@ std::pair<std::vector<uint8_t>, std::vector<uint8_t>> key_value_pair_int_str(
 
 TEST(bpftrace, sort_by_key_int)
 {
-  StrictMock<MockBPFtrace> bpftrace;
+  auto bpftrace = get_strict_mock_bpftrace();
 
   SizedType key_arg = CreateUInt64();
   std::vector<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>
@@ -1076,10 +1029,10 @@ TEST(bpftrace, sort_by_key_int)
 
 TEST(bpftrace, sort_by_key_int_int)
 {
-  StrictMock<MockBPFtrace> bpftrace;
+  auto bpftrace = get_strict_mock_bpftrace();
 
-  SizedType key = CreateTuple(bpftrace.structs.AddTuple(
-      { CreateInt64(), CreateInt64(), CreateInt64() }));
+  SizedType key = CreateTuple(
+      Struct::CreateTuple({ CreateInt64(), CreateInt64(), CreateInt64() }));
 
   std::vector<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>
       values_by_key = {
@@ -1101,7 +1054,7 @@ TEST(bpftrace, sort_by_key_int_int)
 
 TEST(bpftrace, sort_by_key_str)
 {
-  StrictMock<MockBPFtrace> bpftrace;
+  auto bpftrace = get_strict_mock_bpftrace();
 
   SizedType key_arg = CreateString(STRING_SIZE);
   std::vector<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>
@@ -1126,12 +1079,12 @@ TEST(bpftrace, sort_by_key_str)
 
 TEST(bpftrace, sort_by_key_str_str)
 {
-  StrictMock<MockBPFtrace> bpftrace;
+  auto bpftrace = get_strict_mock_bpftrace();
 
   SizedType key = CreateTuple(
-      bpftrace.structs.AddTuple({ CreateString(STRING_SIZE),
-                                  CreateString(STRING_SIZE),
-                                  CreateString(STRING_SIZE) }));
+      Struct::CreateTuple({ CreateString(STRING_SIZE),
+                            CreateString(STRING_SIZE),
+                            CreateString(STRING_SIZE) }));
 
   std::vector<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>
       values_by_key = {
@@ -1159,10 +1112,10 @@ TEST(bpftrace, sort_by_key_str_str)
 
 TEST(bpftrace, sort_by_key_int_str)
 {
-  StrictMock<MockBPFtrace> bpftrace;
+  auto bpftrace = get_strict_mock_bpftrace();
 
   SizedType key = CreateTuple(
-      bpftrace.structs.AddTuple({ CreateUInt64(), CreateString(STRING_SIZE) }));
+      Struct::CreateTuple({ CreateUInt64(), CreateString(STRING_SIZE) }));
 
   std::vector<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>
       values_by_key = {
@@ -1217,17 +1170,17 @@ TEST_F(bpftrace_btf, add_probes_fentry)
 
 TEST_F(bpftrace_btf, add_probes_kprobe)
 {
-  StrictMock<MockBPFtrace> bpftrace;
+  auto bpftrace = get_strict_mock_bpftrace();
   parse_probe("kprobe:mock_vmlinux:func_1,kretprobe:mock_vmlinux:func_1 {}",
-              bpftrace);
+              *bpftrace);
 
-  ASSERT_EQ(2U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(2U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
-  check_probe(bpftrace.get_probes().at(0),
+  check_probe(bpftrace->get_probes().at(0),
               ProbeType::kprobe,
               "kprobe:mock_vmlinux:func_1");
-  check_probe(bpftrace.get_probes().at(1),
+  check_probe(bpftrace->get_probes().at(1),
               ProbeType::kretprobe,
               "kretprobe:mock_vmlinux:func_1");
 }
@@ -1292,44 +1245,37 @@ class bpftrace_bad_btf : public test_bad_btf {};
 TEST_F(bpftrace_bad_btf, parse_invalid_btf)
 {
   BPFtrace bpftrace;
-  bpftrace.parse_btf({});
   EXPECT_FALSE(bpftrace.has_btf_data());
 }
 
-TEST(bpftrace, add_probes_rawtracepoint)
+TEST_F(bpftrace_btf, add_probes_rawtracepoint)
 {
-  StrictMock<MockBPFtrace> bpftrace;
-  parse_probe("rawtracepoint:sched_switch {}", bpftrace);
+  auto bpftrace = get_mock_bpftrace();
+  parse_probe("rawtracepoint:event_rt {}", *bpftrace);
 
-  ASSERT_EQ(1U, bpftrace.get_probes().size());
-  ASSERT_EQ(0U, bpftrace.get_special_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
+  ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 
-  std::string probe_orig_name = "rawtracepoint:sched_switch";
-  check_rawtracepoint(bpftrace.get_probes().at(0),
-                      "sched_switch",
-                      probe_orig_name);
+  std::string probe_orig_name = "rawtracepoint:*:event_rt";
+  auto probe = bpftrace->get_probes().at(0);
+  EXPECT_EQ(ProbeType::rawtracepoint, probe.type);
+  EXPECT_EQ("event_rt", probe.attach_point);
+  EXPECT_EQ("rawtracepoint:*:event_rt", probe.orig_name);
+  EXPECT_EQ("rawtracepoint:vmlinux:event_rt", probe.name);
 }
 
-TEST(bpftrace, add_probes_rawtracepoint_wildcard)
+TEST_F(bpftrace_btf, add_probes_rawtracepoint_wildcard)
 {
-  auto bpftrace = get_strict_mock_bpftrace();
-  EXPECT_CALL(*bpftrace->mock_probe_matcher,
-              get_symbols_from_file(tracefs::available_events()))
-      .Times(1);
+  auto bpftrace = get_mock_bpftrace();
+  parse_probe(("rawtracepoint:event_* {}"), *bpftrace);
 
-  parse_probe(("rawtracepoint:sched_* {}"), *bpftrace);
-
-  ASSERT_EQ(3U, bpftrace->get_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
   ASSERT_EQ(0U, bpftrace->get_special_probes().size());
 }
 
-TEST(bpftrace, add_probes_rawtracepoint_wildcard_no_matches)
+TEST_F(bpftrace_btf, add_probes_rawtracepoint_wildcard_no_matches)
 {
-  auto bpftrace = get_strict_mock_bpftrace();
-  EXPECT_CALL(*bpftrace->mock_probe_matcher,
-              get_symbols_from_file(tracefs::available_events()))
-      .Times(1);
-
+  auto bpftrace = get_mock_bpftrace();
   parse_probe("rawtracepoint:typo_* {}", *bpftrace);
 
   ASSERT_EQ(0U, bpftrace->get_probes().size());

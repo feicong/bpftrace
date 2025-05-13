@@ -13,6 +13,7 @@ add_library(util STATIC
   result.cpp
   symbols.cpp
   system.cpp
+  temp.cpp
   wildcard.cpp
   )
 
@@ -21,4 +22,4 @@ if (KERNEL_HEADERS_DIR)
 endif()
 target_compile_definitions(util PUBLIC KERNEL_HEADERS_DIR="${KERNEL_HEADERS_DIR}")
 
-target_link_libraries(util debugfs ${ZLIB_LIBRARIES})
+target_link_libraries(util debugfs ${LIBELF_LIBRARIES} ${ZLIB_LIBRARIES})
