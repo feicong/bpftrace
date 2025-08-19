@@ -8,7 +8,7 @@
 #include "driver.h"
 #include "parser.tab.hh"
 #include "util/int_parser.h"
-#include "util/format.h"
+#include "util/strings.h"
 
 #define YY_USER_ACTION driver.loc.columns(yyleng);
 #define yyterminate() return bpftrace::Parser::make_END(driver.loc)
@@ -29,10 +29,11 @@ static int read_from_source(char* buf, size_t max_size);
 %}
 
 /* https://en.cppreference.com/w/cpp/language/integer_literal#The_type_of_the_literal */
-int_size (([uU])|([uU]?[lL]?[lL]))
+int_size (([uU])|([uU]?[lL]?[lL])|(ns)|(us)|(ms)|(s)|(m)|(h)|(d))
 
 /* Number with underscores in it, e.g. 1_000_000 */
 int      [0-9]([0-9_]*[0-9])?{int_size}?
+bool     true|false
 hex      0[xX][0-9a-fA-F]+
 /* scientific notation, e.g. 2e4 or 1e6 */
 exponent {int}[eE]{int}
@@ -44,11 +45,12 @@ hspace   [ \t]
 vspace   [\n\r]
 space    {hspace}|{vspace}
 path     :(\\.|[_\-\./a-zA-Z0-9#$+\*])+
-builtin  arg[0-9]|args|cgroup|comm|cpid|numaid|cpu|ctx|curtask|elapsed|func|gid|pid|probe|rand|retval|sarg[0-9]|tid|uid|username|jiffies|nsecs|kstack|ustack
+/* Most of the builtins are prefixed with __builtin_ as they are exposed to users via macros e.g. macro cpu() { __builtin_cpu } */
+builtin  arg[0-9]+|args|ctx|kstack|nsecs|pid|sarg[0-9]|tid|ustack|__builtin_cgroup|__builtin_comm|__builtin_cpid|__builtin_cpu|__builtin_curtask|__builtin_elapsed|__builtin_func|__builtin_gid|__builtin_jiffies|__builtin_ncpus|__builtin_numaid|__builtin_probe|__builtin_rand|__builtin_retval|__builtin_uid|__builtin_usermode|__builtin_username
 
 int_type        bool|(u)?int(8|16|32|64)
-builtin_type    void|(u)?(min|max|sum|count|avg|stats)_t|probe_t|username|lhist_t|hist_t|usym_t|ksym_t|timestamp|macaddr_t|cgroup_path_t|strerror_t|kstack_t|ustack_t
-sized_type      string|inet|buffer
+builtin_type    void|(u)?(min|max|sum|avg|stats)_t|count_t|probe_t|username_t|lhist_t|hist_t|usym_t|ksym_t|timestamp|macaddr_t|cgroup_path_t|strerror_t|kstack_t|ustack_t|string|tseries_t
+sized_type      inet|buffer
 subprog         fn
 macro           macro
 
@@ -91,17 +93,22 @@ oct_esc  [0-7]{1,3}
 {subprog}               { return Parser::make_SUBPROG(yytext, driver.loc); }
 {macro}                 { return Parser::make_MACRO(yytext, driver.loc); }
 {int}|{hex}|{exponent}  {
-                          try
-                          {
-                            // Note that we have no unsigned integers in the lexer, these
-                            // are purely derived as a result of folding constants.
-                            auto res = util::to_uint(yytext, 0);
-                            return Parser::make_UNSIGNED_INT(res, driver.loc);
+                          // Note that we have no unsigned integers in the lexer, these
+                          // are purely derived as a result of folding constants.
+                          auto res = util::to_uint(yytext, 0);
+                          if (!res) {
+                            std::stringstream ss;
+                            ss << res.takeError();
+                            driver.error(driver.loc, ss.str());
+                          } else {
+                            return Parser::make_UNSIGNED_INT(*res, driver.loc);
                           }
-                          catch (const std::exception &e)
-                          {
-                            driver.error(driver.loc, e.what());
+                        }
+{bool}                  {
+                          if (std::string(yytext) == "true") {
+                            return Parser::make_BOOL(true, driver.loc);
                           }
+                          return Parser::make_BOOL(false, driver.loc);
                         }
 {path}                  { return Parser::make_PATH(yytext, driver.loc); }
 {map}                   { return Parser::make_MAP(yytext, driver.loc); }

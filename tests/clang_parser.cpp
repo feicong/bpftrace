@@ -1,9 +1,11 @@
 #include <llvm/Config/llvm-config.h>
 
 #include "ast/attachpoint_parser.h"
+#include "ast/passes/clang_parser.h"
 #include "ast/passes/field_analyser.h"
+#include "ast/passes/probe_expansion.h"
 #include "bpftrace.h"
-#include "clang_parser.h"
+#include "btf_common.h"
 #include "driver.h"
 #include "mocks.h"
 #include "struct.h"
@@ -11,12 +13,11 @@
 
 namespace bpftrace::test::clang_parser {
 
-#include "btf_common.h"
-
-static CDefinitions parse(const std::string &input,
-                          BPFtrace &bpftrace,
-                          bool result = true,
-                          const std::string &probe = "kprobe:sys_read { 1 }")
+static ast::CDefinitions parse(
+    const std::string &input,
+    BPFtrace &bpftrace,
+    bool result = true,
+    const std::string &probe = "kprobe:sys_read { 1 }")
 {
   auto extended_input = input + probe;
   ast::ASTContext ast("stdin", extended_input);
@@ -26,12 +27,13 @@ static CDefinitions parse(const std::string &input,
                 .put(bpftrace)
                 .add(CreateParsePass())
                 .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateProbeExpansionPass())
                 .add(ast::CreateFieldAnalyserPass())
-                .add(CreateClangPass())
+                .add(ast::CreateClangParsePass())
                 .run();
   EXPECT_EQ(ok && ast.diagnostics().ok(), result);
   if (ok) {
-    return std::move(ok->get<CDefinitions>());
+    return std::move(ok->get<ast::CDefinitions>());
   }
   return {};
 }
@@ -248,8 +250,9 @@ TEST(clang_parser, string_array)
   ASSERT_EQ(foo->fields.size(), 1U);
   ASSERT_TRUE(foo->HasField("str"));
 
+  // See clang_parser.cpp; the increase signal well-formedness.
   EXPECT_TRUE(foo->GetField("str").type.IsStringTy());
-  EXPECT_EQ(foo->GetField("str").type.GetSize(), 32U);
+  EXPECT_EQ(foo->GetField("str").type.GetSize(), 32U + 1U);
   EXPECT_EQ(foo->GetField("str").offset, 0);
 }
 

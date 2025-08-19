@@ -6,19 +6,23 @@
 
 #include "ast/attachpoint_parser.h"
 #include "ast/passes/c_macro_expansion.h"
+#include "ast/passes/clang_build.h"
+#include "ast/passes/clang_parser.h"
 #include "ast/passes/codegen_llvm.h"
 #include "ast/passes/field_analyser.h"
 #include "ast/passes/fold_literals.h"
 #include "ast/passes/map_sugar.h"
+#include "ast/passes/named_param.h"
 #include "ast/passes/parser.h"
 #include "ast/passes/pid_filter_pass.h"
-#include "ast/passes/probe_analyser.h"
+#include "ast/passes/probe_expansion.h"
 #include "ast/passes/recursion_check.h"
+#include "ast/passes/resolve_imports.h"
 #include "ast/passes/resource_analyser.h"
 #include "ast/passes/semantic_analyser.h"
+#include "ast/passes/type_system.h"
 #include "bpftrace.h"
 #include "btf_common.h"
-#include "clang_parser.h"
 #include "driver.h"
 #include "util/env.h"
 #include "gtest/gtest.h"
@@ -61,19 +65,25 @@ static void test(BPFtrace &bpftrace,
                 .put(ast)
                 .put(bpftrace)
                 .add(CreateParsePass())
+                .add(ast::CreateResolveImportsPass())
+                .add(ast::CreateImportInternalScriptsPass())
+                .add(ast::CreateMacroExpansionPass())
                 .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateProbeExpansionPass())
                 .add(ast::CreateFieldAnalyserPass())
-                .add(CreateClangPass())
+                .add(ast::CreateClangParsePass())
                 .add(ast::CreateCMacroExpansionPass())
                 .add(ast::CreateFoldLiteralsPass())
                 .add(ast::CreateMapSugarPass())
+                .add(ast::CreateNamedParamsPass())
+                .add(ast::CreateLLVMInitPass())
+                .add(ast::CreateClangBuildPass())
+                .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreatePidFilterPass())
                 .add(ast::CreateRecursionCheckPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())
-                .add(ast::CreateProbePass())
-                .add(ast::CreateLLVMInitPass())
                 .add(ast::CreateCompilePass())
                 .add(ast::CreateDumpIRPass(out))
                 .run();

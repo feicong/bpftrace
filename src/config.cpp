@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <unordered_set>
 
 #include "config.h"
 #include "log.h"
 #include "types.h"
 #include "util/int_parser.h"
+#include "util/strings.h"
 
 namespace bpftrace {
 
@@ -49,29 +51,19 @@ Config::Config(bool has_cmd)
                                  ? UserSymbolCacheType::per_program
                                  : UserSymbolCacheType::per_pid) {};
 
-static std::string tolower(const std::string &original)
-{
-  std::string lower(original);
-  std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
-    return std::tolower(c);
-  });
-  return lower;
-}
-
 template <>
 struct ConfigParser<uint64_t> {
   Result<OK> parse(const std::string &key,
                    uint64_t *target,
                    const std::string &s)
   {
-    try {
-      // If this can be parsed as a literal integer, then we take that.
-      *target = util::to_uint(s, 0);
-      return OK();
-    } catch (const std::exception &e) {
-      // Don't bother with the exception, just include the original string.
+    // If this can be parsed as a literal integer, then we take that.
+    auto val = util::to_uint(s);
+    if (!val) {
       return make_error<ParseError>(key, "expecting a number, got " + s);
     }
+    *target = *val;
+    return OK();
   }
   Result<OK> parse([[maybe_unused]] const std::string &key,
                    uint64_t *target,
@@ -88,11 +80,10 @@ struct ConfigParser<bool> {
                    bool *target,
                    const std::string &original)
   {
-    std::string s = tolower(original);
-    if (s == "1" || s == "true" || s == "on" || s == "yes") {
+    if (util::is_str_bool_truthy(original)) {
       *target = true;
       return OK();
-    } else if (s == "0" || s == "false" || s == "off" || s == "no") {
+    } else if (util::is_str_bool_falsy(original)) {
       *target = false;
       return OK();
     } else {
@@ -140,7 +131,7 @@ struct ConfigParser<UserSymbolCacheType> {
                    UserSymbolCacheType *target,
                    const std::string &original)
   {
-    std::string s = tolower(original);
+    std::string s = util::to_lower(original);
     if (s == "1") {
       return OK(); // Leave as the default.
     } else if (s == "per_pid") {
@@ -179,7 +170,7 @@ struct ConfigParser<ConfigMissingProbes> {
                    ConfigMissingProbes *target,
                    const std::string &original)
   {
-    std::string s = tolower(original);
+    std::string s = util::to_lower(original);
     if (s == "ignore") {
       *target = ConfigMissingProbes::ignore;
       return OK();
@@ -211,15 +202,14 @@ struct ConfigParser<ConfigUnstable> {
                    ConfigUnstable *target,
                    const std::string &original)
   {
-    std::string s = tolower(original);
-    if (s == "enable" || s == "1" || s == "true" || s == "on" || s == "yes") {
+    std::string s = util::to_lower(original);
+    if (s == "enable" || util::is_str_bool_truthy(original)) {
       *target = ConfigUnstable::enable;
       return OK();
     } else if (s == "warn") {
       *target = ConfigUnstable::warn;
       return OK();
-    } else if (s == "error" || s == "0" || s == "false" || s == "off" ||
-               s == "no") {
+    } else if (s == "error" || util::is_str_bool_falsy(original)) {
       *target = ConfigUnstable::error;
       return OK();
     } else {
@@ -292,6 +282,8 @@ const std::map<std::string, AnyParser> CONFIG_KEY_MAP = {
   { UNSTABLE_IMPORT, CONFIG_FIELD_PARSER(unstable_import) },
   { UNSTABLE_MACRO, CONFIG_FIELD_PARSER(unstable_macro) },
   { UNSTABLE_MAP_DECL, CONFIG_FIELD_PARSER(unstable_map_decl) },
+  { UNSTABLE_TSERIES, CONFIG_FIELD_PARSER(unstable_tseries) },
+  { UNSTABLE_ADDR, CONFIG_FIELD_PARSER(unstable_addr) },
 };
 
 // These symbols are deprecated, and have been remapped elsewhere.
@@ -315,7 +307,7 @@ static const std::string ENV_PREFIX = "bpftrace_";
 
 static std::string restore(const std::string &original_key)
 {
-  std::string key = tolower(original_key);
+  std::string key = util::to_lower(original_key);
   if (key.starts_with(ENV_PREFIX)) {
     key = key.substr(ENV_PREFIX.length());
   }

@@ -11,9 +11,9 @@
 #include "ast/context.h"
 #include "ast/helpers.h"
 #include "types.h"
-#include "util/format.h"
 #include "util/int_parser.h"
 #include "util/paths.h"
+#include "util/strings.h"
 #include "util/system.h"
 #include "util/wildcard.h"
 
@@ -33,26 +33,6 @@ AttachPointParser::State AttachPointParser::argument_count_error(
   errs_ << " arguments, found " << found << std::endl;
 
   return INVALID;
-}
-
-std::optional<uint64_t> AttachPointParser::stoull(const std::string &str)
-{
-  try {
-    return util::to_uint(str, 0);
-  } catch (const std::exception &e) {
-    errs_ << e.what() << std::endl;
-    return std::nullopt;
-  }
-}
-
-std::optional<int64_t> AttachPointParser::stoll(const std::string &str)
-{
-  try {
-    return util::to_int(str, 0);
-  } catch (const std::exception &e) {
-    errs_ << e.what() << std::endl;
-    return std::nullopt;
-  }
 }
 
 AttachPointParser::AttachPointParser(ASTContext &ctx,
@@ -177,6 +157,8 @@ AttachPointParser::State AttachPointParser::parse_attachpoint(AttachPoint &ap)
   switch (probetype(ap.provider)) {
     case ProbeType::special:
       return special_parser();
+    case ProbeType::benchmark:
+      return benchmark_parser();
     case ProbeType::kprobe:
       return kprobe_parser();
     case ProbeType::kretprobe:
@@ -260,20 +242,17 @@ AttachPointParser::State AttachPointParser::lex_attachpoint(
       }
 
       param_idx_str = raw.substr(idx + 1, len);
-      size_t pos, param_idx;
-
-      try {
-        param_idx = std::stoll(param_idx_str, &pos, 0);
-      } catch (std::out_of_range const &ex) {
-        errs_ << "positional param index " << param_idx_str
-              << " is out of integer range. Max int: "
-              << std::to_string(std::numeric_limits<long>::max());
+      auto param_idx = util::to_uint(param_idx_str, 10);
+      if (!param_idx) {
+        errs_ << "positional parameter is not valid: " << param_idx.takeError()
+              << std::endl;
         return State::INVALID;
       }
 
       // Expand the positional param in-place and decrement idx so that the next
       // iteration takes the first char of the expansion
-      raw = raw.substr(0, idx) + bpftrace_.get_param(param_idx) + raw.substr(i);
+      raw = raw.substr(0, idx) + bpftrace_.get_param(*param_idx) +
+            raw.substr(i);
       idx--;
     } else
       argument += raw[idx];
@@ -290,11 +269,11 @@ AttachPointParser::State AttachPointParser::lex_attachpoint(
 
 AttachPointParser::State AttachPointParser::special_parser()
 {
-  // Can only have reached here if provider is `BEGIN` or `END` or `self`
-  assert(ap_->provider == "BEGIN" || ap_->provider == "END" ||
+  // Can only have reached here if provider is `begin` or `end` or `self`
+  assert(ap_->provider == "begin" || ap_->provider == "end" ||
          ap_->provider == "self");
 
-  if (ap_->provider == "BEGIN" || ap_->provider == "END") {
+  if (ap_->provider == "begin" || ap_->provider == "end") {
     if (parts_.size() == 2 && parts_[1] == "*")
       parts_.pop_back();
     if (parts_.size() != 1) {
@@ -306,6 +285,22 @@ AttachPointParser::State AttachPointParser::special_parser()
     }
     ap_->target = parts_[1];
     ap_->func = parts_[2];
+  }
+
+  return OK;
+}
+
+AttachPointParser::State AttachPointParser::benchmark_parser()
+{
+  // Can only have reached here if provider is `bench`
+  assert(ap_->provider == "bench");
+
+  if (ap_->provider == "bench") {
+    if (parts_.size() != 2) {
+      return argument_count_error(1);
+    }
+
+    ap_->target = parts_[1];
   }
 
   return OK;
@@ -350,9 +345,9 @@ AttachPointParser::State AttachPointParser::kprobe_parser(bool allow_offset)
 
     ap_->func = offset_parts[0];
 
-    auto res = stoll(offset_parts[1]);
+    auto res = util::to_uint(offset_parts[1]);
     if (!res) {
-      errs_ << "Invalid offset" << std::endl;
+      errs_ << "Invalid offset: " << res.takeError() << std::endl;
       return INVALID;
     }
     ap_->func_offset = *res;
@@ -360,18 +355,6 @@ AttachPointParser::State AttachPointParser::kprobe_parser(bool allow_offset)
   // Default case (eg kprobe:func)
   else {
     ap_->func = parts_[func_idx];
-  }
-
-  // kprobe_multi does not support the "module:function" syntax so in case
-  // a module is specified, always use full expansion
-  if (util::has_wildcard(ap_->target))
-    ap_->expansion = ExpansionType::FULL;
-  else if (util::has_wildcard(ap_->func)) {
-    if (ap_->target.empty() && bpftrace_.feature_->has_kprobe_multi()) {
-      ap_->expansion = ExpansionType::MULTI;
-    } else {
-      ap_->expansion = ExpansionType::FULL;
-    }
   }
 
   return OK;
@@ -394,7 +377,7 @@ AttachPointParser::State AttachPointParser::uprobe_parser(bool allow_offset,
       parts_.insert(parts_.begin() + 1, "");
 
     auto target = util::get_pid_exe(*pid);
-    parts_[1] = util::path_for_pid_mountns(*pid, target);
+    parts_[1] = target ? util::path_for_pid_mountns(*pid, *target) : "";
   }
 
   if (parts_.size() != 3 && parts_.size() != 4) {
@@ -447,10 +430,9 @@ AttachPointParser::State AttachPointParser::uprobe_parser(bool allow_offset,
     }
 
     ap_->func = offset_parts[0];
-
-    auto res = stoll(offset_parts[1]);
+    auto res = util::to_uint(offset_parts[1]);
     if (!res) {
-      errs_ << "Invalid offset" << std::endl;
+      errs_ << "Invalid offset: " << res.takeError() << std::endl;
       return INVALID;
     }
     ap_->func_offset = *res;
@@ -458,7 +440,7 @@ AttachPointParser::State AttachPointParser::uprobe_parser(bool allow_offset,
   // Default case (eg uprobe:[addr][func])
   else {
     if (allow_abs_addr) {
-      auto res = stoll(func);
+      auto res = util::to_uint(func);
       if (res) {
         if (util::has_wildcard(ap_->target)) {
           errs_ << "Cannot use wildcards with absolute address" << std::endl;
@@ -471,18 +453,6 @@ AttachPointParser::State AttachPointParser::uprobe_parser(bool allow_offset,
       }
     } else
       ap_->func = func;
-  }
-
-  // As the C++ language supports function overload, a given function name
-  // (without parameters) could have multiple matches even when no
-  // wildcards are used.
-  if (util::has_wildcard(ap_->func) || util::has_wildcard(ap_->target) ||
-      ap_->lang == "cpp") {
-    if (bpftrace_.feature_->has_uprobe_multi()) {
-      ap_->expansion = ExpansionType::MULTI;
-    } else {
-      ap_->expansion = ExpansionType::FULL;
-    }
   }
 
   return OK;
@@ -518,12 +488,6 @@ AttachPointParser::State AttachPointParser::usdt_parser()
     ap_->func = parts_[3];
   }
 
-  // Always fully expand USDT probes as they may access args
-  if (util::has_wildcard(ap_->target) || util::has_wildcard(ap_->ns) ||
-      ap_->ns.empty() || util::has_wildcard(ap_->func) ||
-      bpftrace_.pid().has_value())
-    ap_->expansion = ExpansionType::FULL;
-
   return OK;
 }
 
@@ -545,60 +509,62 @@ AttachPointParser::State AttachPointParser::tracepoint_parser()
   ap_->target = parts_[1];
   ap_->func = parts_[2];
 
-  if (ap_->target.find('*') != std::string::npos ||
-      ap_->func.find('*') != std::string::npos)
-    ap_->expansion = ExpansionType::FULL;
+  return OK;
+}
 
+// Used for both profile and interval probes
+AttachPointParser::State AttachPointParser::frequency_parser()
+{
+  if (parts_.size() == 2) {
+    if (util::has_wildcard(parts_[1])) {
+      // Wildcards are allowed for listing
+      ap_->target = parts_[1];
+      ap_->freq = 0;
+      return OK;
+    }
+
+    auto res = util::to_uint(parts_[1]);
+    if (!res) {
+      errs_ << "Invalid rate of " << ap_->provider
+            << " probe: " << res.takeError() << std::endl;
+      return INVALID;
+    }
+    if (*res < 1000) {
+      errs_ << "Invalid rate of " << ap_->provider
+            << " probe. Minimum is 1000 or 1us. Found: " << *res
+            << " nanoseconds" << std::endl;
+      return INVALID;
+    }
+    ap_->target = "us";
+    // res is in nanoseconds
+    ap_->freq = (*res / 1000);
+    return OK;
+  }
+
+  if (parts_.size() != 3) {
+    return argument_count_error(1, 2);
+  }
+
+  ap_->target = parts_[1];
+  auto res = util::to_uint(parts_[2]);
+  if (!res) {
+    errs_ << "Invalid rate of " << ap_->provider
+          << " probe: " << res.takeError() << std::endl;
+    return INVALID;
+  }
+
+  ap_->freq = *res;
   return OK;
 }
 
 AttachPointParser::State AttachPointParser::profile_parser()
 {
-  if (parts_.size() == 2 && util::has_wildcard(parts_[1])) {
-    // Wildcards are allowed for listing
-    ap_->target = parts_[1];
-    ap_->freq = 0;
-    return OK;
-  }
-
-  if (parts_.size() != 3) {
-    return argument_count_error(2);
-  }
-
-  ap_->target = parts_[1];
-
-  auto res = stoull(parts_[2]);
-  if (!res) {
-    errs_ << "Invalid rate of " << ap_->provider << " probe";
-    return INVALID;
-  }
-
-  ap_->freq = *res;
-  return OK;
+  return frequency_parser();
 }
 
 AttachPointParser::State AttachPointParser::interval_parser()
 {
-  if (parts_.size() == 2 && util::has_wildcard(parts_[1])) {
-    // Wildcards are allowed for listing
-    ap_->target = parts_[1];
-    ap_->freq = 0;
-    return OK;
-  }
-
-  if (parts_.size() != 3) {
-    return argument_count_error(2);
-  }
-
-  ap_->target = parts_[1];
-  auto res = stoull(parts_[2]);
-  if (!res) {
-    errs_ << "Invalid rate of " << ap_->provider << " probe";
-    return INVALID;
-  }
-
-  ap_->freq = *res;
-  return OK;
+  return frequency_parser();
 }
 
 AttachPointParser::State AttachPointParser::software_parser()
@@ -613,9 +579,10 @@ AttachPointParser::State AttachPointParser::software_parser()
   ap_->target = parts_[1];
 
   if (parts_.size() == 3 && parts_[2] != "*") {
-    auto res = stoull(parts_[2]);
+    auto res = util::to_uint(parts_[2]);
     if (!res) {
-      errs_ << "Invalid count for " << ap_->provider << " probe";
+      errs_ << "Invalid count for " << ap_->provider
+            << " probe: " << res.takeError() << std::endl;
       return INVALID;
     }
     ap_->freq = *res;
@@ -636,9 +603,10 @@ AttachPointParser::State AttachPointParser::hardware_parser()
   ap_->target = parts_[1];
 
   if (parts_.size() == 3 && parts_[2] != "*") {
-    auto res = stoull(parts_[2]);
+    auto res = util::to_uint(parts_[2]);
     if (!res) {
-      errs_ << "Invalid count for " << ap_->provider << " probe";
+      errs_ << "Invalid count for " << ap_->provider
+            << " probe: " << res.takeError() << std::endl;
       return INVALID;
     }
     ap_->freq = *res;
@@ -654,40 +622,40 @@ AttachPointParser::State AttachPointParser::watchpoint_parser(bool async)
   }
 
   if (parts_[1].find('+') == std::string::npos) {
-    auto parsed = stoull(parts_[1]);
+    auto parsed = util::to_uint(parts_[1]);
     if (!parsed) {
-      errs_ << "Invalid function/address argument" << std::endl;
+      errs_ << "Invalid function/address argument: " << parsed.takeError()
+            << std::endl;
       return INVALID;
     }
     ap_->address = *parsed;
   } else {
     auto func_arg_parts = util::split_string(parts_[1], '+', true);
     if (func_arg_parts.size() != 2) {
-      errs_ << "Invalid function/address argument" << std::endl;
+      errs_ << "Invalid function/address argument: " << parts_[1] << std::endl;
       return INVALID;
     }
 
     ap_->func = func_arg_parts[0];
-    if (ap_->func.find('*') != std::string::npos)
-      ap_->expansion = ExpansionType::FULL;
 
     if (func_arg_parts[1].size() <= 3 ||
         !func_arg_parts[1].starts_with("arg")) {
-      errs_ << "Invalid function argument" << std::endl;
+      errs_ << "Invalid function/address argument: " << func_arg_parts[1]
+            << std::endl;
       return INVALID;
     }
 
-    auto parsed = stoull(func_arg_parts[1].substr(3));
+    auto parsed = util::to_uint(func_arg_parts[1].substr(3));
     if (!parsed) {
-      errs_ << "Invalid function argument" << std::endl;
+      errs_ << "Invalid function argument: " << parsed.takeError() << std::endl;
       return INVALID;
     }
     ap_->address = *parsed;
   }
 
-  auto len_parsed = stoull(parts_[2]);
+  auto len_parsed = util::to_uint(parts_[2]);
   if (!len_parsed) {
-    errs_ << "Invalid length argument" << std::endl;
+    errs_ << "Invalid length argument: " << len_parsed.takeError() << std::endl;
     return INVALID;
   }
   ap_->len = *len_parsed;
@@ -705,11 +673,39 @@ AttachPointParser::State AttachPointParser::watchpoint_parser(bool async)
 AttachPointParser::State AttachPointParser::fentry_parser()
 {
   // fentry[:module]:function
-  if (parts_.size() != 2 && parts_.size() != 3) {
+  // fentry:bpf:[:prog_id]:prog_name
+  if (parts_.size() != 2 && parts_.size() != 3 && parts_.size() != 4) {
     if (ap_->ignore_invalid)
       return SKIP;
 
-    return argument_count_error(1, 2);
+    return argument_count_error(1, 3);
+  }
+
+  if (parts_[1] == "bpf") {
+    ap_->target = parts_[1];
+    if (parts_.size() == 2) {
+      errs_ << "the 'bpf' variant of this probe requires a bpf program name "
+               "and optional bpf program id";
+      return INVALID;
+    } else if (parts_.size() == 3) {
+      ap_->func = parts_[2];
+    } else {
+      ap_->func = parts_[3];
+      if (parts_[2] != "*") {
+        auto uint_res = util::to_uint(parts_[2]);
+        if (!uint_res) {
+          errs_ << "bpf program id must be a number or '*'";
+          return INVALID;
+        }
+        ap_->bpf_prog_id = *uint_res;
+      }
+    }
+    return OK;
+  }
+
+  if (parts_.size() == 4) {
+    errs_ << "Only the 'bpf' variant of this probe supports 4 arguments";
+    return INVALID;
   }
 
   if (parts_.size() == 3) {
@@ -717,7 +713,7 @@ AttachPointParser::State AttachPointParser::fentry_parser()
     ap_->func = parts_[2];
   } else {
     ap_->func = parts_[1];
-    if (ap_->func.find('*') == std::string::npos) {
+    if (!util::has_wildcard(ap_->func)) {
       auto func_modules = bpftrace_.get_func_modules(ap_->func);
       if (func_modules.size() == 1)
         ap_->target = *func_modules.begin();
@@ -737,10 +733,6 @@ AttachPointParser::State AttachPointParser::fentry_parser()
       ap_->target = "*";
   }
 
-  if (ap_->func.find('*') != std::string::npos ||
-      ap_->target.find('*') != std::string::npos)
-    ap_->expansion = ExpansionType::FULL;
-
   return OK;
 }
 
@@ -753,19 +745,6 @@ AttachPointParser::State AttachPointParser::iter_parser()
     errs_ << ap_->provider << " probe type takes 2 arguments (1 optional)"
           << std::endl;
     return INVALID;
-  }
-
-  if (parts_[1].find('*') != std::string::npos) {
-    if (listing_) {
-      ap_->expansion = ExpansionType::FULL;
-    } else {
-      if (ap_->ignore_invalid)
-        return SKIP;
-
-      errs_ << ap_->provider << " probe type does not support wildcards"
-            << std::endl;
-      return INVALID;
-    }
   }
 
   ap_->func = parts_[1];
@@ -793,9 +772,6 @@ AttachPointParser::State AttachPointParser::raw_tracepoint_parser()
     ap_->target = "*";
     ap_->func = parts_[1];
   }
-
-  if (util::has_wildcard(ap_->func) || util::has_wildcard(ap_->target))
-    ap_->expansion = ExpansionType::FULL;
 
   return OK;
 }

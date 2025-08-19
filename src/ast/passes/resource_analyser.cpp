@@ -4,12 +4,14 @@
 #include "ast/async_event_types.h"
 #include "ast/codegen_helper.h"
 #include "ast/passes/map_sugar.h"
+#include "ast/passes/named_param.h"
 #include "ast/passes/resource_analyser.h"
 #include "ast/visitor.h"
 #include "bpftrace.h"
 #include "log.h"
 #include "required_resources.h"
 #include "struct.h"
+#include "types.h"
 
 namespace libbpf {
 #include "libbpf/bpf.h"
@@ -30,7 +32,9 @@ namespace {
 // example the helper error metadata is still being collected during codegen.
 class ResourceAnalyser : public Visitor<ResourceAnalyser> {
 public:
-  ResourceAnalyser(BPFtrace &bpftrace, MapMetadata &mm);
+  ResourceAnalyser(BPFtrace &bpftrace,
+                   MapMetadata &mm,
+                   NamedParamDefaults &named_param_defaults);
 
   using Visitor<ResourceAnalyser>::visit;
   void visit(Probe &probe);
@@ -67,6 +71,7 @@ private:
   RequiredResources resources_;
   BPFtrace &bpftrace_;
   MapMetadata map_metadata_;
+  NamedParamDefaults &named_param_defaults_;
 
   // Current probe we're analysing
   Probe *probe_{ nullptr };
@@ -90,65 +95,53 @@ static ProbeType single_provider_type_postsema(Probe *probe)
   return ProbeType::invalid;
 }
 
-ResourceAnalyser::ResourceAnalyser(BPFtrace &bpftrace, MapMetadata &mm)
-    : bpftrace_(bpftrace), map_metadata_(mm)
+ResourceAnalyser::ResourceAnalyser(BPFtrace &bpftrace,
+                                   MapMetadata &mm,
+                                   NamedParamDefaults &named_param_defaults)
+    : bpftrace_(bpftrace),
+      map_metadata_(mm),
+      named_param_defaults_(named_param_defaults)
 {
 }
 
 RequiredResources ResourceAnalyser::resources()
 {
   if (resources_.max_fmtstring_args_size > 0) {
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::FMT_STRINGS_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(bpftrace::globalvars::FMT_STRINGS_BUFFER);
   }
 
   if (resources_.max_tuple_size > 0) {
     assert(resources_.tuple_buffers > 0);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::TUPLE_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(bpftrace::globalvars::TUPLE_BUFFER);
   }
 
   if (resources_.str_buffers > 0) {
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::GET_STR_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(bpftrace::globalvars::GET_STR_BUFFER);
   }
 
   if (resources_.max_read_map_value_size > 0) {
     assert(resources_.read_map_value_buffers > 0);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::READ_MAP_VALUE_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(
+        bpftrace::globalvars::READ_MAP_VALUE_BUFFER);
   }
 
   if (resources_.max_write_map_value_size > 0) {
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::WRITE_MAP_VALUE_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(
+        bpftrace::globalvars::WRITE_MAP_VALUE_BUFFER);
   }
 
   if (resources_.max_variable_size > 0) {
     assert(resources_.variable_buffers > 0);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::VARIABLE_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(bpftrace::globalvars::VARIABLE_BUFFER);
   }
 
   if (resources_.max_map_key_size > 0) {
     assert(resources_.map_key_buffers > 0);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAP_KEY_BUFFER);
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::MAX_CPU_ID);
+    resources_.global_vars.add_known(bpftrace::globalvars::MAP_KEY_BUFFER);
   }
+
+  resources_.global_vars.add_known(bpftrace::globalvars::MAX_CPU_ID);
+  resources_.global_vars.add_known(bpftrace::globalvars::EVENT_LOSS_COUNTER);
 
   return std::move(resources_);
 }
@@ -171,6 +164,8 @@ void ResourceAnalyser::visit(Builtin &builtin)
     // mark probe as using usym, so that the symbol table can be pre-loaded
     // and symbols resolved even when unavailable at resolution time
     resources_.probes_using_usym.insert(probe_);
+  } else if (builtin.ident == "__builtin_ncpus") {
+    resources_.global_vars.add_known(bpftrace::globalvars::NUM_CPUS);
   }
 }
 
@@ -178,13 +173,9 @@ void ResourceAnalyser::visit(Call &call)
 {
   Visitor<ResourceAnalyser>::visit(call);
 
-  if (call.func == "printf" || call.func == "system" || call.func == "cat" ||
-      call.func == "debugf") {
-    // Implicit first field is the 64bit printf ID.
-    //
-    // Put it in initially so that offset and alignment calculation is
-    // accurate. We'll take it out before saving into resources.
-    std::vector<SizedType> args = { CreateInt64() };
+  if (call.func == "printf" || call.func == "errorf" || call.func == "system" ||
+      call.func == "cat" || call.func == "debugf") {
+    std::vector<SizedType> args;
 
     // NOTE: the same logic can be found in the semantic_analyser pass
     for (auto it = call.vargs.begin() + 1; it != call.vargs.end(); it++) {
@@ -206,18 +197,18 @@ void ResourceAnalyser::visit(Call &call)
     // creation to generate offsets for each argument in the args "tuple".
     auto tuple = Struct::CreateTuple(args);
 
-    // Remove implicit printf ID field. Downstream consumers do not
-    // expect it nor do they care about it.
-    tuple->fields.erase(tuple->fields.begin());
-
     // Keep track of max "tuple" size needed for fmt string args. Codegen
     // will use this information to create a percpu array map of large
-    // enough size for all fmt string calls to use.
-    const auto tuple_size = static_cast<uint64_t>(tuple->size);
-    if (exceeds_stack_limit(tuple_size)) {
+    // enough size for all fmt string calls to use. Note that since this
+    // will end up being aligned differently than the arguments themselves,
+    // we need to ensure that it is aligned to the size of the largest type.
+    uint64_t args_size = sizeof(uint64_t) + static_cast<uint64_t>(tuple->size);
+    if (args_size % sizeof(uint64_t) != 0) {
+      args_size += sizeof(uint64_t) - (args_size % sizeof(uint64_t));
+    }
+    if (exceeds_stack_limit(args_size)) {
       resources_.max_fmtstring_args_size = std::max(
-          resources_.max_fmtstring_args_size,
-          static_cast<uint64_t>(tuple_size));
+          resources_.max_fmtstring_args_size, args_size);
     }
 
     auto fmtstr = call.vargs.at(0).as<String>()->value;
@@ -226,8 +217,12 @@ void ResourceAnalyser::visit(Call &call)
           single_provider_type_postsema(probe_) == ProbeType::iter) {
         resources_.bpf_print_fmts.emplace_back(fmtstr);
       } else {
-        resources_.printf_args.emplace_back(fmtstr, tuple->fields);
+        resources_.printf_args.emplace_back(
+            fmtstr, tuple->fields, PrintfSeverity::NONE, SourceInfo(call.loc));
       }
+    } else if (call.func == "errorf") {
+      resources_.printf_args.emplace_back(
+          fmtstr, tuple->fields, PrintfSeverity::ERROR, SourceInfo(call.loc));
     } else if (call.func == "debugf") {
       resources_.bpf_print_fmts.emplace_back(fmtstr);
     } else if (call.func == "system") {
@@ -241,8 +236,7 @@ void ResourceAnalyser::visit(Call &call)
     resources_.join_args.push_back(delim);
   } else if (call.func == "count" || call.func == "sum" || call.func == "min" ||
              call.func == "max" || call.func == "avg") {
-    resources_.needed_global_vars.insert(
-        bpftrace::globalvars::GlobalVar::NUM_CPUS);
+    resources_.global_vars.add_known(bpftrace::globalvars::NUM_CPUS);
   } else if (call.func == "hist") {
     Map *map = call.vargs.at(0).as<Map>();
     uint64_t bits = call.vargs.at(3).as<Integer>()->value;
@@ -282,6 +276,45 @@ void ResourceAnalyser::visit(Call &call)
     } else {
       call.addError() << "Different lhist bounds in a single map unsupported";
     }
+  } else if (call.func == "tseries") {
+    Map *map = call.vargs.at(0).as<Map>();
+
+    Expression &n_arg = call.vargs.at(2);
+    Expression &interval_ns_arg = call.vargs.at(3);
+    Expression &num_intervals_arg = call.vargs.at(4);
+    auto &interval_ns = *interval_ns_arg.as<Integer>();
+    auto &num_intervals = *num_intervals_arg.as<Integer>();
+
+    auto args = TSeriesArgs{
+      .interval_ns = static_cast<long>(interval_ns.value),
+      .num_intervals = static_cast<long>(num_intervals.value),
+      .value_type = n_arg.type(),
+      .agg = TSeriesAggFunc::none,
+    };
+
+    if (call.vargs.size() == 6) {
+      auto &agg_func = *call.vargs.at(5).as<String>();
+
+      if (agg_func.value == "avg") {
+        args.agg = TSeriesAggFunc::avg;
+      } else if (agg_func.value == "max") {
+        args.agg = TSeriesAggFunc::max;
+      } else if (agg_func.value == "min") {
+        args.agg = TSeriesAggFunc::min;
+      } else if (agg_func.value == "sum") {
+        args.agg = TSeriesAggFunc::sum;
+      }
+    }
+
+    auto &map_info = resources_.maps_info[map->ident];
+    if (std::holds_alternative<std::monostate>(map_info.detail)) {
+      map_info.detail.emplace<TSeriesArgs>(args);
+    } else if (std::holds_alternative<TSeriesArgs>(map_info.detail) &&
+               std::get<TSeriesArgs>(map_info.detail) == args) {
+      // Same arguments.
+    } else {
+      call.addError() << "Different tseries bounds in a single map unsupported";
+    }
   } else if (call.func == "time") {
     if (!call.vargs.empty())
       resources_.time_args.push_back(call.vargs.at(0).as<String>()->value);
@@ -311,7 +344,7 @@ void ResourceAnalyser::visit(Call &call)
     const auto &offset = call.vargs.at(3).as<Integer>()->value;
 
     resources_.skboutput_args_.emplace_back(file, offset);
-    resources_.needs_perf_event_map = true;
+    resources_.using_skboutput = true;
   } else if (call.func == "delete") {
     auto &arg0 = call.vargs.at(0);
     auto &map = *arg0.as<Map>();
@@ -343,18 +376,18 @@ void ResourceAnalyser::visit(Call &call)
   // buffer here.
   //
   // The exceptions are:
-  // 1. lhist/hist because the map key buffer includes both the key itself
-  //    and the bucket ID from a call to linear/log2 functions.
+  // 1. lhist/hist/tseries because the map key buffer includes both the key
+  //    itself and the bucket ID from a call to linear/log2/tseries functions.
   // 2. has_key/delete because the map key buffer allocation depends on
   //    arguments to the function e.g.
   //      delete(@, 2)
   //    requires a map key buffer to hold arg1 = 2 but map.key_expr is null
   //    so the map key buffer check in visit(Map &map) doesn't work as is.
-  if (call.func == "lhist" || call.func == "hist") {
+  if (call.func == "lhist" || call.func == "hist" || call.func == "tseries") {
     auto &map = *call.vargs.at(0).as<Map>();
-    // Allocation is always needed for lhist/hist. But we need to allocate
-    // space for both map key and the bucket ID from a call to linear/log2
-    // functions.
+    // Allocation is always needed for lhist/hist/tseries. But we need to
+    // allocate space for both map key and the bucket ID from a call to
+    // linear/log2/tseries functions.
     const auto map_key_size = map.key_type.GetSize() + CreateUInt64().GetSize();
     if (exceeds_stack_limit(map_key_size)) {
       resources_.map_key_buffers++;
@@ -408,6 +441,17 @@ void ResourceAnalyser::visit(MapDeclStatement &decl)
 void ResourceAnalyser::visit(Map &map)
 {
   Visitor<ResourceAnalyser>::visit(map);
+
+  auto it = named_param_defaults_.defaults.find(map.ident);
+  if (it != named_param_defaults_.defaults.end()) {
+    resources_.global_vars.add_named_param(map.ident, it->second);
+    if (std::holds_alternative<std::string>(it->second)) {
+      const auto max_strlen = bpftrace_.config_->max_strlen;
+      if (exceeds_stack_limit(max_strlen))
+        resources_.str_buffers++;
+    }
+    return;
+  }
 
   update_map_info(map);
 }
@@ -536,7 +580,7 @@ bool ResourceAnalyser::exceeds_stack_limit(size_t size)
 
 bool ResourceAnalyser::uses_usym_table(const std::string &fun)
 {
-  return fun == "usym" || fun == "func" || fun == "ustack";
+  return fun == "usym" || fun == "__builtin_func" || fun == "ustack";
 }
 
 void ResourceAnalyser::update_map_info(Map &map)
@@ -578,8 +622,11 @@ void ResourceAnalyser::maybe_allocate_map_key_buffer(const Map &map,
 
 Pass CreateResourcePass()
 {
-  auto fn = [](ASTContext &ast, BPFtrace &b, MapMetadata &mm) {
-    ResourceAnalyser analyser(b, mm);
+  auto fn = [](ASTContext &ast,
+               BPFtrace &b,
+               MapMetadata &mm,
+               NamedParamDefaults &named_param_defaults) {
+    ResourceAnalyser analyser(b, mm, named_param_defaults);
     analyser.visit(ast.root);
     b.resources = analyser.resources();
   };

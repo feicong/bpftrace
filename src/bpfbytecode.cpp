@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "ast/passes/named_param.h"
 #include "bpftrace.h"
 #include "globalvars.h"
 #include "log.h"
@@ -98,8 +99,8 @@ const BpfProgram &BpfBytecode::getProgramForProbe(const Probe &probe) const
   if (prog == programs_.end()) {
     std::stringstream msg;
     if (probe.name != probe.orig_name)
-      msg << "Code not generated for probe: " << probe.name
-          << " from: " << probe.orig_name;
+      msg << "Code not generated for probe " << probe.name << " (expanded from "
+          << probe.orig_name << ")";
     else
       msg << "Code not generated for probe: " << probe.name;
     throw std::runtime_error(msg.str());
@@ -114,11 +115,30 @@ BpfProgram &BpfBytecode::getProgramForProbe(const Probe &probe)
       const_cast<const BpfBytecode *>(this)->getProgramForProbe(probe));
 }
 
-void BpfBytecode::update_global_vars(BPFtrace &bpftrace)
+void BpfBytecode::update_global_vars(BPFtrace &bpftrace,
+                                     globalvars::GlobalVarMap &&global_var_vals)
 {
-  globalvars::update_global_vars(bpf_object_.get(),
-                                 section_names_to_global_vars_map_,
-                                 bpftrace);
+  bpftrace.resources.global_vars.update_global_vars(
+      bpf_object_.get(),
+      section_names_to_global_vars_map_,
+      std::move(global_var_vals),
+      bpftrace.ncpus_,
+      bpftrace.max_cpu_id_);
+}
+
+uint64_t BpfBytecode::get_event_loss_counter(BPFtrace &bpftrace, int max_cpu_id)
+{
+  auto *current_values = bpftrace.resources.global_vars.get_global_var(
+      bpf_object_.get(),
+      globalvars::EVENT_LOSS_COUNTER_SECTION_NAME,
+      section_names_to_global_vars_map_);
+  uint64_t current_value = 0;
+  for (int i = 0; i < max_cpu_id; ++i) {
+    current_value += *current_values;
+    current_values++;
+  }
+
+  return current_value;
 }
 
 namespace {
@@ -193,6 +213,7 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
   for (auto probe : resources.special_probes)
     special_probes.push_back(probe.second);
   prepare_progs(special_probes, btf, feature, config);
+  prepare_progs(resources.benchmark_probes, btf, feature, config);
   prepare_progs(resources.signal_probes, btf, feature, config);
   prepare_progs(resources.probes, btf, feature, config);
   prepare_progs(resources.watchpoint_probes, btf, feature, config);
@@ -229,6 +250,10 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
       maybe_throw_helper_verifier_error(log,
                                         "helper call is not allowed in probe",
                                         " not allowed in probe");
+      maybe_throw_helper_verifier_error(
+          log,
+          "program of this type cannot use helper",
+          " not allowed in probe");
       maybe_throw_helper_verifier_error(
           log,
           "pointer arithmetic on ptr_or_null_ prohibited, null-check it first",
@@ -290,6 +315,16 @@ void BpfBytecode::prepare_progs(const std::vector<Probe> &probes,
     program.set_expected_attach_type(probe, feature);
     program.set_attach_target(probe, btf, config);
     program.set_no_autoattach();
+  }
+}
+
+void BpfBytecode::attach_external()
+{
+  for (const auto &prog : programs_) {
+    auto *p = prog.second.bpf_prog();
+    if (bpf_program__autoattach(p)) {
+      bpf_program__attach(p);
+    }
   }
 }
 

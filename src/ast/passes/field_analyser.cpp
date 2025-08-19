@@ -2,11 +2,12 @@
 
 #include "arch/arch.h"
 #include "ast/passes/field_analyser.h"
+#include "ast/passes/probe_expansion.h"
 #include "ast/visitor.h"
 #include "bpftrace.h"
 #include "dwarf_parser.h"
 #include "probe_matcher.h"
-#include "util/format.h"
+#include "util/strings.h"
 
 namespace libbpf {
 #include "libbpf/bpf.h"
@@ -18,7 +19,8 @@ namespace {
 
 class FieldAnalyser : public Visitor<FieldAnalyser> {
 public:
-  explicit FieldAnalyser(BPFtrace &bpftrace) : bpftrace_(bpftrace)
+  explicit FieldAnalyser(BPFtrace &bpftrace, ExpansionResult &expansions)
+      : bpftrace_(bpftrace), expansions_(expansions)
   {
   }
 
@@ -48,6 +50,7 @@ private:
   std::string attach_func_;
   SizedType sized_type_;
   BPFtrace &bpftrace_;
+  ExpansionResult &expansions_;
   libbpf::bpf_prog_type prog_type_{ libbpf::BPF_PROG_TYPE_UNSPEC };
   bool has_builtin_args_;
   Probe *probe_ = nullptr;
@@ -83,7 +86,7 @@ void FieldAnalyser::visit(Builtin &builtin)
     // make them resolved and available
     if (probe_type_ == ProbeType::iter)
       builtin_type = "struct bpf_iter__" + attach_func_;
-  } else if (builtin.ident == "curtask") {
+  } else if (builtin.ident == "__builtin_curtask") {
     builtin_type = "struct task_struct";
   } else if (builtin.ident == "args") {
     if (!probe_)
@@ -91,7 +94,7 @@ void FieldAnalyser::visit(Builtin &builtin)
     resolve_args(*probe_);
     has_builtin_args_ = true;
     return;
-  } else if (builtin.ident == "retval") {
+  } else if (builtin.ident == "__builtin_retval") {
     if (!probe_)
       return;
     resolve_args(*probe_);
@@ -230,7 +233,7 @@ void FieldAnalyser::resolve_args(Probe &probe)
         probe_type != ProbeType::uprobe)
       continue;
 
-    if (ap->expansion != ExpansionType::NONE) {
+    if (expansions_.get_expansion(*ap) != ExpansionType::NONE) {
       std::set<std::string> matches;
 
       // Find all the matches for the wildcard..
@@ -297,8 +300,8 @@ void FieldAnalyser::resolve_args(Probe &probe)
         } else {
           ap->addWarning() << "No debuginfo found for " << ap->target;
         }
-        if (probe_args && probe_args->fields.size() >
-                              static_cast<size_t>(arch::max_arg() + 1)) {
+        if (probe_args &&
+            probe_args->fields.size() >= arch::Host::arguments().size()) {
           ap->addError() << "\'args\' builtin is not supported for "
                          << "probes with stack-passed arguments.";
         }
@@ -385,8 +388,8 @@ void FieldAnalyser::visit(Subprog &subprog)
 
 Pass CreateFieldAnalyserPass()
 {
-  auto fn = [](ASTContext &ast, BPFtrace &b) {
-    FieldAnalyser analyser(b);
+  auto fn = [](ASTContext &ast, BPFtrace &b, ExpansionResult &expansions) {
+    FieldAnalyser analyser(b, expansions);
     analyser.visit(ast.root);
   };
 

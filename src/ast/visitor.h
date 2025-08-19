@@ -29,6 +29,10 @@ public:
   {
     return default_value();
   }
+  R visit([[maybe_unused]] Boolean &boolean)
+  {
+    return default_value();
+  }
   R visit([[maybe_unused]] PositionalParameter &param)
   {
     return default_value();
@@ -52,6 +56,10 @@ public:
   R visit([[maybe_unused]] Variable &var)
   {
     return default_value();
+  }
+  R visit([[maybe_unused]] VariableAddr &var_addr)
+  {
+    return visitImpl(var_addr.var);
   }
   R visit([[maybe_unused]] SubprogArg &subprog_arg)
   {
@@ -80,6 +88,10 @@ public:
   R visit([[maybe_unused]] Map &map)
   {
     return default_value();
+  }
+  R visit([[maybe_unused]] MapAddr &map_addr)
+  {
+    return visitImpl(map_addr.map);
   }
   R visit(Binop &binop)
   {
@@ -180,10 +192,16 @@ public:
     visitImpl(while_block.block);
     return default_value();
   }
+  R visit(Range &range)
+  {
+    visitImpl(range.start);
+    visitImpl(range.end);
+    return default_value();
+  }
   R visit(For &for_loop)
   {
     visitImpl(for_loop.decl);
-    visitImpl(for_loop.map);
+    visitImpl(for_loop.iterable);
     visitImpl(for_loop.stmts);
     return default_value();
   }
@@ -206,7 +224,12 @@ public:
   R visit(Block &block)
   {
     visitImpl(block.stmts);
-    visitImpl(block.expr);
+    return default_value();
+  }
+  R visit(BlockExpr &block_expr)
+  {
+    visitImpl(block_expr.stmts);
+    visitImpl(block_expr.expr);
     return default_value();
   }
   R visit([[maybe_unused]] Macro &macro)
@@ -236,6 +259,10 @@ public:
     visitImpl(program.map_decls);
     visitImpl(program.probes);
     return default_value();
+  }
+  R visit(Iterable &iterable)
+  {
+    return visitImpl(iterable.value);
   }
   R visit(Expression &expr)
   {

@@ -1,37 +1,36 @@
 ; ModuleID = 'bpftrace'
 source_filename = "bpftrace"
 target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"
-target triple = "bpf-pc-linux"
+target triple = "bpf"
 
-%"struct map_t" = type { ptr, ptr }
-%"struct map_t.0" = type { ptr, ptr, ptr, ptr }
+%"struct map_internal_repr_t" = type { ptr, ptr }
 %exit_t = type <{ i64, i8 }>
 
 @LICENSE = global [4 x i8] c"GPL\00", section "license", !dbg !0
-@ringbuf = dso_local global %"struct map_t" zeroinitializer, section ".maps", !dbg !7
-@event_loss_counter = dso_local global %"struct map_t.0" zeroinitializer, section ".maps", !dbg !22
+@ringbuf = dso_local global %"struct map_internal_repr_t" zeroinitializer, section ".maps", !dbg !7
+@__bt__event_loss_counter = dso_local externally_initialized global [1 x [1 x i64]] zeroinitializer, section ".data.event_loss_counter", !dbg !22
+@__bt__max_cpu_id = dso_local externally_initialized constant i64 0, section ".rodata", !dbg !29
 
 ; Function Attrs: nounwind
 declare i64 @llvm.bpf.pseudo(i64 %0, i64 %1) #0
 
 ; Function Attrs: nounwind
-define i64 @kprobe_f_1(ptr %0) #0 section "s_kprobe_f_1" !dbg !46 {
+define i64 @kprobe_f_1(ptr %0) #0 section "s_kprobe_f_1" !dbg !35 {
 entry:
-  %key = alloca i32, align 4
   %exit = alloca %exit_t, align 8
   %n = alloca i32, align 4
   %i = alloca i32, align 4
   %arraycmp.result = alloca i1, align 1
   %v2 = alloca i32, align 4
   %v1 = alloca i32, align 4
-  %"$b" = alloca i64, align 8
+  %"$b" = alloca ptr, align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"$b")
-  store i64 0, ptr %"$b", align 8
-  %"$a" = alloca i64, align 8
+  store i0 0, ptr %"$b", align 1
+  %"$a" = alloca ptr, align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"$a")
-  store i64 0, ptr %"$a", align 8
+  store i0 0, ptr %"$a", align 1
   %1 = call ptr @llvm.preserve.static.offset(ptr %0)
-  %2 = getelementptr i64, ptr %1, i64 14
+  %2 = getelementptr i8, ptr %1, i64 112
   %arg0 = load volatile i64, ptr %2, align 8
   %3 = inttoptr i64 %arg0 to ptr
   %4 = call ptr @llvm.preserve.static.offset(ptr %3)
@@ -39,21 +38,19 @@ entry:
   %6 = ptrtoint ptr %5 to i64
   store i64 %6, ptr %"$a", align 8
   %7 = call ptr @llvm.preserve.static.offset(ptr %0)
-  %8 = getelementptr i64, ptr %7, i64 14
+  %8 = getelementptr i8, ptr %7, i64 112
   %arg01 = load volatile i64, ptr %8, align 8
   %9 = inttoptr i64 %arg01 to ptr
   %10 = call ptr @llvm.preserve.static.offset(ptr %9)
   %11 = getelementptr i8, ptr %10, i64 0
   %12 = ptrtoint ptr %11 to i64
   store i64 %12, ptr %"$b", align 8
-  %13 = load i64, ptr %"$a", align 8
-  %14 = load i64, ptr %"$b", align 8
+  %13 = load ptr, ptr %"$a", align 8
+  %14 = load ptr, ptr %"$b", align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %v1)
   call void @llvm.lifetime.start.p0(i64 -1, ptr %v2)
   call void @llvm.lifetime.start.p0(i64 -1, ptr %arraycmp.result)
   store i1 true, ptr %arraycmp.result, align 1
-  %15 = inttoptr i64 %13 to ptr
-  %16 = inttoptr i64 %14 to ptr
   call void @llvm.lifetime.start.p0(i64 -1, ptr %i)
   call void @llvm.lifetime.start.p0(i64 -1, ptr %n)
   store i32 0, ptr %i, align 4
@@ -62,10 +59,10 @@ entry:
 
 if_body:                                          ; preds = %arraycmp.done
   call void @llvm.lifetime.start.p0(i64 -1, ptr %exit)
-  %17 = getelementptr %exit_t, ptr %exit, i64 0, i32 0
-  store i64 30000, ptr %17, align 8
-  %18 = getelementptr %exit_t, ptr %exit, i64 0, i32 1
-  store i8 0, ptr %18, align 1
+  %15 = getelementptr %exit_t, ptr %exit, i64 0, i32 0
+  store i64 30000, ptr %15, align 8
+  %16 = getelementptr %exit_t, ptr %exit, i64 0, i32 1
+  store i8 0, ptr %16, align 1
   %ringbuf_output = call i64 inttoptr (i64 130 to ptr)(ptr @ringbuf, ptr %exit, i64 9, i64 0)
   %ringbuf_loss = icmp slt i64 %ringbuf_output, 0
   br i1 %ringbuf_loss, label %event_loss_counter, label %counter_merge
@@ -74,21 +71,21 @@ if_end:                                           ; preds = %deadcode, %arraycmp
   ret i64 0
 
 while_cond:                                       ; preds = %arraycmp.loop, %entry
-  %19 = load i32, ptr %n, align 4
-  %20 = load i32, ptr %i, align 4
-  %size_check = icmp slt i32 %20, %19
-  br i1 %size_check, label %while_body, label %arraycmp.done, !llvm.loop !52
+  %17 = load i32, ptr %n, align 4
+  %18 = load i32, ptr %i, align 4
+  %size_check = icmp slt i32 %18, %17
+  br i1 %size_check, label %while_body, label %arraycmp.done, !llvm.loop !41
 
 while_body:                                       ; preds = %while_cond
-  %21 = load i32, ptr %i, align 4
-  %22 = getelementptr [4 x i32], ptr %15, i32 0, i32 %21
-  %probe_read_kernel = call i64 inttoptr (i64 113 to ptr)(ptr %v1, i32 4, ptr %22)
-  %23 = load i32, ptr %v1, align 4
-  %24 = load i32, ptr %i, align 4
-  %25 = getelementptr [4 x i32], ptr %16, i32 0, i32 %24
-  %probe_read_kernel2 = call i64 inttoptr (i64 113 to ptr)(ptr %v2, i32 4, ptr %25)
-  %26 = load i32, ptr %v2, align 4
-  %arraycmp.cmp = icmp ne i32 %23, %26
+  %19 = load i32, ptr %i, align 4
+  %20 = getelementptr [4 x i32], ptr %13, i32 0, i32 %19
+  %probe_read_kernel = call i64 inttoptr (i64 113 to ptr)(ptr %v1, i32 4, ptr %20)
+  %21 = load i32, ptr %v1, align 4
+  %22 = load i32, ptr %i, align 4
+  %23 = getelementptr [4 x i32], ptr %14, i32 0, i32 %22
+  %probe_read_kernel2 = call i64 inttoptr (i64 113 to ptr)(ptr %v2, i32 4, ptr %23)
+  %24 = load i32, ptr %v2, align 4
+  %arraycmp.cmp = icmp ne i32 %21, %24
   br i1 %arraycmp.cmp, label %arraycmp.false, label %arraycmp.loop
 
 arraycmp.false:                                   ; preds = %while_body
@@ -96,41 +93,33 @@ arraycmp.false:                                   ; preds = %while_body
   br label %arraycmp.done
 
 arraycmp.done:                                    ; preds = %arraycmp.false, %while_cond
-  %27 = load i1, ptr %arraycmp.result, align 1
+  %25 = load i1, ptr %arraycmp.result, align 1
   call void @llvm.lifetime.end.p0(i64 -1, ptr %arraycmp.result)
   call void @llvm.lifetime.end.p0(i64 -1, ptr %v1)
   call void @llvm.lifetime.end.p0(i64 -1, ptr %v2)
-  %28 = zext i1 %27 to i64
-  %true_cond = icmp ne i64 %28, 0
+  %26 = zext i1 %25 to i64
+  %true_cond = icmp ne i64 %26, 0
   br i1 %true_cond, label %if_body, label %if_end
 
 arraycmp.loop:                                    ; preds = %while_body
-  %29 = load i32, ptr %i, align 4
-  %30 = add i32 %29, 1
-  store i32 %30, ptr %i, align 4
+  %27 = load i32, ptr %i, align 4
+  %28 = add i32 %27, 1
+  store i32 %28, ptr %i, align 4
   br label %while_cond
 
 event_loss_counter:                               ; preds = %if_body
-  call void @llvm.lifetime.start.p0(i64 -1, ptr %key)
-  store i32 0, ptr %key, align 4
-  %lookup_elem = call ptr inttoptr (i64 1 to ptr)(ptr @event_loss_counter, ptr %key)
-  %map_lookup_cond = icmp ne ptr %lookup_elem, null
-  br i1 %map_lookup_cond, label %lookup_success, label %lookup_failure
+  %get_cpu_id = call i64 inttoptr (i64 8 to ptr)() #3
+  %29 = load i64, ptr @__bt__max_cpu_id, align 8
+  %cpu.id.bounded = and i64 %get_cpu_id, %29
+  %30 = getelementptr [1 x [1 x i64]], ptr @__bt__event_loss_counter, i64 0, i64 %cpu.id.bounded, i64 0
+  %31 = load i64, ptr %30, align 8
+  %32 = add i64 %31, 1
+  store i64 %32, ptr %30, align 8
+  br label %counter_merge
 
-counter_merge:                                    ; preds = %lookup_merge, %if_body
+counter_merge:                                    ; preds = %event_loss_counter, %if_body
   call void @llvm.lifetime.end.p0(i64 -1, ptr %exit)
   ret i64 0
-
-lookup_success:                                   ; preds = %event_loss_counter
-  %31 = atomicrmw add ptr %lookup_elem, i64 1 seq_cst, align 8
-  br label %lookup_merge
-
-lookup_failure:                                   ; preds = %event_loss_counter
-  br label %lookup_merge
-
-lookup_merge:                                     ; preds = %lookup_failure, %lookup_success
-  call void @llvm.lifetime.end.p0(i64 -1, ptr %key)
-  br label %counter_merge
 
 deadcode:                                         ; No predecessors!
   br label %if_end
@@ -148,9 +137,10 @@ declare void @llvm.lifetime.end.p0(i64 immarg %0, ptr nocapture %1) #2
 attributes #0 = { nounwind }
 attributes #1 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
 attributes #2 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #3 = { memory(none) }
 
-!llvm.dbg.cu = !{!42}
-!llvm.module.flags = !{!44, !45}
+!llvm.dbg.cu = !{!31}
+!llvm.module.flags = !{!33, !34}
 
 !0 = !DIGlobalVariableExpression(var: !1, expr: !DIExpression())
 !1 = distinct !DIGlobalVariable(name: "LICENSE", linkageName: "global", scope: !2, file: !2, type: !3, isLocal: false, isDefinition: true)
@@ -175,34 +165,23 @@ attributes #2 = { nocallback nofree nosync nounwind willreturn memory(argmem: re
 !20 = !{!21}
 !21 = !DISubrange(count: 262144, lowerBound: 0)
 !22 = !DIGlobalVariableExpression(var: !23, expr: !DIExpression())
-!23 = distinct !DIGlobalVariable(name: "event_loss_counter", linkageName: "global", scope: !2, file: !2, type: !24, isLocal: false, isDefinition: true)
-!24 = !DICompositeType(tag: DW_TAG_structure_type, scope: !2, file: !2, size: 256, elements: !25)
-!25 = !{!26, !31, !36, !39}
-!26 = !DIDerivedType(tag: DW_TAG_member, name: "type", scope: !2, file: !2, baseType: !27, size: 64)
-!27 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !28, size: 64)
-!28 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 64, elements: !29)
-!29 = !{!30}
-!30 = !DISubrange(count: 2, lowerBound: 0)
-!31 = !DIDerivedType(tag: DW_TAG_member, name: "max_entries", scope: !2, file: !2, baseType: !32, size: 64, offset: 64)
-!32 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !33, size: 64)
-!33 = !DICompositeType(tag: DW_TAG_array_type, baseType: !14, size: 32, elements: !34)
-!34 = !{!35}
-!35 = !DISubrange(count: 1, lowerBound: 0)
-!36 = !DIDerivedType(tag: DW_TAG_member, name: "key", scope: !2, file: !2, baseType: !37, size: 64, offset: 128)
-!37 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !38, size: 64)
-!38 = !DIBasicType(name: "int32", size: 32, encoding: DW_ATE_signed)
-!39 = !DIDerivedType(tag: DW_TAG_member, name: "value", scope: !2, file: !2, baseType: !40, size: 64, offset: 192)
-!40 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !41, size: 64)
-!41 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
-!42 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, globals: !43)
-!43 = !{!0, !7, !22}
-!44 = !{i32 2, !"Debug Info Version", i32 3}
-!45 = !{i32 7, !"uwtable", i32 0}
-!46 = distinct !DISubprogram(name: "kprobe_f_1", linkageName: "kprobe_f_1", scope: !2, file: !2, type: !47, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !42, retainedNodes: !50)
-!47 = !DISubroutineType(types: !48)
-!48 = !{!41, !49}
-!49 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !4, size: 64)
-!50 = !{!51}
-!51 = !DILocalVariable(name: "ctx", arg: 1, scope: !46, file: !2, type: !49)
-!52 = distinct !{!52, !53}
-!53 = !{!"llvm.loop.unroll.disable"}
+!23 = distinct !DIGlobalVariable(name: "__bt__event_loss_counter", linkageName: "global", scope: !2, file: !2, type: !24, isLocal: false, isDefinition: true)
+!24 = !DICompositeType(tag: DW_TAG_array_type, baseType: !25, size: 64, elements: !27)
+!25 = !DICompositeType(tag: DW_TAG_array_type, baseType: !26, size: 64, elements: !27)
+!26 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
+!27 = !{!28}
+!28 = !DISubrange(count: 1, lowerBound: 0)
+!29 = !DIGlobalVariableExpression(var: !30, expr: !DIExpression())
+!30 = distinct !DIGlobalVariable(name: "__bt__max_cpu_id", linkageName: "global", scope: !2, file: !2, type: !26, isLocal: false, isDefinition: true)
+!31 = distinct !DICompileUnit(language: DW_LANG_C, file: !2, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, globals: !32)
+!32 = !{!0, !7, !22, !29}
+!33 = !{i32 2, !"Debug Info Version", i32 3}
+!34 = !{i32 7, !"uwtable", i32 0}
+!35 = distinct !DISubprogram(name: "kprobe_f_1", linkageName: "kprobe_f_1", scope: !2, file: !2, type: !36, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !31, retainedNodes: !39)
+!36 = !DISubroutineType(types: !37)
+!37 = !{!26, !38}
+!38 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !4, size: 64)
+!39 = !{!40}
+!40 = !DILocalVariable(name: "ctx", arg: 1, scope: !35, file: !2, type: !38)
+!41 = distinct !{!41, !42}
+!42 = !{!"llvm.loop.unroll.disable"}

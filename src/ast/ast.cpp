@@ -3,19 +3,21 @@
 
 #include "ast/ast.h"
 #include "ast/context.h"
+#include "attached_probe.h"
 #include "log.h"
-#include "util/format.h"
+#include "util/int_parser.h"
+#include "util/strings.h"
 
 namespace bpftrace::ast {
 
 Diagnostic &Node::addError() const
 {
-  return ctx_.diagnostics_->addError(loc);
+  return state_.diagnostics_->addError(loc);
 }
 
 Diagnostic &Node::addWarning() const
 {
-  return ctx_.diagnostics_->addWarning(loc);
+  return state_.diagnostics_->addWarning(loc);
 }
 
 const SizedType &Expression::type() const
@@ -115,69 +117,117 @@ std::string opstr(const Unop &unop)
   return {}; // unreached
 }
 
-AttachPoint &AttachPoint::create_expansion_copy(ASTContext &ctx,
+bool is_comparison_op(Operator op)
+{
+  switch (op) {
+    case Operator::EQ:
+    case Operator::NE:
+    case Operator::LE:
+    case Operator::GE:
+    case Operator::LT:
+    case Operator::GT:
+    case Operator::LAND:
+    case Operator::LOR:
+      return true;
+    case Operator::PLUS:
+    case Operator::MINUS:
+    case Operator::MUL:
+    case Operator::DIV:
+    case Operator::MOD:
+    case Operator::BAND:
+    case Operator::BOR:
+    case Operator::BXOR:
+    case Operator::LEFT:
+    case Operator::RIGHT:
+    case Operator::INVALID:
+    case Operator::ASSIGN:
+    case Operator::INCREMENT:
+    case Operator::DECREMENT:
+    case Operator::LNOT:
+    case Operator::BNOT:
+      return false;
+  }
+
+  return false; // unreached
+}
+
+AttachPoint *AttachPoint::create_expansion_copy(ASTContext &ctx,
                                                 const std::string &match) const
 {
   // Create a new node with the same raw tracepoint. We initialize all the
   // information about the attach point, and then override/reset values
   // depending on the specific probe type.
-  auto &ap = *ctx.make_node<AttachPoint>(raw_input,
-                                         ignore_invalid,
-                                         Location(loc));
-  ap.index_ = index_;
-  ap.provider = provider;
-  ap.target = target;
-  ap.lang = lang;
-  ap.ns = ns;
-  ap.func = func;
-  ap.pin = pin;
-  ap.usdt = usdt;
-  ap.freq = freq;
-  ap.len = len;
-  ap.mode = mode;
-  ap.async = async;
-  ap.expansion = expansion;
-  ap.address = address;
-  ap.func_offset = func_offset;
+  auto *ap = ctx.make_node<AttachPoint>(raw_input,
+                                        ignore_invalid,
+                                        Location(loc));
+  ap->index_ = index_;
+  ap->provider = provider;
+  ap->target = target;
+  ap->lang = lang;
+  ap->ns = ns;
+  ap->func = func;
+  ap->pin = pin;
+  ap->usdt = usdt;
+  ap->freq = freq;
+  ap->len = len;
+  ap->mode = mode;
+  ap->async = async;
+  ap->address = address;
+  ap->func_offset = func_offset;
 
-  switch (probetype(ap.provider)) {
+  switch (probetype(ap->provider)) {
     case ProbeType::kprobe:
     case ProbeType::kretprobe:
-      ap.func = match;
+      ap->func = match;
       if (match.find(":") != std::string::npos)
-        ap.target = util::erase_prefix(ap.func);
+        ap->target = util::erase_prefix(ap->func);
       break;
+    case ProbeType::fentry:
+    case ProbeType::fexit: {
+      if (match.starts_with("bpf:")) {
+        auto parts = util::split_string(match, ':');
+        ap->target = parts[0];
+        auto prog_id = util::to_uint(parts[1]);
+        if (!prog_id) {
+          LOG(BUG) << "Invalid bpf prog id: " << parts[1];
+        } else {
+          ap->bpf_prog_id = *prog_id;
+        }
+        ap->func = parts[2];
+        break;
+      }
+      [[fallthrough]];
+    }
     case ProbeType::uprobe:
     case ProbeType::uretprobe:
-    case ProbeType::fentry:
-    case ProbeType::fexit:
     case ProbeType::tracepoint:
     case ProbeType::rawtracepoint:
       // Tracepoint, raw tracepoint, uprobe, and fentry/fexit probes specify
       // both a target (category for tracepoints, binary for uprobes, and
       // kernel module for fentry/fexit and a function name.
-      ap.func = match;
-      ap.target = util::erase_prefix(ap.func);
+      ap->func = match;
+      ap->target = util::erase_prefix(ap->func);
       break;
     case ProbeType::usdt:
       // USDT probes specify a target binary path, a provider, and a function
       // name.
-      ap.func = match;
-      ap.target = util::erase_prefix(ap.func);
-      ap.ns = util::erase_prefix(ap.func);
+      ap->func = match;
+      ap->target = util::erase_prefix(ap->func);
+      ap->ns = util::erase_prefix(ap->func);
       break;
     case ProbeType::watchpoint:
     case ProbeType::asyncwatchpoint:
       // Watchpoint probes come with target prefix. Strip the target to get the
       // function
-      ap.func = match;
-      util::erase_prefix(ap.func);
+      ap->func = match;
+      util::erase_prefix(ap->func);
       break;
     case ProbeType::software:
     case ProbeType::hardware:
     case ProbeType::interval:
     case ProbeType::profile:
     case ProbeType::special:
+    case ProbeType::benchmark:
     case ProbeType::iter:
     case ProbeType::invalid:
       break;
@@ -185,6 +235,92 @@ AttachPoint &AttachPoint::create_expansion_copy(ASTContext &ctx,
       LOG(BUG) << "Unknown probe type";
   }
   return ap;
+}
+
+bool AttachPoint::check_available(const std::string &identifier) const
+{
+  ProbeType type = probetype(provider);
+
+  if (identifier == "reg" || identifier == "__builtin_usermode") {
+    switch (type) {
+      case ProbeType::kprobe:
+      case ProbeType::kretprobe:
+      case ProbeType::uprobe:
+      case ProbeType::uretprobe:
+      case ProbeType::usdt:
+      case ProbeType::profile:
+      case ProbeType::interval:
+      case ProbeType::software:
+      case ProbeType::hardware:
+      case ProbeType::watchpoint:
+      case ProbeType::asyncwatchpoint:
+        return true;
+      case ProbeType::invalid:
+      case ProbeType::special:
+      case ProbeType::benchmark:
+      case ProbeType::tracepoint:
+      case ProbeType::fentry:
+      case ProbeType::fexit:
+      case ProbeType::iter:
+      case ProbeType::rawtracepoint:
+        return false;
+    }
+  } else if (identifier == "uaddr") {
+    switch (type) {
+      case ProbeType::usdt:
+      case ProbeType::uretprobe:
+      case ProbeType::uprobe:
+        return true;
+      case ProbeType::invalid:
+      case ProbeType::special:
+      case ProbeType::benchmark:
+      case ProbeType::kprobe:
+      case ProbeType::kretprobe:
+      case ProbeType::tracepoint:
+      case ProbeType::profile:
+      case ProbeType::interval:
+      case ProbeType::software:
+      case ProbeType::hardware:
+      case ProbeType::watchpoint:
+      case ProbeType::asyncwatchpoint:
+      case ProbeType::fentry:
+      case ProbeType::fexit:
+      case ProbeType::iter:
+      case ProbeType::rawtracepoint:
+        return false;
+    }
+  } else if (identifier == "signal") {
+    switch (type) {
+      case ProbeType::kprobe:
+      case ProbeType::kretprobe:
+      case ProbeType::uprobe:
+      case ProbeType::uretprobe:
+      case ProbeType::usdt:
+      case ProbeType::tracepoint:
+      case ProbeType::profile:
+      case ProbeType::fentry:
+      case ProbeType::fexit:
+      case ProbeType::rawtracepoint:
+        return true;
+      case ProbeType::invalid:
+      case ProbeType::special:
+      case ProbeType::benchmark:
+      case ProbeType::interval:
+      case ProbeType::software:
+      case ProbeType::hardware:
+      case ProbeType::watchpoint:
+      case ProbeType::asyncwatchpoint:
+      case ProbeType::iter:
+        return false;
+    }
+  } else if (identifier == "skboutput" || identifier == "socket_cookie") {
+    return bpftrace::progtype(type) == libbpf::BPF_PROG_TYPE_TRACING;
+  }
+
+  if (type == ProbeType::invalid)
+    return false;
+
+  return true;
 }
 
 std::string AttachPoint::name() const
@@ -196,6 +332,8 @@ std::string AttachPoint::name() const
     n += ":" + lang;
   if (!ns.empty())
     n += ":" + ns;
+  if (bpf_prog_id != 0)
+    n += ":" + std::to_string(bpf_prog_id);
   if (!func.empty()) {
     n += ":" + func;
     if (func_offset != 0)
@@ -222,19 +360,9 @@ void AttachPoint::set_index(int index)
   index_ = index;
 }
 
-std::string Probe::name() const
-{
-  std::vector<std::string> ap_names;
-  std::ranges::transform(attach_points,
-
-                         std::back_inserter(ap_names),
-                         [](const AttachPoint *ap) { return ap->name(); });
-  return util::str_join(ap_names, ",");
-}
-
 std::string Probe::args_typename() const
 {
-  return "struct " + name() + "_args";
+  return "struct " + orig_name + "_args";
 }
 
 int Probe::index() const
@@ -252,6 +380,16 @@ bool Probe::has_ap_of_probetype(ProbeType probe_type)
   return std::ranges::any_of(attach_points, [probe_type](auto *ap) {
     return probetype(ap->provider) == probe_type;
   });
+}
+
+void Program::clear_empty_probes()
+{
+  auto it = std::ranges::remove_if(probes.begin(),
+                                   probes.end(),
+                                   [](const Probe *p) {
+                                     return p->attach_points.empty();
+                                   });
+  probes.erase(it.begin(), it.end());
 }
 
 SizedType ident_to_record(const std::string &ident, int pointer_level)

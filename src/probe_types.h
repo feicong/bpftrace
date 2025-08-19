@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cereal/access.hpp>
 #include <ostream>
+#include <set>
 #include <string>
 #include <sys/types.h>
 #include <unistd.h>
@@ -14,6 +15,7 @@ namespace bpftrace {
 enum class ProbeType {
   invalid,
   special,
+  benchmark,
   kprobe,
   kretprobe,
   uprobe,
@@ -59,9 +61,10 @@ const std::vector<ProbeItem> PROBE_LIST = {
     .aliases = { "U" },
     .type = ProbeType::usdt,
     .show_in_userspace_list = true },
-  { .name = "BEGIN", .aliases = { "BEGIN" }, .type = ProbeType::special },
-  { .name = "END", .aliases = { "END" }, .type = ProbeType::special },
-  { .name = "self", .aliases = { "self" }, .type = ProbeType::special },
+  { .name = "begin", .aliases = {}, .type = ProbeType::special },
+  { .name = "end", .aliases = {}, .type = ProbeType::special },
+  { .name = "self", .aliases = {}, .type = ProbeType::special },
+  { .name = "bench", .aliases = {}, .type = ProbeType::benchmark },
   { .name = "tracepoint",
     .aliases = { "t" },
     .type = ProbeType::tracepoint,
@@ -121,7 +124,8 @@ struct Probe {
   bool async = false; // for watchpoint probes, if it's an async watchpoint
   uint64_t address = 0;
   uint64_t func_offset = 0;
-  std::vector<std::string> funcs;
+  uint64_t bpf_prog_id = 0;
+  std::set<std::string> funcs;
   bool is_session = false;
 
 private:

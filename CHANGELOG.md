@@ -18,7 +18,20 @@ and this project adheres to
   - [#3944](https://github.com/bpftrace/bpftrace/pull/3944)
 - Ustack and kstack symbols are automatically enhanced with debug info if available
   - [#3999](https://github.com/bpftrace/bpftrace/pull/3999)
+- Error by default if any probe fails to attach
+  - [#4097](https://github.com/bpftrace/bpftrace/pull/4097)
+- Require BPF_MAP_TYPE_RINGBUF to be available
+  - [#3974](https://github.com/bpftrace/bpftrace/pull/3974)
+- Require kernel uprobe ref counting to be available for USDTs with semaphores
+  - [#4199](https://github.com/bpftrace/bpftrace/pull/4199)
+- `strcontains` and `has_key` now return boolean values instead of 1 and 0
+  - [#4280](https://github.com/bpftrace/bpftrace/pull/4280)
+- JSON serialization for unsupported and unknown types (e.g. `float`) may now
+  use `null` now rather than the empty string
+  - [#4302](https://github.com/bpftrace/bpftrace/pull/4302)
 #### Added
+- Add ncpus builtin to get the number of CPUs.
+  - [#4105](https://github.com/bpftrace/bpftrace/pull/4105)
 - Use blazesym for user space address symbolization
   - [#3884](https://github.com/bpftrace/bpftrace/pull/3884)
 - Add simple block expressions
@@ -37,13 +50,67 @@ and this project adheres to
   - [#4037](https://github.com/bpftrace/bpftrace/pull/4037)
 - Add warning when unset or empty positional parameters are used
   - [#4095](https://github.com/bpftrace/bpftrace/pull/4095)
+- Support accessing up to 255 USDT probe args
+  - [#4118](https://github.com/bpftrace/bpftrace/pull/4118)
+- Add new builtin "usermode"
+  - [#4129](https://github.com/bpftrace/bpftrace/pull/4129)
+- Warn on discarded return values for specific builtin functions
+  - [#4191](https://github.com/bpftrace/bpftrace/pull/4191)
+- For loops now support `..` ranges
+  - [#4126](https://github.com/bpftrace/bpftrace/pull/4126)
+- For loops now support `break` and `continue`
+  - [#4250](https://github.com/bpftrace/bpftrace/pull/4250)
+- Add `pid` and `tid` functions for choosing between the initial or the current namespace
+  - [#4254](https://github.com/bpftrace/bpftrace/pull/4254)
+- Add boolean values (`true` and `false`)
+  - [#4280](https://github.com/bpftrace/bpftrace/pull/4280)
+- Add duration literals - suffixes include: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`
+  - [#4317](https://github.com/bpftrace/bpftrace/pull/4317)
+- Add `getopt` function to handle named command line program arguments
+  - [#4258](https://github.com/bpftrace/bpftrace/pull/4258)
+- Add `socket_cookie` function to get the cookie of a socket
+  - [#4345](https://github.com/bpftrace/bpftrace/pull/4345)
+- Introduce `tseries` for capturing time series data
+  - [#3838](https://github.com/bpftrace/bpftrace/pull/3838)
+- Add ability to attach to running BPF programs and sub-programs via `fentry:bpf:prog_name` or `fentry:bpf:prog_id:prog_name`
+  - [#4354](https://github.com/bpftrace/bpftrace/pull/4354)
+- Add `BENCH` for creating microbenchmarks
+  - [#4343](https://github.com/bpftrace/bpftrace/pull/4343)
+- Add 'assert' and 'ppid' to the macro standard library
+  - [#4366](https://github.com/bpftrace/bpftrace/pull/4366)
+- Add 'errorf' for printing error messages with the source location
+  - [#4414](https://github.com/bpftrace/bpftrace/pull/4414)
+- Add ability to call most builtins with call-style syntax e.g. `comm()`
+  - [#4420](https://github.com/bpftrace/bpftrace/pull/4420)
 #### Changed
+- kprobe: support verbose mode listing
+  - [#4362](https://github.com/bpftrace/bpftrace/pull/4362)
 - `-p` CLI flag now applies to all probes (except BEGIN/END)
   - [#3800](https://github.com/bpftrace/bpftrace/pull/3800)
 - Introduce automatic session probes
   - [#3772](https://github.com/bpftrace/bpftrace/pull/3772)
 - Positional params can be used in any part of a probe string
   - [#3956](https://github.com/bpftrace/bpftrace/pull/3956)
+- Add signed type checking for map assignments
+  - [#4132](https://github.com/bpftrace/bpftrace/pull/4132)
+- Add signed type checking for map keys
+  - [#4136](https://github.com/bpftrace/bpftrace/pull/4136)
+- `delete` now returns 1 if successful, 0 if not
+  - [#4186](https://github.com/bpftrace/bpftrace/pull/4186)
+- if `delete` fails it will only print a warning if return value is not handled
+  - [#4186](https://github.com/bpftrace/bpftrace/pull/4186)
+- Change "Attaching N probes..." to "Attached N probes"
+  - [#4194](https://github.com/bpftrace/bpftrace/pull/4194)
+- runqlat.bt: ignore idle task
+  - [#4194](https://github.com/bpftrace/bpftrace/pull/4291)
+- Only cache symbols from targeted process
+  - [#4315](https://github.com/bpftrace/bpftrace/pull/4315)
+- Automatically exit if only BEGIN/END probes are specified
+  - [#4358](https://github.com/bpftrace/bpftrace/pull/4358)
+- Moved docs for builtins, functions, and map functions into stdlib.md and moved language docs into language.md
+  - [#4367](https://github.com/bpftrace/bpftrace/pull/4367)
+- Make probe provider names case insensitive
+  - [#4371](https://github.com/bpftrace/bpftrace/pull/4371)
 #### Deprecated
 #### Removed
 #### Fixed
@@ -59,9 +126,35 @@ and this project adheres to
   - [#4047](https://github.com/bpftrace/bpftrace/pull/4074)
 - Fix probe firing order for fexit and software
   - [#4113](https://github.com/bpftrace/bpftrace/pull/4113)
+- Fix type mismatch error for map assignments
+  - [#4130](https://github.com/bpftrace/bpftrace/pull/4130)
+- Parse BTF for implicit kernel modules in kprobe/kretprobe
+  - [#4137](https://github.com/bpftrace/bpftrace/pull/4137)
+- Fix execution watchpoints
+  - [#4139](https://github.com/bpftrace/bpftrace/pull/4139)
+- Fix incorrect reporting of attached count for multi probes
+  - [#4194](https://github.com/bpftrace/bpftrace/pull/4194)
+- Attach watchpoint probes to newly created threads
+  - [#4239](https://github.com/bpftrace/bpftrace/pull/4239)
+- Fix reading of __data_loc tracepoint arguments
+  - [#4238](https://github.com/bpftrace/bpftrace/pull/4238)
+- Fix kstack/ustack on big-endian systems
+  - [#4244](https://github.com/bpftrace/bpftrace/pull/4244)
+- Report expanded probe name when trying to attach
+  - [#4353](https://github.com/bpftrace/bpftrace/pull/4353)
+- Fix codegen optimization bug with the modulo operator
+  - [#4383](https://github.com/bpftrace/bpftrace/pull/4383)
 #### Security
 #### Docs
 #### Tools
+- opensnoop.bt: support openat2 syscall
+  - [#4310](https://github.com/bpftrace/bpftrace/pull/4310)
+- killsnoop.bt: display signal name instead of value
+  - [#4234](https://github.com/bpftrace/bpftrace/pull/4234)
+- killsnoop.bt: support tkill() and tgkill()
+  - [#4190](https://github.com/bpftrace/bpftrace/pull/4190)
+- Remove tools example usage txt files and move info to comments
+  - [#4187](https://github.com/bpftrace/bpftrace/pull/4187)
 - Fix biosnoop.bt to print comm from block_io_start probe
   - [#4013](https://github.com/bpftrace/bpftrace/pull/4013)
 

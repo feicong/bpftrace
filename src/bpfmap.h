@@ -1,19 +1,43 @@
 #pragma once
 
+#include <bpf/libbpf.h>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include <bpf/libbpf.h>
-#include <linux/bpf.h>
-
-#include "types.h"
+#include "map_info.h"
+#include "util/opaque.h"
 
 namespace libbpf {
 #include "libbpf/bpf.h"
 } // namespace libbpf
 
 namespace bpftrace {
+
+class BpfMapError : public ErrorInfo<BpfMapError> {
+public:
+  static char ID;
+  std::string name_;
+  std::string op_;
+  int errno_;
+
+  BpfMapError(std::string name_, std::string op_, int errno_)
+      : name_(std::move(name_)), op_(std::move(op_)), errno_(errno_)
+  {
+  }
+
+  void log(llvm::raw_ostream &OS) const override
+  {
+    OS << "BPF map operation " << op_ << " failed: " << std::strerror(-errno_)
+       << " [map = " << name_ << "]";
+  }
+};
+
+using util::OpaqueValue;
+using MapElements = std::vector<std::pair<OpaqueValue, OpaqueValue>>;
+using HistogramMap = std::map<OpaqueValue, std::vector<uint64_t>>;
+using TSeries = std::map<uint64_t, OpaqueValue>;
+using TSeriesMap = std::map<OpaqueValue, TSeries>;
 
 class BpfMap {
 public:
@@ -40,18 +64,28 @@ public:
   {
   }
 
+  virtual ~BpfMap() = default;
+
   int fd() const;
   libbpf::bpf_map_type type() const;
   const std::string &bpf_name() const;
   std::string name() const;
-  uint32_t key_size() const;
-  uint32_t value_size() const;
   uint32_t max_entries() const;
 
   bool is_stack_map() const;
   bool is_per_cpu_type() const;
-  bool is_clearable() const;
   bool is_printable() const;
+
+  std::vector<OpaqueValue> collect_keys() const;
+  virtual Result<MapElements> collect_elements(int nvalues) const;
+  virtual Result<HistogramMap> collect_histogram_data(const MapInfo &map_info,
+                                                      int nvalues) const;
+  virtual Result<TSeriesMap> collect_tseries_data(const MapInfo &map_info,
+                                                  int nvalues) const;
+  Result<> zero_out(int nvalues) const;
+  Result<> clear(int nvalues) const;
+  Result<> update_elem(const void *key, const void *value) const;
+  Result<> lookup_elem(const void *key, void *value) const;
 
 private:
   struct bpf_map *bpf_map_;

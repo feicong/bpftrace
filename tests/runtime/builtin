@@ -30,17 +30,21 @@ NAME cpu
 PROG i:ms:1 { printf("SUCCESS %lu\n", cpu); exit(); }
 EXPECT_REGEX SUCCESS [0-9]+
 
+NAME ncpus
+PROG begin { printf("%ld\n", ncpus);  }
+EXPECT_REGEX ^[1-9][0-9]*$
+
 NAME comm
-PROG BEGIN { printf("SUCCESS %s\n", comm); exit(); }
+PROG begin { printf("SUCCESS %s\n", comm);  }
 EXPECT SUCCESS bpftrace
 
 NAME kstack
-PROG BEGIN { printf("%s\n", kstack); exit(); }
-EXPECT Attaching 1 probe...
+PROG begin { printf("%s\n", kstack);  }
+EXPECT Attached 1 probe
 
 NAME ustack
-PROG BEGIN { printf("%s\n", ustack); exit(); }
-EXPECT Attaching 1 probe...
+PROG begin { printf("%s\n", ustack);  }
+EXPECT Attached 1 probe
 
 NAME arg
 PROG k:vfs_read { printf("SUCCESS %p\n", arg0); exit(); }
@@ -101,8 +105,8 @@ EXPECT SUCCESS kprobe:do_nanosleep
 AFTER ./testprogs/syscall nanosleep 1e8
 
 NAME begin probe
-PROG BEGIN { printf("%s", probe);exit(); } END{printf("-%s\n", probe); }
-EXPECT_REGEX ^BEGIN-END$
+PROG begin { printf("%s", probe); } end{printf("-%s\n", probe); }
+EXPECT_REGEX ^begin-end$
 AFTER ./testprogs/syscall nanosleep 1e8
 
 NAME curtask
@@ -141,14 +145,14 @@ EXPECT_REGEX ^([0-9]+\.[0-9]+ ?)+.*$
 
 NAME log size too small
 ENV BPFTRACE_LOG_SIZE=2
-RUN {{BPFTRACE}} -v -e 'BEGIN { if (str($1) == str($2)) { printf("%s\n", str($1)); exit() } }' "hello" "hello"
-EXPECT ERROR: Error loading BPF program for BEGIN_1.
+RUN {{BPFTRACE}} -v -e 'begin { if (str($1) == str($2)) { printf("%s\n", str($1)); exit() } }' "hello" "hello"
+EXPECT ERROR: Error loading BPF program for begin_1.
 EXPECT_REGEX ^WARNING: Kernel log seems to be trimmed.*
 WILL_FAIL
 
 NAME increase log size
 ENV BPFTRACE_LOG_SIZE=10000000
-RUN {{BPFTRACE}} -e 'BEGIN { if (str($1) == str($2)) { printf("%s\n", str($1)); exit() } }' "hello" "hello"
+RUN {{BPFTRACE}} -e 'begin { if (str($1) == str($2)) { printf("%s\n", str($1)); exit() } }' "hello" "hello"
 EXPECT hello
 
 NAME cat "no such file"
@@ -156,25 +160,25 @@ PROG i:ms:1 { cat("/does/not/exist/file"); exit(); }
 EXPECT ERROR: failed to open file '/does/not/exist/file': No such file or directory
 
 NAME sizeof
-PROG struct Foo { int x; char c; } BEGIN { $x = 1; printf("%d %d %d %d %d\n", sizeof(struct Foo), sizeof((*(struct Foo*)0).x), sizeof((*(struct Foo*)0).c), sizeof(1 == 1), sizeof($x)); exit(); }
-EXPECT 8 4 1 8 8
+PROG struct Foo { int x; char c; } begin { $x = 1; printf("%d %d %d %d %d\n", sizeof(struct Foo), sizeof((*(struct Foo*)0).x), sizeof((*(struct Foo*)0).c), sizeof(1 == 1), sizeof($x));  }
+EXPECT 8 4 1 1 8
 
 NAME sizeof_ints
-PROG BEGIN { printf("%d %d %d %d %d %d\n", sizeof(uint8), sizeof(int8), sizeof(uint16), sizeof(int16), sizeof(uint32), sizeof(int32)); exit(); }
+PROG begin { printf("%d %d %d %d %d %d\n", sizeof(uint8), sizeof(int8), sizeof(uint16), sizeof(int16), sizeof(uint32), sizeof(int32));  }
 EXPECT 1 1 2 2 4 4
 
 # printf only takes 7 args
 NAME sizeof_ints_pt2
-PROG BEGIN { printf("%d %d\n", sizeof(uint64), sizeof(int64)); exit(); }
+PROG begin { printf("%d %d\n", sizeof(uint64), sizeof(int64));  }
 EXPECT 8 8
 
 NAME sizeof_btf
-PROG BEGIN { printf("size=%d\n", sizeof(struct task_struct)); exit(); }
+PROG begin { printf("size=%d\n", sizeof(struct task_struct));  }
 EXPECT_REGEX ^size=
 REQUIRES_FEATURE btf
 
 NAME offsetof
-PROG struct Foo { int x; struct Bar { int x; } bar; } BEGIN { printf("%ld %ld\n", offsetof(struct Foo, x), offsetof(struct Foo, bar.x)); exit(); }
+PROG struct Foo { int x; struct Bar { int x; } bar; } begin { printf("%ld %ld\n", offsetof(struct Foo, x), offsetof(struct Foo, bar.x));  }
 EXPECT_REGEX ^0 4$
 
 NAME print args in fentry
@@ -238,3 +242,25 @@ NAME kstack builtin with stack_mode config
 RUN {{BPFTRACE}} -e 'config = { stack_mode=raw } k:do_nanosleep { @c[kstack] = 1; exit(); }'
 EXPECT_REGEX ^@c\[\n[0-9a-f]+$
 AFTER ./testprogs/syscall nanosleep  1e8
+
+NAME usermode_builtin_in_kprobe_fentry
+PROG k:vfs_read { printf("%d ", usermode); } fentry:vfs_open { print(usermode); }
+EXPECT 0 0
+AFTER ./testprogs/syscall read
+ARCH x86_64
+
+NAME usermode_builtin_in_uprobe
+PROG uprobe:./testprogs/uprobe_symres:test { print(usermode); exit(); }
+EXPECT 1
+AFTER ./testprogs/uprobe_symres
+ARCH x86_64
+
+NAME usermode_builtin_in_begin_end
+PROG begin { printf("%d ", usermode);  } end { print(usermode); }
+EXPECT 1 1
+ARCH x86_64
+
+NAME usermode_builtin_in_unsupported_arch
+PROG begin { printf("%d ", usermode);  } end { print(usermode); }
+EXPECT ERROR: 'usermode' builtin is only supported on x86_64
+ARCH aarch64

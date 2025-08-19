@@ -1,0 +1,1 @@
+begin { print(getopt("aa", 10));  }

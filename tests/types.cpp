@@ -22,8 +22,9 @@ TEST(types, to_str)
   EXPECT_EQ(to_str(CreateUInt32()), "uint32");
   EXPECT_EQ(to_str(CreateUInt64()), "uint64");
 
+  EXPECT_EQ(to_str(CreateString(10)), "string");
+
   EXPECT_EQ(to_str(CreateInet(10)), "inet[10]");
-  EXPECT_EQ(to_str(CreateString(10)), "string[10]");
   EXPECT_EQ(to_str(CreateBuffer(10)), "buffer[14]"); // metadata headroom
 
   EXPECT_EQ(to_str(CreatePointer(CreateInt8(), AddrSpace::kernel)), "int8 *");
@@ -38,7 +39,7 @@ TEST(types, to_str)
 
   std::shared_ptr<Struct> tuple = Struct::CreateTuple(
       { CreateInt8(), CreateString(10) });
-  EXPECT_EQ(to_str(CreateTuple(std::move(tuple))), "(int8,string[10])");
+  EXPECT_EQ(to_str(CreateTuple(std::move(tuple))), "(int8,string)");
 
   EXPECT_EQ(to_str(CreateSum(true)), "sum_t");
   EXPECT_EQ(to_str(CreateSum(false)), "usum_t");
@@ -55,8 +56,7 @@ TEST(types, to_str)
   EXPECT_EQ(to_str(CreateStats(true)), "stats_t");
   EXPECT_EQ(to_str(CreateStats(false)), "ustats_t");
 
-  EXPECT_EQ(to_str(CreateCount(true)), "count_t");
-  EXPECT_EQ(to_str(CreateCount(false)), "ucount_t");
+  EXPECT_EQ(to_str(CreateCount()), "count_t");
 
   EXPECT_EQ(to_str(CreateMacAddress()), "mac_address");
   EXPECT_EQ(to_str(CreateStack(true)), "kstack");
@@ -71,6 +71,7 @@ TEST(types, to_str)
   EXPECT_EQ(to_str(CreateStrerror()), "strerror_t");
   EXPECT_EQ(to_str(CreateHist()), "hist_t");
   EXPECT_EQ(to_str(CreateLhist()), "lhist_t");
+  EXPECT_EQ(to_str(CreateTSeries()), "tseries_t");
   EXPECT_EQ(to_str(CreateNone()), "none");
   EXPECT_EQ(to_str(CreateVoid()), "void");
 }

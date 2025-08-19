@@ -1,16 +1,14 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <unordered_set>
 
 #include "ast/passes/resolve_imports.h"
 #include "ast/visitor.h"
-#include "bpftrace.h"
 #include "driver.h"
 #include "stdlib/stdlib.h"
-#include "util/format.h"
 #include "util/result.h"
 #include "util/similar.h"
+#include "util/strings.h"
 
 namespace bpftrace::ast {
 
@@ -18,62 +16,19 @@ using bpftrace::stdlib::Stdlib;
 
 class ResolveImports : public Visitor<ResolveImports> {
 public:
-  ResolveImports(BPFtrace &bpftrace,
-                 const std::vector<std::filesystem::path> &paths)
-      : bpftrace_(bpftrace), paths_(paths) {};
+  ResolveImports(Imports &imports,
+                 const std::vector<std::filesystem::path> &paths = {})
+      : imports_(imports), paths_(paths) {};
 
   using Visitor<ResolveImports>::visit;
   void visit(Import &imp);
 
-  // Public import call, see `allow_paths` below.
-  Result<OK> importAny(Node &node, const std::string &name);
-
-  // The import result, to be consumed by the pass.
-  Imports imports;
-
-  // Controls whether or not we are allowed to import from the filesystem. Note
-  // that this starts as true, for all explicitly processed imports. We switch
-  // this off in order to process implicit imports.
-  bool allow_paths = true;
-
 private:
-  bool checkPerms(const std::filesystem::path &path);
-
-  // Various import formats.
-  //
-  // Note that some formats support loading from the filesystem, while others
-  // do not. Similarly, some formats support loading from in-memory objects,
-  // and others do not.
-  Result<OK> importAny(Node &node,
-                       const std::string &name,
-                       const std::filesystem::path &path,
-                       bool ignore_unknown);
-  Result<OK> importAny(Node &node,
-                       const std::string &name,
-                       const std::string &data,
-                       bool ignore_unknown);
-  Result<OK> importScript(Node &node,
-                          const std::string &name,
-                          const std::filesystem::path &path);
-  Result<OK> importScript(Node &node,
-                          const std::string &name,
-                          const std::string &contents);
-  Result<OK> importObject(Node &node,
-                          const std::string &name,
-                          const std::filesystem::path &path);
-  Result<OK> importBitcode(Node &node,
-                           const std::string &name,
-                           const std::string &contents);
-
-  BPFtrace &bpftrace_;
+  Imports &imports_;
   const std::vector<std::filesystem::path> &paths_;
-
-  // Record full packages/directories that have been imported separately from
-  // the specific modules, in order to avoid re-importing these paths.
-  std::unordered_set<std::string> packages_;
 };
 
-bool ResolveImports::checkPerms(const std::filesystem::path &path)
+static bool check_permissions(const std::filesystem::path &path)
 {
   auto check_one = [](const std::filesystem::path &path) {
     auto status = std::filesystem::status(path);
@@ -81,47 +36,38 @@ bool ResolveImports::checkPerms(const std::filesystem::path &path)
     return (permissions & std::filesystem::perms::others_write) ==
            std::filesystem::perms::none;
   };
-  return check_one(path) && check_one(path.parent_path());
+  if (!check_one(path)) {
+    return false;
+  }
+  if (path.parent_path().empty()) {
+    return check_one(".");
+  } else {
+    return check_one(path.parent_path());
+  }
 }
 
-Result<OK> ResolveImports::importScript(Node &node,
-                                        const std::string &name,
-                                        const std::filesystem::path &path)
+static Result<OK> import_script([[maybe_unused]] Node &node,
+                                Imports &imports,
+                                const std::string &name,
+                                const std::string &&data,
+                                const std::vector<std::filesystem::path> &paths,
+                                std::map<std::string, ScriptObject> &contents,
+                                bool internal)
 {
-  if (imports.scripts.contains(name)) {
-    return OK(); // Already added.
-  }
-
-  // Load the file.
-  std::ifstream file(path);
-  if (file.fail()) {
-    node.addError() << "error reading import '" << path
-                    << "': " << std::strerror(errno);
-    return OK();
-  }
-  std::stringstream buf;
-  buf << file.rdbuf();
-  return importScript(node, name, buf.str());
-}
-
-Result<OK> ResolveImports::importScript([[maybe_unused]] Node &node,
-                                        const std::string &name,
-                                        const std::string &contents)
-{
-  if (imports.scripts.contains(name)) {
+  if (contents.contains(name)) {
     return OK(); // Already added.
   }
 
   // Construct our context.
-  auto [it, added] = imports.scripts.emplace(name, ASTContext(name, contents));
+  auto [it, added] = contents.emplace(
+      name, ScriptObject(ASTContext(name, data), internal));
   assert(added);
-  auto &ast = it->second;
+  auto &ast = it->second.ast;
 
   // Perform the basic parse pass. Note that this parse is done extremely
   // early, and does zero expansion or parsing of attachpoints, etc.
   PassManager pm;
   pm.put(ast);
-  pm.put(bpftrace_);
   pm.add(CreateParsePass());
 
   // Attempt to parse the source.
@@ -137,56 +83,113 @@ Result<OK> ResolveImports::importScript([[maybe_unused]] Node &node,
   }
 
   // Recursively visit the parsed tree.
-  visit(ast.root);
+  ResolveImports resolver(imports, paths);
+  resolver.visit(ast.root);
 
   return OK();
 }
 
-Result<OK> ResolveImports::importObject([[maybe_unused]] Node &node,
-                                        const std::string &name,
-                                        const std::filesystem::path &path)
+static Result<OK> import_script(Node &node,
+                                Imports &imports,
+                                const std::string &name,
+                                const std::filesystem::path &path,
+                                const std::vector<std::filesystem::path> &paths,
+                                std::map<std::string, ScriptObject> &contents)
 {
-  if (imports.objects.contains(name)) {
+  if (contents.contains(name)) {
     return OK(); // Already added.
   }
 
-  auto [_, added] = imports.objects.emplace(name, ExternalObject(path));
+  // Load the file.
+  std::ifstream file(path);
+  if (file.fail()) {
+    node.addError() << "error reading import '" << path
+                    << "': " << std::strerror(errno);
+    return OK();
+  }
+  std::stringstream buf;
+  buf << file.rdbuf();
+  return import_script(node, imports, name, buf.str(), paths, contents, false);
+}
+
+static Result<OK> import_object(Node &node,
+                                const std::string &name,
+                                const std::filesystem::path &path,
+                                std::map<std::string, ExternalObject> &contents)
+{
+  if (contents.contains(name)) {
+    return OK(); // Already added.
+  }
+
+  auto added = contents.emplace(name, ExternalObject(node, path)).second;
   assert(added);
   return OK();
 }
 
-Result<OK> ResolveImports::importBitcode([[maybe_unused]] Node &node,
-                                         const std::string &name,
-                                         const std::string &contents)
+static Result<OK> import_c(Node &node,
+                           const std::string &name,
+                           const std::filesystem::path &path,
+                           std::map<std::string, LoadedObject> &contents)
 {
-  if (imports.bitcode.contains(name)) {
+  if (contents.contains(name)) {
     return OK(); // Already added.
   }
 
-  auto [_, added] = imports.bitcode.emplace(name, Bitcode(contents));
+  // Load the file.
+  std::ifstream file(path);
+  if (file.fail()) {
+    node.addError() << "error reading import '" << path
+                    << "': " << std::strerror(errno);
+    return OK();
+  }
+  std::stringstream buf;
+  buf << file.rdbuf();
+  auto [_, added] = contents.emplace(name, LoadedObject(node, buf.str()));
   assert(added);
   return OK();
 }
 
-Result<OK> ResolveImports::importAny(Node &node,
-                                     const std::string &name,
-                                     const std::filesystem::path &path,
-                                     bool ignore_unknown)
+static Result<OK> import_c(Node &node,
+                           const std::string &name,
+                           const std::string_view &data,
+                           std::map<std::string, LoadedObject> &contents)
 {
-  if (!checkPerms(path)) {
+  if (contents.contains(name)) {
+    return OK(); // Already added.
+  }
+
+  auto [_, added] = contents.emplace(name, LoadedObject(node, data));
+  assert(added);
+  return OK();
+}
+
+Result<OK> Imports::import_any(Node &node,
+                               const std::string &name,
+                               const std::filesystem::path &path,
+                               const std::vector<std::filesystem::path> &paths,
+                               bool ignore_unknown,
+                               bool allow_directories)
+{
+  if (!check_permissions(path)) {
     node.addError() << "cowardly refusing to import from a directory with "
                        "global write permissions: "
                     << path;
     return OK();
   }
   if (std::filesystem::is_directory(path)) {
+    // If `recurse` is not set, just ignore this directory.
+    if (!allow_directories) {
+      return OK();
+    }
     // Recursively import all entries in the directory. Note that the directory
     // iterator will never include '.' or '..' entries.
     for (const auto &entry : std::filesystem::directory_iterator(path)) {
-      auto ok = importAny(node,
-                          name + "/" + entry.path().filename().string(),
-                          entry.path(),
-                          true);
+      auto ok = import_any(node,
+                           name + "/" + entry.path().filename().string(),
+                           entry.path(),
+                           paths,
+                           true,
+                           false);
       if (!ok) {
         return ok.takeError();
       }
@@ -195,9 +198,13 @@ Result<OK> ResolveImports::importAny(Node &node,
   } else {
     // Import any support file-based extensions.
     if (path.extension() == ".bt") {
-      return importScript(node, name, path);
+      return import_script(node, *this, name, path, paths, scripts);
+    } else if (path.extension() == ".c" && path.stem().extension() == ".bpf") {
+      return import_c(node, name, path, c_sources);
+    } else if (path.extension() == ".h") {
+      return import_c(node, name, path, c_headers);
     } else if (path.extension() == ".o" && path.stem().extension() == ".bpf") {
-      return importObject(node, name, path);
+      return import_object(node, name, path, objects);
     } else if (!ignore_unknown) {
       node.addError() << "unknown import type: " << path.filename();
     }
@@ -205,24 +212,30 @@ Result<OK> ResolveImports::importAny(Node &node,
   }
 }
 
-Result<OK> ResolveImports::importAny(Node &node,
-                                     const std::string &name,
-                                     const std::string &data,
-                                     bool ignore_unknown)
+Result<OK> Imports::import_any(Node &node,
+                               const std::string &name,
+                               const std::string_view &data,
+                               const std::vector<std::filesystem::path> &paths,
+                               bool ignore_unknown)
 {
   // Import supported extensions.
   std::filesystem::path path(name);
   if (path.extension() == ".bt") {
-    return importScript(node, name, data);
-  } else if (path.extension() == ".bc") {
-    return importBitcode(node, name, data);
+    return import_script(
+        node, *this, name, std::string(data), paths, scripts, true);
+  } else if (path.extension() == ".c" && path.stem().extension() == ".bpf") {
+    return import_c(node, name, data, c_sources);
+  } else if (path.extension() == ".h") {
+    return import_c(node, name, data, c_headers);
   } else if (!ignore_unknown) {
     node.addError() << "unknown import type: " << path;
   }
   return OK();
 }
 
-Result<OK> ResolveImports::importAny(Node &node, const std::string &name)
+Result<OK> Imports::import_any(Node &node,
+                               const std::string &name,
+                               const std::vector<std::filesystem::path> &paths)
 {
   // Prevent direct re-importation of the same top-level name. This is used
   // because the name may match against directories or internal packages which
@@ -233,29 +246,26 @@ Result<OK> ResolveImports::importAny(Node &node, const std::string &name)
   packages_.emplace(name);
 
   std::vector<std::string> checked;
-  if (allow_paths) {
-    for (const auto &import_path : paths_) {
-      // Check to see if this specific file exists.
-      auto path = import_path / name;
-      checked.emplace_back(path.string());
-      std::error_code ec;
-      if (!std::filesystem::exists(path, ec)) {
-        continue; // No file found.
-      }
-
-      // For loading anything from the filesystem, ensure that the name import
-      // is not inside a globally writable directory. Note that we log this as
-      // a warning for a search, which is different than the case where the
-      // path is imported explicitly.
-      if (!checkPerms(path)) {
-        node.addWarning() << "skipping due to global write permissions: "
-                          << path;
-        continue;
-      }
-
-      // Attempt the import.
-      return importAny(node, name, path, false);
+  for (const auto &import_path : paths) {
+    // Check to see if this specific file exists.
+    auto path = import_path / name;
+    checked.emplace_back(path.string());
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      continue; // No file found.
     }
+
+    // For loading anything from the filesystem, ensure that the name import
+    // is not inside a globally writable directory. Note that we log this as
+    // a warning for a search, which is different than the case where the
+    // path is imported explicitly.
+    if (!check_permissions(path)) {
+      node.addWarning() << "skipping due to global write permissions: " << path;
+      continue;
+    }
+
+    // Attempt the import.
+    return import_any(node, name, path, paths, false, true);
   }
 
   // See if this matches a set of builtins. Note that we do the "directory"
@@ -265,9 +275,9 @@ Result<OK> ResolveImports::importAny(Node &node, const std::string &name)
   for (const auto &[internal_path, s] : Stdlib::files) {
     auto path = std::filesystem::path(internal_path);
     if (path.string() == name) {
-      return importAny(node, name, s, false);
+      return import_any(node, name, s, paths, false);
     } else if (path.parent_path().string() == name) {
-      auto ok = importAny(node, path.string(), s, true);
+      auto ok = import_any(node, path.string(), s, paths, true);
       if (!ok) {
         return ok.takeError();
       }
@@ -297,16 +307,7 @@ Result<OK> ResolveImports::importAny(Node &node, const std::string &name)
 
 void ResolveImports::visit(Import &imp)
 {
-  // Ensure that the explicit statement is allowed.
-  if (bpftrace_.config_->unstable_import == ConfigUnstable::error) {
-    auto &err = imp.addError();
-    err << "imports not enabled";
-    err.addHint()
-        << "set `unstable_import=warn` or `unstable_import=true` in config";
-    return;
-  }
-
-  auto ok = importAny(imp, imp.name);
+  auto ok = imports_.import_any(imp, imp.name, paths_);
   if (!ok) {
     imp.addError() << "import error: " << ok.takeError();
   }
@@ -315,8 +316,9 @@ void ResolveImports::visit(Import &imp)
 Pass CreateResolveImportsPass(std::vector<std::string> &&import_paths)
 {
   return Pass::create("ResolveImports",
-                      [import_paths](ASTContext &ast,
-                                     BPFtrace &b) -> Result<Imports> {
+                      [import_paths](ASTContext &ast) -> Result<Imports> {
+                        Imports imports;
+
                         // Add the source location as a primary path.
                         const auto &filename = ast.source()->filename;
                         std::vector<std::filesystem::path> updated_paths;
@@ -329,21 +331,20 @@ Pass CreateResolveImportsPass(std::vector<std::string> &&import_paths)
                         }
 
                         // Resolve all imports.
-                        ResolveImports analyser(b, updated_paths);
+                        ResolveImports analyser(imports, updated_paths);
                         analyser.visit(ast.root);
 
                         // Ensure that the standard library is imported. The
                         // implicit import is only permitted from the embedded
                         // standard library.  Overriding this is possible, but
                         // it must be explicitly imported.
-                        analyser.allow_paths = false;
-                        auto ok = analyser.importAny(*ast.root, "stdlib");
+                        auto ok = imports.import_any(*ast.root, "stdlib");
                         if (!ok) {
                           return ok.takeError();
                         }
 
                         // Return all calculated imports.
-                        return std::move(analyser.imports);
+                        return imports;
                       });
 }
 

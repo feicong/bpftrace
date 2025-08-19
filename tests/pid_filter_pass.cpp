@@ -2,6 +2,7 @@
 #include "ast/attachpoint_parser.h"
 #include "ast/passes/field_analyser.h"
 #include "ast/passes/printer.h"
+#include "ast/passes/probe_expansion.h"
 #include "driver.h"
 #include "mocks.h"
 #include "gtest/gtest.h"
@@ -29,6 +30,7 @@ void test(const std::string& input, bool has_pid, bool has_filter)
                 .put(bpftrace)
                 .add(CreateParsePass())
                 .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateProbeExpansionPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreatePidFilterPass())
                 .run();
@@ -38,7 +40,7 @@ void test(const std::string& input, bool has_pid, bool has_filter)
   if
    !=
     builtin: pid
-    int: 1
+    int: 1 :: [int64]
    then
     return
 )";
@@ -62,7 +64,7 @@ TEST(pid_filter_pass, add_filter)
     "fentry:f",
     "fexit:f",
     "tracepoint:category:event",
-    "rawtracepoint:event",
+    "rawtracepoint:module:event",
   };
 
   for (auto& probe : filter_probes) {
@@ -77,8 +79,8 @@ TEST(pid_filter_pass, no_add_filter)
   test("profile:hz:99 { 1 }", false, false);
 
   std::vector<std::string> no_filter_probes = {
-    "BEGIN",
-    "END",
+    "begin",
+    "end",
     "uprobe:/bin/sh:f",
     "uretprobe:/bin/sh:f",
     "usdt:sh:probe",

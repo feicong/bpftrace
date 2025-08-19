@@ -112,9 +112,9 @@ find_package(FLEX REQUIRED)
 # But `api.parser.class` is not supported in bison < 3.3. So we must inject
 # the %define based on the bison version here.
 if(${BISON_VERSION} VERSION_GREATER_EQUAL 3.3)
-  set(BISON_FLAGS "-Dapi.parser.class={Parser}")
+  set(BISON_FLAGS "-Dapi.parser.class={Parser} -Wcounterexamples")
 else()
-  set(BISON_FLAGS "-Dparser_class_name={Parser}")
+  set(BISON_FLAGS "-Dparser_class_name={Parser} -Wcounterexamples")
 endif()
 bison_target(bison_parser src/parser.yy ${CMAKE_BINARY_DIR}/parser.tab.cc COMPILE_FLAGS ${BISON_FLAGS} VERBOSE)
 flex_target(flex_lexer src/lexer.l ${CMAKE_BINARY_DIR}/lex.yy.cc)
@@ -151,9 +151,6 @@ if(${LIBBFD_FOUND} AND ${LIBOPCODES_FOUND})
   set(HAVE_BFD_DISASM TRUE)
 endif()
 
-include(CheckIncludeFile)
-check_include_file("sys/sdt.h" HAVE_SYSTEMTAP_SYS_SDT_H)
-
 # Some users have multiple versions of llvm installed and would like to specify
 # a specific llvm version.
 if(${LLVM_REQUESTED_VERSION})
@@ -183,7 +180,7 @@ message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}: ${LLVM_CMAKE_DIR}")
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
-find_package(Clang REQUIRED)
+find_package(Clang ${LLVM_PACKAGE_VERSION} REQUIRED)
 include_directories(SYSTEM ${CLANG_INCLUDE_DIRS})
 
 # BPFtrace compile definitions

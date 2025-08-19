@@ -8,6 +8,7 @@
 #include <linux/limits.h>
 #include <optional>
 #include <regex>
+#include <sstream>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -28,7 +29,6 @@
 #include "bpftrace.h"
 #include "btf.h"
 #include "log.h"
-#include "probe_matcher.h"
 #include "tracefs/tracefs.h"
 #include "types.h"
 
@@ -181,21 +181,21 @@ void BTF::load_module_btfs(const std::set<std::string> &modules)
 
 static void dump_printf(void *ctx, const char *fmt, va_list args)
 {
-  auto *ret = static_cast<std::string *>(ctx);
+  auto *ret = static_cast<std::stringstream *>(ctx);
   char *str;
 
   if (vasprintf(&str, fmt, args) < 0)
     return;
 
-  *ret += str;
+  *ret << str;
   free(str);
 }
 
 static struct btf_dump *dump_new(const struct btf *btf,
                                  btf_dump_printf_fn_t dump_printf,
-                                 void *ctx)
+                                 std::stringstream *ctx)
 {
-  return btf_dump__new(btf, dump_printf, ctx, nullptr);
+  return btf_dump__new(btf, dump_printf, static_cast<void *>(ctx), nullptr);
 }
 
 static const char *btf_str(const struct btf *btf, __u32 off)
@@ -239,7 +239,7 @@ std::string BTF::dump_defs_from_btf(
     const struct btf *btf,
     std::unordered_set<std::string> &types) const
 {
-  std::string ret;
+  std::stringstream ret;
   auto *dump = dump_new(btf, dump_printf, &ret);
   if (auto err = libbpf_get_error(dump)) {
     char err_buf[256] = {};
@@ -254,7 +254,9 @@ std::string BTF::dump_defs_from_btf(
 
   // note that we're always iterating from 1 here as we need to go through the
   // vmlinux BTF entries, too (even for kernel module BTFs)
-  for (__u32 id = 1, max = type_cnt(btf); id <= max && !types.empty(); id++) {
+  bool all = types.empty();
+  __u32 max = type_cnt(btf);
+  for (__u32 id = 1; id <= max && (all || !types.empty()); id++) {
     const auto *t = btf__type_by_id(btf, id);
     if (!t)
       continue;
@@ -263,19 +265,19 @@ std::string BTF::dump_defs_from_btf(
     if (btf_is_enum(t)) {
       const auto *p = btf_enum(t);
       for (__u16 e = 0, vlen = btf_vlen(t); e < vlen; ++e, ++p) {
-        if (types.erase(btf_str(btf, p->name_off))) {
+        if (all || types.erase(btf_str(btf, p->name_off))) {
           btf_dump__dump_type(dump, id);
           break;
         }
       }
     }
 
-    if (types.erase(full_type_str(btf, t))) {
+    if (all || types.erase(full_type_str(btf, t))) {
       btf_dump__dump_type(dump, id);
     }
   }
 
-  return ret;
+  return ret.str();
 }
 
 std::string BTF::c_def(const std::unordered_set<std::string> &set)
@@ -447,7 +449,13 @@ SizedType BTF::get_stype(const BTFId &btf_id, bool resolve_structs)
     const auto &elem_type = get_stype(
         BTFId{ .btf = btf_id.btf, .id = array->type });
     if (elem_type.IsIntTy() && elem_type.GetSize() == 1) {
-      stype = CreateString(array->nelems);
+      // Note that we allocate an extra element in this case, since it is
+      // necessary for the frontend to detect when a well-formed string is
+      // stored versus a non-well-formed string. We consider the array to be
+      // well-formed even if it does not contain a NUL-terminator, since it has
+      // a known size up front. However, our string must store the terminator
+      // to signal that it is well-formed.
+      stype = CreateString(array->nelems + 1);
     } else {
       stype = CreateArray(array->nelems, elem_type);
     }
@@ -495,7 +503,7 @@ std::shared_ptr<Struct> BTF::resolve_args(std::string_view func,
 
   const struct btf_param *p = btf_params(t);
   __u16 vlen = btf_vlen(t);
-  if (vlen > arch::max_arg() + 1) {
+  if (vlen >= arch::Host::arguments().size()) {
     err = "functions with more than 6 parameters are "
           "not supported.";
     return nullptr;
@@ -574,7 +582,7 @@ std::string BTF::get_all_funcs_from_btf(const BTFObj &btf_obj) const
     if (bpftrace_ && !bpftrace_->is_traceable_func(func_name))
       continue;
 
-    if (btf_vlen(t) > arch::max_arg() + 1)
+    if (btf_vlen(t) >= arch::Host::arguments().size())
       continue;
 
     funcs += btf_obj.name + ":" + func_name + "\n";
@@ -615,7 +623,7 @@ std::string BTF::get_all_raw_tracepoints_from_btf(const BTFObj &btf_obj) const
       break;
     }
 
-    if (btf_vlen(t) > arch::max_arg() + 1)
+    if (btf_vlen(t) >= arch::Host::arguments().size())
       continue;
 
     bool found = false;
@@ -655,7 +663,7 @@ FuncParamLists BTF::get_params_from_btf(
     const BTFObj &btf_obj,
     const std::set<std::string> &funcs) const
 {
-  std::string type;
+  std::stringstream type;
   auto *dump = dump_new(btf_obj.btf, dump_printf, &type);
   if (auto err = libbpf_get_error(dump)) {
     char err_buf[256] = {};
@@ -696,26 +704,26 @@ FuncParamLists BTF::get_params_from_btf(
       const char *arg_name = btf__name_by_offset(btf_obj.btf, p->name_off);
 
       // set by dump_printf callback
-      type.clear();
+      type.str("");
       if (btf_dump__emit_type_decl(dump, p->type, &decl_opts)) {
         LOG(ERROR) << "failed to dump argument: " << arg_name;
         break;
       }
 
-      params[func_name].push_back(type + " " + arg_name);
+      params[func_name].push_back(type.str() + " " + arg_name);
     }
 
     if (!t->type)
       continue;
 
     // set by dump_printf callback
-    type.clear();
+    type.str("");
     if (btf_dump__emit_type_decl(dump, t->type, &decl_opts)) {
       LOG(ERROR) << "failed to dump return type for: " << func_name;
       break;
     }
 
-    params[func_name].push_back(type + " retval");
+    params[func_name].push_back(type.str() + " retval");
   }
 
   if (id != (max + 1))
@@ -724,11 +732,109 @@ FuncParamLists BTF::get_params_from_btf(
   return params;
 }
 
+FuncParamLists BTF::get_kprobes_params_from_btf(
+    const BTFObj &btf_obj,
+    const std::set<std::string> &funcs,
+    bool is_kretprobe) const
+{
+  std::stringstream type;
+  auto *dump = dump_new(btf_obj.btf, dump_printf, &type);
+  if (auto err = libbpf_get_error(dump)) {
+    char err_buf[256] = {};
+    libbpf_strerror(err, err_buf, sizeof(err_buf));
+    LOG(V1) << "BTF: failed to initialize dump (" << err_buf << ")";
+    return {};
+  }
+  SCOPE_EXIT
+  {
+    btf_dump__free(dump);
+  };
+
+  FuncParamLists params;
+  auto id = start_id(btf_obj.btf), max = type_cnt(btf_obj.btf);
+  for (; id <= max; id++) {
+    const struct btf_type *t = btf__type_by_id(btf_obj.btf, id);
+    if (!t)
+      continue;
+
+    if (!btf_is_func(t))
+      continue;
+
+    std::string func_name;
+    const std::string pure_func_name = btf__name_by_offset(btf_obj.btf,
+                                                           t->name_off);
+    const std::string obj_func_name = btf_obj.name + ":" + pure_func_name;
+
+    // First match the module prefix name, then match the pure function name.
+    // For example, first match "kprobe:vmlinux:do_sys*", then "kprobe:do_sys*".
+    // The same goes for other modules, such as "kvm".
+    if (funcs.contains(obj_func_name))
+      func_name = obj_func_name;
+    else if (funcs.contains(pure_func_name))
+      func_name = pure_func_name;
+    else
+      continue;
+
+    t = btf__type_by_id(btf_obj.btf, t->type);
+    if (!t)
+      continue;
+
+    BPFTRACE_LIBBPF_OPTS(btf_dump_emit_type_decl_opts,
+                         decl_opts,
+                         .field_name = "");
+
+    if (!is_kretprobe) {
+      const auto *p = btf_params(t);
+
+      for (__u16 j = 0, argN = 0, len = btf_vlen(t); j < len; j++, p++) {
+        const std::string arg_name = "arg" + std::to_string(argN);
+
+        // set by dump_printf callback
+        type.str("");
+        if (btf_dump__emit_type_decl(dump, p->type, &decl_opts)) {
+          LOG(V1) << "failed to dump argument: " << arg_name;
+          break;
+        }
+
+        // Note that floating point arguments are typically passed in special
+        // registers which don’t count as argN arguments. e.g. on x86_64 the
+        // first 6 non-floating point arguments are passed in registers and
+        // all following arguments are passed on the stack
+        const auto *pt = btf__type_by_id(btf_obj.btf, p->type);
+        if (pt && BTF_INFO_KIND(pt->info) == BTF_KIND_FLOAT)
+          continue;
+
+        params[func_name].push_back(type.str() + " " + arg_name);
+        argN++;
+      }
+    } else {
+      if (!t->type) {
+        params[func_name].emplace_back("void");
+        continue;
+      }
+
+      // set by dump_printf callback
+      type.str("");
+      if (btf_dump__emit_type_decl(dump, t->type, &decl_opts)) {
+        LOG(ERROR) << "failed to dump return type for: " << func_name;
+        break;
+      }
+
+      params[func_name].push_back(type.str() + " retval");
+    }
+  }
+
+  if (id != (max + 1))
+    LOG(BUG) << "BTF data inconsistency " << id << "," << max;
+
+  return params;
+}
+
 FuncParamLists BTF::get_raw_tracepoints_params_from_btf(
     const BTFObj &btf_obj,
     const std::set<std::string> &rawtracepoints) const
 {
-  std::string type;
+  std::stringstream type;
   auto *dump = dump_new(btf_obj.btf, dump_printf, &type);
   if (auto err = libbpf_get_error(dump)) {
     char err_buf[256] = {};
@@ -782,13 +888,13 @@ FuncParamLists BTF::get_raw_tracepoints_params_from_btf(
       const char *arg_name = btf__name_by_offset(btf_obj.btf, p->name_off);
 
       // set by dump_printf callback
-      type.clear();
+      type.str("");
       if (btf_dump__emit_type_decl(dump, p->type, &decl_opts)) {
         LOG(ERROR) << "failed to dump argument: " << arg_name;
         break;
       }
 
-      params[mod_tp_name].push_back(type + " " + arg_name);
+      params[mod_tp_name].push_back(type.str() + " " + arg_name);
     }
   }
 
@@ -828,6 +934,23 @@ FuncParamLists BTF::get_params(const std::set<std::string> &funcs) const
       });
 }
 
+FuncParamLists BTF::get_kprobes_params(const std::set<std::string> &funcs) const
+{
+  return get_params_impl(
+      funcs, [this](const BTFObj &btf_obj, const std::set<std::string> &funcs) {
+        return get_kprobes_params_from_btf(btf_obj, funcs, false);
+      });
+}
+
+FuncParamLists BTF::get_kretprobes_params(
+    const std::set<std::string> &funcs) const
+{
+  return get_params_impl(
+      funcs, [this](const BTFObj &btf_obj, const std::set<std::string> &funcs) {
+        return get_kprobes_params_from_btf(btf_obj, funcs, true);
+      });
+}
+
 FuncParamLists BTF::get_rawtracepoint_params(
     const std::set<std::string> &rawtracepoints) const
 {
@@ -842,7 +965,7 @@ std::set<std::string> BTF::get_all_structs_from_btf(const struct btf *btf) const
 {
   std::set<std::string> struct_set;
 
-  std::string types;
+  std::stringstream types;
   auto *dump = dump_new(btf, dump_printf, &types);
   if (auto err = libbpf_get_error(dump)) {
     char err_buf[256] = { 0 };
@@ -878,7 +1001,7 @@ std::set<std::string> BTF::get_all_structs_from_btf(const struct btf *btf) const
   if (bt_verbose) {
     // BTF dump contains definitions of all types in a single string, here we
     // split it
-    std::istringstream type_stream(types);
+    std::istringstream type_stream(types.str());
     std::string line, type;
     bool in_def = false;
     while (std::getline(type_stream, line)) {

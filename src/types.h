@@ -24,10 +24,12 @@ enum class Type : uint8_t {
   none,
   voidtype,
   integer, // int is a protected keyword
+  boolean,
   pointer,
   record, // struct/union, as struct is a protected keyword
   hist_t,
   lhist_t,
+  tseries_t,
   count_t,
   sum_t,
   min_t,
@@ -57,7 +59,6 @@ enum class AddrSpace : uint8_t {
   none,
   kernel,
   user,
-  bpf,
 };
 
 std::ostream &operator<<(std::ostream &os, Type type);
@@ -168,7 +169,6 @@ public:
   bool is_internal = false;
   bool is_tparg = false;
   bool is_funcarg = false;
-  bool is_btftype = false;
   TimestampMode ts_mode = TimestampMode::boot;
 
 private:
@@ -199,7 +199,6 @@ private:
             is_internal,
             is_tparg,
             is_funcarg,
-            is_btftype,
             funcarg_idx,
             is_signed_,
             element_type_,
@@ -350,10 +349,6 @@ public:
     return element_type_.get();
   }
 
-  bool IsBoolTy() const
-  {
-    return type_ == Type::integer && size_bits_ == 1;
-  };
   bool IsPtrTy() const
   {
     return type_ == Type::pointer;
@@ -362,6 +357,10 @@ public:
   {
     return type_ == Type::integer;
   };
+  bool IsBoolTy() const
+  {
+    return type_ == Type::boolean;
+  }
   bool IsEnumTy() const
   {
     return IsIntTy() && !name_.empty();
@@ -385,6 +384,10 @@ public:
   bool IsLhistTy() const
   {
     return type_ == Type::lhist_t;
+  };
+  bool IsTSeriesTy() const
+  {
+    return type_ == Type::tseries_t;
   };
   bool IsCountTy() const
   {
@@ -498,12 +501,13 @@ public:
   // logical value (from the user perspective).
   bool IsMultiKeyMapTy() const
   {
-    return type_ == Type::hist_t || type_ == Type::lhist_t;
+    return type_ == Type::hist_t || type_ == Type::lhist_t ||
+           type_ == Type::tseries_t;
   }
 
   bool NeedsPercpuMap() const;
 
-  friend std::string typestr(const SizedType &type);
+  friend std::string typestr(const SizedType &type, bool debug);
 
   // Factories
 
@@ -554,12 +558,13 @@ SizedType CreateStack(bool kernel, StackType st = StackType());
 SizedType CreateMin(bool is_signed);
 SizedType CreateMax(bool is_signed);
 SizedType CreateSum(bool is_signed);
-SizedType CreateCount(bool is_signed);
+SizedType CreateCount();
 SizedType CreateAvg(bool is_signed);
 SizedType CreateStats(bool is_signed);
 SizedType CreateUsername();
 SizedType CreateInet(size_t size);
 SizedType CreateLhist();
+SizedType CreateTSeries();
 SizedType CreateHist();
 SizedType CreateUSym();
 SizedType CreateKSym();
@@ -572,8 +577,12 @@ SizedType CreateTimestampMode();
 
 std::string addrspacestr(AddrSpace as);
 std::string typestr(Type t);
-std::string typestr(const SizedType &type);
+std::string typestr(const SizedType &type, bool debug = false);
 std::ostream &operator<<(std::ostream &os, const SizedType &type);
+
+enum class TSeriesAggFunc { none, avg, max, min, sum };
+
+std::ostream &operator<<(std::ostream &os, TSeriesAggFunc agg);
 
 } // namespace bpftrace
 

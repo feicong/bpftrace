@@ -23,6 +23,7 @@ class Expect:
     self.expect = expect
     self.mode = mode
 
+# Remember to update tests/README.md if adding a new directive!
 TestStruct = namedtuple(
     'TestStruct',
     [
@@ -215,7 +216,7 @@ class TestParser(object):
             elif item_name == "RETURN_CODE":
                 return_code = int(line.strip(' '))
             else:
-                raise UnknownFieldError('Field %s is unknown. Suite: %s' % (item_name, test_suite))
+                raise UnknownFieldError('Field %s is not a runtime test directive. Suite: %s' % (item_name, test_suite))
 
         if name == '':
             raise RequiredFieldError('Test NAME is required. Suite: ' + test_suite)
@@ -232,6 +233,9 @@ class TestParser(object):
 
         if return_code is None:
             return_code = 0
+
+        if return_code != 0 and will_fail:
+            raise InvalidFieldError('WILL_FAIL and RETURN_CODE can not be used together. Suite: ' + test_suite)
 
         return TestStruct(
             name,

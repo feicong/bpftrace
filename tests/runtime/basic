@@ -30,6 +30,17 @@ RUN {{BPFTRACE}} -l | grep kprobes
 EXPECT_REGEX kprobe:.*
 TIMEOUT 1
 
+NAME it lists kprobes with glob matching
+RUN {{BPFTRACE}} -l 'kprobe*'
+EXPECT_REGEX kprobe:.*
+TIMEOUT 1
+
+NAME it lists kprobes with verbose mode
+RUN {{BPFTRACE}} -lv kprobe:*
+EXPECT_REGEX [ ]+[a-zA-Z_\*\s]+
+REQUIRES_FEATURE btf
+TIMEOUT 1
+
 NAME it lists tracepoints
 RUN {{BPFTRACE}} -l | grep tracepoint
 EXPECT_REGEX tracepoint:.*
@@ -195,73 +206,85 @@ WILL_FAIL
 
 NAME pid fails validation with leading non-number
 RUN {{BPFTRACE}} -p a1111 file.bt
-EXPECT ERROR: Failed to parse pid: pid 'a1111' is not a valid decimal number
+EXPECT ERROR: Failed to parse pid: invalid integer: a1111
 TIMEOUT 1
 WILL_FAIL
 
 NAME pid fails validation with non-number in between
 RUN {{BPFTRACE}} -p 111a1 file.bt
-EXPECT ERROR: Failed to parse pid: pid '111a1' is not a valid decimal number
+EXPECT ERROR: Failed to parse pid: invalid trailing bytes: 111a1
 TIMEOUT 1
 WILL_FAIL
 
 NAME pid fails validation with non-numeric argument
 RUN {{BPFTRACE}} -p not_a_pid file.bt
-EXPECT ERROR: Failed to parse pid: pid 'not_a_pid' is not a valid decimal number
+EXPECT ERROR: Failed to parse pid: invalid integer: not_a_pid
 TIMEOUT 1
 WILL_FAIL
 
 NAME pid outside of valid pid range
 RUN {{BPFTRACE}} -p 5000000 file.bt
-EXPECT ERROR: Failed to parse pid: pid '5000000' out of valid pid range [1,4194304]
+EXPECT ERROR: Pid out of range: 5000000
 TIMEOUT 1
 WILL_FAIL
 
 NAME libraries under /usr/include are in the search path
-RUN {{BPFTRACE}} -e "$(echo "#include <sys/xattr.h>"; echo "BEGIN { exit(); }")" 2>&1
+RUN {{BPFTRACE}} -e "$(echo "#include <sys/xattr.h>"; echo "begin { }")" 2>&1
 EXPECT_NONE file not found
 REQUIRES ls /usr/include/sys/xattr.h
 TIMEOUT 1
 
 NAME non existent library include fails
-RUN {{BPFTRACE}} -e "$(echo "#include <lol/no.h>"; echo "BEGIN { exit(); }")" 2>&1
+RUN {{BPFTRACE}} -e "$(echo "#include <lol/no.h>"; echo "begin { }")" 2>&1
 EXPECT definitions.h:2:10: fatal error: 'lol/no.h' file not found
 TIMEOUT 1
 WILL_FAIL
 
 NAME defines work
-RUN {{BPFTRACE}} -e "$(echo '#define _UNDERSCORE 314'; echo 'BEGIN { printf("%d\n", _UNDERSCORE); exit(); }')"
+RUN {{BPFTRACE}} -e "$(echo '#define _UNDERSCORE 314'; echo 'begin { printf("%d\n", _UNDERSCORE); }')"
 EXPECT 314
 TIMEOUT 1
 
 NAME clear map
-PROG BEGIN { @ = 1; @a[1] = 1; clear(@); clear(@a); printf("ok\n"); exit(); }
+PROG begin { @ = 1; @a[1] = 1; clear(@); clear(@a); printf("ok\n"); }
 EXPECT ok
 TIMEOUT 1
 
 NAME clear count-map
-PROG BEGIN { @ = count(); @a[1] = count(); clear(@); clear(@a); exit(); }
+PROG begin { @ = count(); @a[1] = count(); clear(@); clear(@a); }
 EXPECT @: 0
 TIMEOUT 1
 
 NAME delete map
-PROG BEGIN { @ = 1; @a[1] = 1; @b[1, 2] = 2; delete(@); delete(@a, 1); delete(@b, (1, 2)); printf("ok\n"); exit(); }
-EXPECT ok
+PROG begin { @ = 1; @a[1] = 1; @b[1, 2] = 2; if (delete(@)) { printf("ok1\n"); } delete(@a, 1); if (delete(@b, (1, 2))) { printf("ok2\n"); } if (!delete(@b, (5, 6))) { printf("ok3\n"); } }
+EXPECT ok1
+EXPECT ok2
+EXPECT ok3
 TIMEOUT 1
 
 NAME delete count-map
-PROG BEGIN { @ = count(); @a[1] = count(); delete(@); delete(@a, 1); exit(); }
+PROG begin { @ = count(); @a[1] = count(); delete(@); delete(@a, 1); }
 EXPECT @: 0
 TIMEOUT 1
 
 NAME delete deprecated
-PROG BEGIN { @a[1] = 1; @b[2, "hi"] = 2; delete(@a[1]); delete(@b[2, "hi"]); exit(); }
+PROG begin { @a[1] = 1; @b[2, "hi"] = 2; delete(@a[1]); delete(@b[2, "hi"]); }
 EXPECT_NONE @a[1]: 1
 EXPECT_NONE @b[2, hi]: 2
 TIMEOUT 1
 
+NAME bad delete warning
+PROG begin { @a[1] = 1; delete(@a, 2); }
+EXPECT stdin:1:20-33: WARNING: Can't delete map element because it does not exist.
+TIMEOUT 1
+
+NAME bad delete no warning
+PROG begin { @a[1] = 1; $x = delete(@a, 2); if (1 && !delete(@a, 3)) {} }
+EXPECT_NONE stdin:1:20-33: WARNING: Can't delete map element because it does not exist.
+TIMEOUT 1
+
 NAME increment/decrement map
-PROG BEGIN { @x = 10; printf("%d", @x++); printf(" %d", ++@x); printf(" %d", @x--); printf(" %d\n", --@x); delete(@x); exit(); }
+PROG begin { @x = 10; printf("%d", @x++); printf(" %d", ++@x); printf(" %d", @x--); printf(" %d\n", --@x); delete(@x); }
 EXPECT 10 12 12 10
 TIMEOUT 1
 
@@ -271,7 +294,7 @@ EXPECT SUCCESS
 TIMEOUT 10
 
 NAME increment/decrement variable
-PROG BEGIN { $x = 10; printf("%d", $x++); printf(" %d", ++$x); printf(" %d", $x--); printf(" %d\n", --$x); exit(); }
+PROG begin { $x = 10; printf("%d", $x++); printf(" %d", ++$x); printf(" %d", $x--); printf(" %d\n", --$x);  }
 EXPECT 10 12 12 10
 TIMEOUT 1
 
@@ -282,78 +305,70 @@ TIMEOUT 3
 
 NAME info flag
 RUN {{BPFTRACE}} --info
-EXPECT_REGEX perf_event_array: yes
+EXPECT_REGEX ringbuf: yes
 TIMEOUT 1
 
 NAME basic while loop
-PROG BEGIN { $a = 0; while ($a <= 100) { @=avg($a++) } exit(); }
+PROG begin { $a = 0; while ($a <= 100) { @=avg($a++) }  }
 EXPECT @: 50
 REQUIRES_FEATURE loop
 
 NAME disable warnings
-RUN {{BPFTRACE}} --no-warnings -e 'BEGIN { @x = stats(10); print(@x, 2); clear(@x); exit();}' 2>&1| grep -c -E "WARNING|invalid option"
+RUN {{BPFTRACE}} --no-warnings -e 'begin { @x = stats(10); print(@x, 2); clear(@x); }' 2>&1| grep -c -E "WARNING|invalid option"
 EXPECT_REGEX ^0$
 TIMEOUT 1
 WILL_FAIL
 
 NAME kaddr fails
-PROG BEGIN { print(kaddr("asdfzzzzzzz")) }
+PROG begin { print(kaddr("asdfzzzzzzz")) }
 EXPECT stdin:1:9-35: ERROR: Failed to resolve kernel symbol: asdfzzzzzzz
-       BEGIN { print(kaddr("asdfzzzzzzz")) }
+       begin { print(kaddr("asdfzzzzzzz")) }
                ~~~~~~~~~~~~~~~~~~~~~~~~~~
 TIMEOUT 1
 WILL_FAIL
 
 NAME variable strings are memset
-PROG BEGIN { $x = "xxxxx"; $x = "a"; @[$x] = 1; $y = "yyyyy"; $y = "a"; @[$y] = 1; printf("len: %d\n", len(@)); exit(); }
+PROG begin { $x = "xxxxx"; $x = "a"; @[$x] = 1; $y = "yyyyy"; $y = "a"; @[$y] = 1; printf("len: %d\n", len(@));  }
 EXPECT len: 1
 TIMEOUT 1
 
 NAME map strings are memset
-PROG BEGIN { @x = "xxxxx"; @x = "a"; @[@x] = 1; @y = "yyyyy"; @y = "a"; @[@y] = 1; printf("len: %d\n", len(@)); exit(); }
+PROG begin { @x = "xxxxx"; @x = "a"; @[@x] = 1; @y = "yyyyy"; @y = "a"; @[@y] = 1; printf("len: %d\n", len(@));  }
 EXPECT len: 1
 TIMEOUT 1
 
 NAME print_per_cpu_map_vals
 REQUIRES_FEATURE lookup_percpu_elem
-PROG BEGIN { @a = avg(5); @c = count(); @s = sum(5); @mn = min(1); @mx = max(-1); print((@a, @c, @s, @mn, @mx)); exit(); }
+PROG begin { @a = avg(5); @c = count(); @s = sum(5); @mn = min(1); @mx = max(-1); print((@a, @c, @s, @mn, @mx));  }
 EXPECT (5, 1, 5, 1, -1)
 TIMEOUT 3
 
 NAME print large int
-PROG BEGIN { $a = 10223372036854775807; print(($a)); exit(); }
+PROG begin { $a = 10223372036854775807; print(($a));  }
 EXPECT 10223372036854775807
 TIMEOUT 1
 
 NAME has_key exists
-PROG BEGIN { @a[1] = 0; if (has_key(@a, 1)) { printf("ok\n"); } exit(); }
+PROG begin { @a[1] = 0; if (has_key(@a, 1)) { printf("ok\n"); }  }
 EXPECT ok
 
 NAME has_key no_exists
-PROG BEGIN { @a[1] = 0; if (has_key(@a, 2)) { printf("ok\n"); } exit(); }
+PROG begin { @a[1] = 0; if (has_key(@a, 2)) { printf("ok\n"); }  }
 EXPECT_NONE ok
 
 NAME has_key complex tuple
-PROG BEGIN { @a[1, ("hello", (int8)5)] = 0; if (has_key(@a, (1, ("hello", 5)))) { printf("ok\n"); } exit(); }
+PROG begin { @a[1, ("hello", (int8)5)] = 0; if (has_key(@a, (1, ("hello", 5)))) { printf("ok\n"); }  }
 EXPECT ok
 
 NAME has_key map value as key
-PROG BEGIN { @g = 2; @a[2] = 0; if (has_key(@a, @g)) { printf("ok\n"); } exit(); }
+PROG begin { @g = 2; @a[2] = 0; if (has_key(@a, @g)) { printf("ok\n"); }  }
 EXPECT ok
 
-NAME has_key map keys and values
-PROG BEGIN { @a[1] = 1; @b[has_key(@a, 1)] = has_key(@a, 2); exit(); }
-EXPECT @b[1]: 0
-
-NAME has_key as a variable
-PROG BEGIN { @a[1] = 1; $b = has_key(@a, 1); $c = has_key(@a, 2); print(($b, $c)); exit(); }
-EXPECT (1, 0)
-
 NAME exit code
-PROG BEGIN { exit(69); }
+PROG begin { exit(69); }
 RETURN_CODE 69
 TIMEOUT 1
 
 NAME block expression
-PROG BEGIN { let $a = { let $b = 1; $b }; print($a); exit(); }
+PROG begin { let $a = { let $b = 1; $b }; print($a);  }
 EXPECT 1

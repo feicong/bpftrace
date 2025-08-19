@@ -24,7 +24,7 @@ void PCAPwriter::close()
 #define NSEC_PER_SEC 1000000000L
 #define NSEC_PER_USEC 1000L
 
-bool PCAPwriter::write(uint64_t ns, void *pkt, unsigned int size)
+bool PCAPwriter::write(uint64_t ns, const void *pkt, unsigned int size)
 {
   time_t secs, usecs, nsecs = ns;
 
@@ -63,7 +63,7 @@ void PCAPwriter::close(void)
 }
 
 bool PCAPwriter::write(uint64_t ns __attribute__((__unused__)),
-                       void *pkt __attribute__((__unused__)),
+                       const void *pkt __attribute__((__unused__)),
                        unsigned int size __attribute__((__unused__)))
 {
   return false;

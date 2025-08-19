@@ -1,8 +1,12 @@
-#include "async_action.h"
+#include <regex>
+
 #include "ast/async_event_types.h"
+#include "async_action.h"
+#include "attached_probe.h"
 #include "bpftrace.h"
 #include "location.hh"
 #include "mocks.h"
+#include "output/text.h"
 #include "types.h"
 #include "util/exceptions.h"
 #include "gmock/gmock.h"
@@ -12,158 +16,106 @@ namespace bpftrace::test::async_action {
 
 using namespace bpftrace::async_action;
 
+// Used for resolving all C definitions.
+static ast::CDefinitions no_c_defs;
+
+class AsyncActionTest : public testing::Test {
+public:
+  AsyncActionTest()
+      : bpftrace(get_mock_bpftrace()),
+        output(out),
+        handlers(*bpftrace, no_c_defs, output) {};
+
+  std::unique_ptr<MockBPFtrace> bpftrace;
+  std::stringstream out;
+  output::TextOutput output;
+  AsyncHandlers handlers;
+};
+
 // Process string type argument - handle const char*
-template <typename T>
-void process_arg(std::vector<Field> &fields,
-                 ssize_t &offset,
-                 size_t &total_size,
-                 T arg,
-                 [[maybe_unused]] std::enable_if_t<
-                     std::is_convertible_v<T, const char *>> *unused = nullptr)
+template <typename T, typename... R>
+void build_each_field(std::vector<Field> &fields,
+                      ssize_t offset,
+                      T arg,
+                      R... rest)
 {
-  const char *str = arg;
-  size_t arg_len = strlen(str) + 1;
-
-  fields.push_back(Field{ .name = "arg",
-                          .type = CreateString(arg_len),
-                          .offset = offset,
-                          .bitfield = std::nullopt });
-
-  offset += arg_len;
-  total_size += arg_len;
+  SizedType ty;
+  // We only pack string and integer values.
+  if constexpr (std::is_same_v<T, std::string>) {
+    ty = CreateString(arg.size() + 1);
+  } else if constexpr (std::is_integral_v<T>) {
+    ty = CreateInt(sizeof(T) * 8);
+  } else {
+    static_assert(false, "unknown field type");
+  }
+  fields.push_back(Field{
+      .name = "arg", .type = ty, .offset = offset, .bitfield = std::nullopt });
+  if constexpr (sizeof...(R) != 0) {
+    build_each_field(fields, offset + ty.GetSize(), rest...);
+  }
 }
 
-// Process integer type argument
-template <typename T>
-void process_arg(std::vector<Field> &fields,
-                 ssize_t &offset,
-                 size_t &total_size,
-                 [[maybe_unused]] T arg,
-                 [[maybe_unused]] std::enable_if_t<std::is_integral_v<T> &&
-                                                   !std::is_same_v<T, char *>>
-                     *unused = nullptr)
+template <typename... Ts>
+std::vector<Field> build_fields(Ts... args)
 {
-  size_t arg_size = sizeof(T);
-
-  fields.push_back(Field{ .name = "arg",
-                          .type = CreateInt(arg_size * 8),
-                          .offset = offset,
-                          .bitfield = std::nullopt });
-
-  offset += arg_size;
-  total_size += arg_size;
-}
-
-template <typename T>
-void fill_arg_data(
-    uint8_t *data,
-    ssize_t &offset,
-    T arg,
-    [[maybe_unused]] std::enable_if_t<std::is_convertible_v<T, const char *>>
-        *unused = nullptr)
-{
-  const char *str = arg;
-  size_t arg_len = strlen(str) + 1;
-  memcpy(data + offset, str, arg_len);
-  offset += arg_len;
-}
-
-// Fill data for integer, unsigned long long and char type arguments
-template <typename T>
-void fill_arg_data(
-    uint8_t *data,
-    ssize_t &offset,
-    T arg,
-    [[maybe_unused]] std::enable_if_t<!std::is_convertible_v<T, const char *> &&
-                                      !std::is_same_v<T, std::string>> *unused =
-        nullptr)
-{
-  memcpy(data + offset, &arg, sizeof(T));
-  offset += sizeof(T);
+  std::vector<Field> fields;
+  if constexpr (sizeof...(Ts) != 0) {
+    build_each_field(fields, 0, args...);
+  }
+  return fields;
 }
 
 template <AsyncAction id, typename... Args>
-std::string handler_proxy(std::unique_ptr<MockBPFtrace> &bpftrace,
+std::string handler_proxy(AsyncActionTest &test,
                           std::string &fmt_str,
                           [[maybe_unused]] Args... args)
 {
   FormatString fmt(fmt_str);
-  std::vector<Field> fields;
-  size_t total_args_size = 0;
 
-  if constexpr (sizeof...(Args) > 0) {
-    ssize_t offset = sizeof(uint64_t);
-    (process_arg(fields, offset, total_args_size, args), ...);
-  }
-
-  auto printf_id = static_cast<uint64_t>(id);
-  size_t data_size = sizeof(uint64_t) + total_args_size;
-  std::vector<uint8_t> arg_data(data_size, 0);
-  memcpy(arg_data.data(), &printf_id, sizeof(printf_id));
-  if constexpr (sizeof...(Args) > 0) {
-    ssize_t offset = sizeof(uint64_t);
-    (fill_arg_data(arg_data.data(), offset, args), ...);
-  }
-
-  CDefinitions no_c_defs;
-  std::stringstream out;
-  TextOutput output(no_c_defs, out);
+  auto fields = build_fields(args...);
+  auto arg_data = OpaqueValue::from(static_cast<uint64_t>(id));
+  arg_data = (arg_data + ... + OpaqueValue::from<Args>(args));
 
   static_assert((id == AsyncAction::syscall || id == AsyncAction::cat ||
                  id == AsyncAction::printf) &&
                 "Only support syscall, cat, and printf");
   if (id == AsyncAction::syscall) {
-    bpftrace->resources.system_args.emplace_back(fmt, fields);
-    syscall_handler(*bpftrace, output, id, arg_data.data());
+    test.bpftrace->resources.system_args.emplace_back(fmt, fields);
+    test.handlers.syscall(arg_data);
   } else if (id == AsyncAction::cat) {
-    bpftrace->resources.cat_args.emplace_back(fmt, fields);
-    cat_handler(*bpftrace, output, id, arg_data.data());
+    test.bpftrace->resources.cat_args.emplace_back(fmt, fields);
+    test.handlers.cat(arg_data);
   } else if (id == AsyncAction::printf) {
-    bpftrace->resources.printf_args.emplace_back(fmt, fields);
-    printf_handler(*bpftrace, output, id, arg_data.data());
+    test.bpftrace->resources.printf_args.emplace_back(
+        fmt, fields, PrintfSeverity::NONE, SourceInfo());
+    test.handlers.printf(arg_data);
   }
 
-  return out.str();
+  auto s = test.out.str();
+  test.out.str("");
+  return s;
 }
 
-TEST(async_action, join)
+TEST_F(AsyncActionTest, join)
 {
-  auto bpftrace = get_mock_bpftrace();
   bpftrace->resources.join_args.emplace_back(",");
 
-  unsigned int content_size = bpftrace->join_argsize_ * bpftrace->join_argnum_;
-  size_t total_size = sizeof(AsyncEvent::Join) + content_size;
-  char buffer[total_size];
-  memset(buffer, 0, total_size);
+  auto join = AsyncEvent::Join{
+    .action_id = static_cast<uint64_t>(AsyncAction::join),
+    .join_id = 0,
+    .content = {},
+  };
+  auto arg = OpaqueValue::from(join) +
+             OpaqueValue::string("/bin/ls", bpftrace->join_argsize_) +
+             OpaqueValue::string("-la", bpftrace->join_argsize_) +
+             OpaqueValue::string("/tmp", bpftrace->join_argsize_);
 
-  auto *join = reinterpret_cast<AsyncEvent::Join *>(buffer);
-  join->action_id = static_cast<uint64_t>(AsyncAction::join);
-  join->join_id = 0;
-
-  const char *arg1 = "/bin/ls";
-  const char *arg2 = "-la";
-  const char *arg3 = "/tmp";
-
-  memcpy(join->content, arg1, strlen(arg1) + 1);
-  memcpy(join->content + bpftrace->join_argsize_, arg2, strlen(arg2) + 1);
-  memcpy(join->content + (2 * bpftrace->join_argsize_), arg3, strlen(arg3) + 1);
-
-  CDefinitions no_c_defs;
-  std::stringstream out;
-  TextOutput output(no_c_defs, out);
-
-  join_handler(*bpftrace, output, join);
+  handlers.join(arg);
   EXPECT_EQ("/bin/ls,-la,/tmp\n", out.str());
 }
 
-TEST(async_action, time)
+TEST_F(AsyncActionTest, time)
 {
-  auto bpftrace = get_mock_bpftrace();
-
-  CDefinitions no_c_defs;
-  std::stringstream out;
-  TextOutput output(no_c_defs, out);
-
   bpftrace->resources.time_args.emplace_back("%Y-%m-%d");
   bpftrace->resources.time_args.emplace_back("%H:%M:%S");
   bpftrace->resources.time_args.emplace_back("%a, %d %b %Y");
@@ -171,7 +123,7 @@ TEST(async_action, time)
   // The first format
   {
     AsyncEvent::Time time_event(static_cast<int>(AsyncAction::time), 0);
-    time_handler(*bpftrace, output, &time_event);
+    handlers.time(OpaqueValue::from(time_event));
 
     std::regex pattern(R"(\d{4}-\d{2}-\d{2})");
     EXPECT_TRUE(std::regex_match(out.str(), pattern));
@@ -181,7 +133,7 @@ TEST(async_action, time)
   // The second format
   {
     AsyncEvent::Time time_event(static_cast<int>(AsyncAction::time), 1);
-    time_handler(*bpftrace, output, &time_event);
+    handlers.time(OpaqueValue::from(time_event));
 
     std::regex pattern(R"(\d{2}:\d{2}:\d{2})");
     EXPECT_TRUE(std::regex_match(out.str(), pattern));
@@ -191,30 +143,25 @@ TEST(async_action, time)
   // The third format
   {
     AsyncEvent::Time time_event(static_cast<int>(AsyncAction::time), 2);
-    time_handler(*bpftrace, output, &time_event);
+    handlers.time(OpaqueValue::from(time_event));
 
     std::regex pattern(R"([A-Za-z]+, \d{2} [A-Za-z]+ \d{4})");
     EXPECT_TRUE(std::regex_match(out.str(), pattern));
   }
 }
 
-TEST(async_action, time_invalid_format)
+TEST_F(AsyncActionTest, time_invalid_format)
 {
-  auto bpftrace = get_mock_bpftrace();
-
-  CDefinitions no_c_defs;
-  std::stringstream out;
-  TextOutput output(no_c_defs, out);
-
   // invalid time format string
-  std::string very_long_format(bpftrace::async_action::MAX_TIME_STR_LEN, 'X');
+  std::string very_long_format(
+      bpftrace::async_action::AsyncHandlers::MAX_TIME_STR_LEN, 'X');
   very_long_format = "%Y-%m-%d " + very_long_format;
   bpftrace->resources.time_args.emplace_back(very_long_format);
   AsyncEvent::Time time_event(static_cast<int>(AsyncAction::time), 0);
 
   testing::internal::CaptureStderr();
 
-  time_handler(*bpftrace, output, &time_event);
+  handlers.time(OpaqueValue::from(time_event));
   EXPECT_TRUE(out.str().empty());
 
   std::string log = testing::internal::GetCapturedStderr();
@@ -222,10 +169,11 @@ TEST(async_action, time_invalid_format)
   EXPECT_THAT(log, testing::HasSubstr("strftime returned 0"));
 }
 
-TEST(async_action, helper_error)
+TEST_F(AsyncActionTest, runtime_error)
 {
   struct TestCase {
-    int func_id;
+    RuntimeErrorId rte_id;
+    libbpf::bpf_func_id func_id;
     int return_value;
     std::string expected_substring;
     std::string filename;
@@ -235,14 +183,16 @@ TEST(async_action, helper_error)
 
   std::vector<TestCase> test_cases = {
     // case 1: `map_update_elem` returns `-E2BIG`
-    { .func_id = libbpf::BPF_FUNC_map_update_elem,
+    { .rte_id = RuntimeErrorId::HELPER_ERROR,
+      .func_id = libbpf::BPF_FUNC_map_update_elem,
       .return_value = -E2BIG,
       .expected_substring = "WARNING: Map full; can't update element",
       .filename = std::string("test1.bt"),
       .line = 10,
       .column = 5 },
     // case 2: `map_delete_elem` returns `-ENOENT`
-    { .func_id = libbpf::BPF_FUNC_map_delete_elem,
+    { .rte_id = RuntimeErrorId::HELPER_ERROR,
+      .func_id = libbpf::BPF_FUNC_map_delete_elem,
       .return_value = -ENOENT,
       .expected_substring =
           "WARNING: Can't delete map element because it does not exist",
@@ -250,7 +200,8 @@ TEST(async_action, helper_error)
       .line = 15,
       .column = 8 },
     // case 3: `map_lookup_elem` failed to lookup map element
-    { .func_id = libbpf::BPF_FUNC_map_lookup_elem,
+    { .rte_id = RuntimeErrorId::HELPER_ERROR,
+      .func_id = libbpf::BPF_FUNC_map_lookup_elem,
       .return_value = 0,
       .expected_substring =
           "WARNING: Can't lookup map element because it does not exist",
@@ -258,39 +209,45 @@ TEST(async_action, helper_error)
       .line = 20,
       .column = 3 },
     // case 4: default case - other function ID and error code
-    { .func_id = libbpf::BPF_FUNC_trace_printk,
+    { .rte_id = RuntimeErrorId::HELPER_ERROR,
+      .func_id = libbpf::BPF_FUNC_trace_printk,
       .return_value = -EPERM,
       .expected_substring = "WARNING: " + std::string(strerror(EPERM)),
+      .filename = std::string("test4.bt"),
+      .line = 25,
+      .column = 1 },
+    // case 5: divide by zero error
+    { .rte_id = RuntimeErrorId::DIVIDE_BY_ZERO,
+      .func_id = libbpf::BPF_FUNC_trace_printk, // unused
+      .return_value = 0,                        // unused
+      .expected_substring =
+          "WARNING: Divide or modulo by 0 detected. This can lead to "
+          "unexpected results. 1 is being used as the result.",
       .filename = std::string("test4.bt"),
       .line = 25,
       .column = 1 }
   };
 
+  uint64_t async_id = 1;
   for (const auto &tc : test_cases) {
-    auto bpftrace = get_mock_bpftrace();
-
-    CDefinitions no_c_defs;
-    std::stringstream out;
-    TextOutput output(no_c_defs, out);
-
     auto src_loc = ast::SourceLocation(
         location(&tc.filename, tc.line, tc.column));
     auto location_chain = std::make_shared<ast::LocationChain>(src_loc);
-    HelperErrorInfo info(tc.func_id, location_chain);
+    RuntimeErrorInfo info(tc.rte_id, tc.func_id, location_chain);
 
-    bpftrace->resources.helper_error_info.emplace(tc.func_id, std::move(info));
+    bpftrace->resources.runtime_error_info.emplace(async_id, std::move(info));
 
-    AsyncEvent::HelperError error_event(static_cast<int64_t>(
-                                            AsyncAction::helper_error),
-                                        tc.func_id,
-                                        tc.return_value);
+    AsyncEvent::RuntimeError error_event(static_cast<int64_t>(
+                                             AsyncAction::runtime_error),
+                                         async_id,
+                                         tc.return_value);
 
-    helper_error_handler(*bpftrace, output, &error_event);
+    handlers.runtime_error(OpaqueValue::from(error_event));
 
     auto s = out.str();
+
     EXPECT_THAT(s, testing::HasSubstr(tc.expected_substring))
-        << "function: " << tc.func_id << " return " << tc.return_value
-        << " failed";
+        << "warning substring doesn't have string";
 
     std::string expected_loc = std::to_string(tc.line) + ":" +
                                std::to_string(tc.column);
@@ -299,14 +256,15 @@ TEST(async_action, helper_error)
 
     EXPECT_THAT(s, testing::HasSubstr(std::to_string(tc.return_value)))
         << "Return value not found in output: " << tc.return_value;
+    ++async_id;
   }
 }
 
-TEST(async_action, syscall)
+TEST_F(AsyncActionTest, syscall)
 {
   struct TestCase {
     std::string cmd;
-    std::optional<const char *> args;
+    std::optional<std::string> args;
     std::string expected_substring;
   };
 
@@ -319,17 +277,13 @@ TEST(async_action, syscall)
       .expected_substring = "test" },
   };
 
+  bpftrace->safe_mode_ = false;
   for (auto &tc : test_cases) {
-    auto bpftrace = get_mock_bpftrace();
-    bpftrace->safe_mode_ = false;
-
     std::string out;
     if (tc.args.has_value()) {
-      out = handler_proxy<AsyncAction::syscall>(bpftrace,
-                                                tc.cmd,
-                                                tc.args.value());
+      out = handler_proxy<AsyncAction::syscall>(*this, tc.cmd, tc.args.value());
     } else {
-      out = handler_proxy<AsyncAction::syscall>(bpftrace, tc.cmd);
+      out = handler_proxy<AsyncAction::syscall>(*this, tc.cmd);
     }
 
     EXPECT_THAT(out, testing::HasSubstr(tc.expected_substring))
@@ -337,14 +291,13 @@ TEST(async_action, syscall)
   }
 }
 
-TEST(async_action, syscall_safe_mode)
+TEST_F(AsyncActionTest, syscall_safe_mode)
 {
-  auto bpftrace = get_mock_bpftrace();
   auto cmd = std::string("echo test");
 
   std::string out;
   try {
-    out = handler_proxy<AsyncAction::syscall>(bpftrace, cmd);
+    out = handler_proxy<AsyncAction::syscall>(*this, cmd);
     FAIL() << "Expected syscall_handler to throw an exception in safe mode";
   } catch (const util::FatalUserException &ex) {
     EXPECT_THAT(std::string(ex.what()),
@@ -359,7 +312,7 @@ TEST(async_action, syscall_safe_mode)
   EXPECT_TRUE(out.empty()) << "No output should be generated in safe mode";
 }
 
-TEST(async_action, cat)
+TEST_F(AsyncActionTest, cat)
 {
   std::string test_content = "Hello, cat_handler test!\nThis is line 2.\n";
   char filename[] = "/tmp/bpftrace-test-cat-XXXXXX";
@@ -369,13 +322,11 @@ TEST(async_action, cat)
             static_cast<ssize_t>(test_content.length()));
   close(fd);
 
-  auto bpftrace = get_mock_bpftrace();
   bpftrace->config_->max_cat_bytes = 1024;
-
   auto cmd = std::string("%s/%s");
   std::string basename = std::string(filename).substr(5);
   std::string out = handler_proxy<AsyncAction::cat>(
-      bpftrace, cmd, "/tmp", basename.c_str());
+      *this, cmd, std::string("/tmp"), basename);
 
   EXPECT_EQ(test_content, out)
       << "cat_handler should output the file content correctly";
@@ -383,10 +334,8 @@ TEST(async_action, cat)
   std::remove(filename);
 }
 
-TEST(async_action, printf)
+TEST_F(AsyncActionTest, printf)
 {
-  auto bpftrace = get_mock_bpftrace();
-
   std::string format = "Multiple: %s=%d (0x%llx) char=%hhu";
   char expected_buffer[64];
   snprintf(expected_buffer,
@@ -398,69 +347,131 @@ TEST(async_action, printf)
            'a');
   std::string expected(expected_buffer);
 
-  std::string out = handler_proxy<AsyncAction::printf>(
-      bpftrace, format, "answer", 42, 0xDEADBEEFULL, 'a');
+  std::string out = handler_proxy<AsyncAction::printf>(*this,
+                                                       format,
+                                                       std::string("answer"),
+                                                       42ULL,
+                                                       0xDEADBEEFULL,
+                                                       static_cast<uint64_t>(
+                                                           'a'));
 
   EXPECT_EQ(expected, out)
       << "printf_handler should format multiple arguments correctly";
 }
 
-TEST(async_action, print_non_map)
+TEST_F(AsyncActionTest, print_non_map)
 {
   struct TestCase {
     SizedType type;
-    std::vector<uint8_t> content;
+    OpaqueValue content;
     std::string expected_output;
   };
 
   std::vector<TestCase> test_cases = {
     // Integer type test
     { .type = CreateInt64(),
-      .content =
-          []() {
-            int64_t value = 123456789;
-            std::vector<uint8_t> bytes(sizeof(value));
-            for (size_t i = 0; i < sizeof(value); i++) {
-              bytes[i] = reinterpret_cast<uint8_t *>(&value)[i];
-            }
-            return bytes;
-          }(),
+      .content = OpaqueValue::from<int64_t>(123456789),
       .expected_output = "123456789\n" },
     // String type test
     { .type = CreateString(12),
-      .content =
-          []() {
-            const char *value = "Hello world";
-            std::vector<uint8_t> bytes(strlen(value) + 1);
-            for (size_t i = 0; i < bytes.size(); i++) {
-              bytes[i] = static_cast<uint8_t>(value[i]);
-            }
-            return bytes;
-          }(),
+      .content = OpaqueValue::string("Hello world", 12),
       .expected_output = "Hello world\n" }
   };
 
   for (const auto &tc : test_cases) {
-    CDefinitions no_c_defs;
-    std::stringstream out;
-    TextOutput output(no_c_defs, out);
-    auto bpftrace = get_mock_bpftrace();
-
+    bpftrace->resources.non_map_print_args.clear();
     bpftrace->resources.non_map_print_args.emplace_back(tc.type);
-    size_t total_size = sizeof(AsyncEvent::PrintNonMap) + tc.content.size();
-    char buffer[total_size];
-    memset(buffer, 0, total_size);
 
-    auto *print_event = reinterpret_cast<AsyncEvent::PrintNonMap *>(buffer);
-    print_event->action_id = static_cast<uint64_t>(AsyncAction::print_non_map);
-    print_event->print_id = 0;
-    std::ranges::copy(tc.content, print_event->content);
+    auto print_event = AsyncEvent::PrintNonMap{
+      .action_id = static_cast<uint64_t>(AsyncAction::print_non_map),
+      .print_id = 0,
+      .content = {},
+    };
+    handlers.print_non_map(OpaqueValue::from(print_event) + tc.content);
 
-    print_non_map_handler(*bpftrace, output, print_event);
-
-    EXPECT_EQ(tc.expected_output, out.str())
-        << "print_non_map_handler failed for type: " << tc.type.GetName();
+    EXPECT_EQ(tc.expected_output, out.str());
+    out.str("");
   }
 }
 
+TEST_F(AsyncActionTest, watchpoint_attach_out_of_bound)
+{
+  bpftrace->procmon_ = std::make_unique<MockProcMon>(1234);
+  auto invalid_index = 10;
+  AsyncEvent::Watchpoint watch_event(
+      static_cast<int>(AsyncAction::watchpoint_attach), invalid_index, 0x1234);
+
+  // Combine the `EXPECT_CALL` with the `EXPECT_DEATH`
+  // FYI: https://github.com/google/googletest/issues/1004
+  auto watchpoint_attach_handler_op = [&] {
+    EXPECT_CALL(*bpftrace, resume_tracee(testing::_)).Times(1);
+    handlers.watchpoint_attach(OpaqueValue::from(watch_event));
+  };
+
+  EXPECT_DEATH(watchpoint_attach_handler_op(),
+               "Invalid watchpoint probe idx=" + std::to_string(invalid_index));
+}
+
+TEST_F(AsyncActionTest, watchpoint_attach_duplicated_address)
+{
+  bpftrace->procmon_ = std::make_unique<MockProcMon>(1234);
+  AsyncEvent::Watchpoint watch_event(
+      static_cast<int>(AsyncAction::watchpoint_attach), 0, 0x1234);
+  Probe probe;
+  probe.type = ProbeType::watchpoint;
+  probe.address = 0x1234;
+  bpftrace->resources.watchpoint_probes.push_back(std::move(probe));
+  EXPECT_CALL(*bpftrace, attach_probe(testing::_, testing::_)).Times(0);
+  EXPECT_CALL(*bpftrace, resume_tracee(testing::_)).Times(1);
+  handlers.watchpoint_attach(OpaqueValue::from(watch_event));
+}
+
+TEST_F(AsyncActionTest, watchpoint_attach_probe_error)
+{
+  bpftrace->procmon_ = std::make_unique<MockProcMon>(1234);
+  AsyncEvent::Watchpoint watch_event(
+      static_cast<int>(AsyncAction::watchpoint_attach), 0, 0x1234);
+  Probe probe;
+  probe.type = ProbeType::watchpoint;
+  probe.address = 0x12345678;
+  bpftrace->resources.watchpoint_probes.push_back(std::move(probe));
+  EXPECT_CALL(*bpftrace, attach_probe(testing::_, testing::_))
+      .WillOnce([]([[maybe_unused]] Probe &probe,
+                   [[maybe_unused]] const BpfBytecode &bytecode) {
+        return make_error<AttachError>();
+      });
+  EXPECT_THROW(handlers.watchpoint_attach(OpaqueValue::from(watch_event)),
+               util::FatalUserException);
+}
+
+TEST_F(AsyncActionTest, watchpoint_attach_resume_tracee_failed)
+{
+  bpftrace->procmon_ = std::make_unique<MockProcMon>(1234);
+  AsyncEvent::Watchpoint watch_event(
+      static_cast<int>(AsyncAction::watchpoint_attach), 0, 0x1234);
+  Probe probe;
+  probe.type = ProbeType::watchpoint;
+  probe.address = 0x1234;
+  bpftrace->resources.watchpoint_probes.push_back(std::move(probe));
+  EXPECT_CALL(*bpftrace, attach_probe(testing::_, testing::_)).Times(0);
+  EXPECT_CALL(*bpftrace, resume_tracee(testing::_))
+      .WillOnce(testing::Return(-1));
+  EXPECT_THROW(handlers.watchpoint_attach(OpaqueValue::from(watch_event)),
+               util::FatalUserException);
+}
+
+TEST_F(AsyncActionTest, asyncwatchpoint_attach_ignore_duplicated_addr)
+{
+  bpftrace->procmon_ = std::make_unique<MockProcMon>(1234);
+  AsyncEvent::Watchpoint watch_event(
+      static_cast<int>(AsyncAction::watchpoint_attach), 0, 0x1234);
+  Probe probe;
+  probe.type = ProbeType::watchpoint;
+  probe.address = 0x1234;
+  probe.async = true;
+  bpftrace->resources.watchpoint_probes.push_back(std::move(probe));
+  EXPECT_CALL(*bpftrace, attach_probe(testing::_, testing::_)).Times(0);
+  EXPECT_CALL(*bpftrace, resume_tracee(testing::_)).Times(0);
+  handlers.watchpoint_attach(OpaqueValue::from(watch_event));
+}
 } // namespace bpftrace::test::async_action

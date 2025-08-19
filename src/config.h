@@ -20,9 +20,11 @@ enum class ConfigUnstable {
   error,
 };
 
+static const auto UNSTABLE_IMPORT = "unstable_import";
 static const auto UNSTABLE_MACRO = "unstable_macro";
 static const auto UNSTABLE_MAP_DECL = "unstable_map_decl";
-static const auto UNSTABLE_IMPORT = "unstable_import";
+static const auto UNSTABLE_TSERIES = "unstable_tseries";
+static const auto UNSTABLE_ADDR = "unstable_addr";
 
 class Config {
 public:
@@ -44,7 +46,9 @@ public:
   bool print_maps_on_exit = true;
   ConfigUnstable unstable_macro = ConfigUnstable::warn;
   ConfigUnstable unstable_map_decl = ConfigUnstable::warn;
-  ConfigUnstable unstable_import = ConfigUnstable::error;
+  ConfigUnstable unstable_import = ConfigUnstable::warn;
+  ConfigUnstable unstable_tseries = ConfigUnstable::warn;
+  ConfigUnstable unstable_addr = ConfigUnstable::warn;
 #ifdef HAVE_BLAZESYM
   bool use_blazesym = true;
   bool show_debug_info = true;
@@ -62,7 +66,7 @@ public:
   uint64_t perf_rb_pages = 64;
   std::string license = "GPL";
   std::string str_trunc_trailer = "..";
-  ConfigMissingProbes missing_probes = ConfigMissingProbes::warn;
+  ConfigMissingProbes missing_probes = ConfigMissingProbes::error;
   StackMode stack_mode = StackMode::bpftrace;
 
   // Initialized in the constructor.

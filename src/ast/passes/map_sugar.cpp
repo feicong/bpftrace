@@ -17,6 +17,7 @@ public:
   void visit(For &for_loop);
   void visit(Map &map);
   void visit(MapAccess &acc);
+  void visit(MapAddr &map_addr);
   void visit(AssignScalarMapStatement &assign);
   void visit(AssignMapStatement &assign);
   void visit(Expression &expr);
@@ -77,6 +78,11 @@ void MapDefaultKey::visit(MapAccess &acc)
 {
   checkAccess(*acc.map, true);
   visit(acc.key);
+}
+
+void MapDefaultKey::visit([[maybe_unused]] MapAddr &map_addr)
+{
+  // Don't desugar this into a map access, we want the map pointer
 }
 
 void MapDefaultKey::visit(AssignScalarMapStatement &assign)
@@ -208,12 +214,18 @@ void MapDefaultKey::visit(Call &call)
 
 void MapDefaultKey::visit(For &for_loop)
 {
-  if (!check(*for_loop.map, true)) {
-    for_loop.map->addError() << for_loop.map->ident
-                             << " has no explicit keys (scalar map), and "
-                                "cannot be used for iteration";
+  if (auto *map = for_loop.iterable.as<Map>()) {
+    if (!check(*map, true)) {
+      map->addError() << map->ident
+                      << " has no explicit keys (scalar map), and "
+                         "cannot be used for iteration";
+    }
+  } else {
+    // If the map is used for the range in any way, it needs
+    // to be desugared properly.
+    visit(for_loop.iterable);
   }
-  Visitor<MapDefaultKey>::visit(for_loop.stmts);
+  visit(for_loop.stmts);
 }
 
 void MapFunctionAliases::visit(Call &call)
@@ -235,7 +247,7 @@ void MapFunctionAliases::visit(Call &call)
 // Similarly these are syntactic sugar over operating on a map. This list could
 // also be dynamically generated based on some underlying annotation.
 static std::unordered_set<std::string> ASSIGN_REWRITE = {
-  "hist", "lhist", "count", "sum", "min", "max", "avg", "stats",
+  "hist", "lhist", "count", "sum", "min", "max", "avg", "stats", "tseries",
 };
 
 static std::optional<Expression> injectMap(Expression expr,
@@ -251,12 +263,10 @@ static std::optional<Expression> injectMap(Expression expr,
       call->vargs.insert(call->vargs.end(), args.begin(), args.end());
       return call;
     }
-  } else if (auto *block = expr.as<Block>()) {
-    if (block->expr) {
-      auto injected_expr = injectMap(block->expr.value(), map, key);
-      if (injected_expr) {
-        return block;
-      }
+  } else if (auto *block_expr = expr.as<BlockExpr>()) {
+    auto injected_expr = injectMap(block_expr->expr, map, key);
+    if (injected_expr) {
+      return block_expr;
     }
   }
   return std::nullopt;

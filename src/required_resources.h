@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bpf/libbpf.h>
 #include <cstdint>
 #include <istream>
 #include <ostream>
@@ -15,116 +14,112 @@
 #include "ast/location.h"
 #include "format_string.h"
 #include "globalvars.h"
+#include "map_info.h"
 #include "struct.h"
 #include "types.h"
-
-namespace libbpf {
-#include "libbpf/bpf.h"
-} // namespace libbpf
+#include "util/bpf_funcs.h"
 
 namespace bpftrace {
 
 class BPFtrace;
 
-class HelperErrorInfo {
+static const auto DIVIDE_BY_ZERO_MSG =
+    "Divide or modulo by 0 detected. This can lead to unexpected "
+    "results. 1 is being used as the result.";
+
+enum class RuntimeErrorId {
+  DIVIDE_BY_ZERO,
+  HELPER_ERROR,
+};
+
+enum class PrintfSeverity {
+  NONE,
+  ERROR,
+};
+
+struct SourceLocation {
+  std::string filename;
+  int line;
+  int column;
+  std::string source_location;
+  std::vector<std::string> source_context;
+
+private:
+  friend class cereal::access;
+  template <typename Archive>
+  void serialize(Archive &archive)
+  {
+    archive(filename, line, column, source_location, source_context);
+  }
+};
+
+class SourceInfo {
+public:
+  SourceInfo(const ast::Location &loc)
+  {
+    auto curr_loc = loc;
+
+    while (curr_loc) {
+      locations.emplace_back(curr_loc->filename(),
+                             curr_loc->line(),
+                             curr_loc->column(),
+                             curr_loc->source_location(),
+                             curr_loc->source_context());
+      auto &parent = curr_loc->parent;
+      if (parent) {
+        curr_loc = parent->loc;
+      } else {
+        break;
+      }
+    }
+  }
+
+  SourceInfo() = default;
+
+  std::vector<SourceLocation> locations;
+
+private:
+  friend class cereal::access;
+  template <typename Archive>
+  void serialize(Archive &archive)
+  {
+    archive(locations);
+  }
+};
+
+class RuntimeErrorInfo : public SourceInfo {
 public:
   // This class effectively wraps a location, but preserves only the parts that
   // are needed to emit the error in a useful way. This is because it may be
   // serialized and used by a separate runtime.
-  HelperErrorInfo(int func_id, const ast::Location &loc)
-      : func_id(func_id),
-        filename(loc->filename()),
-        line(loc->line()),
-        column(loc->column()),
-        source_location(loc->source_location()),
-        source_context(loc->source_context())
+  RuntimeErrorInfo(RuntimeErrorId error_id,
+                   libbpf::bpf_func_id func_id,
+                   const ast::Location &loc)
+      : SourceInfo(loc), error_id(error_id), func_id(func_id)
   {
   }
 
-  // This is only used in the case that for some reason there is no helper
-  // registered for the specific instance.
-  HelperErrorInfo() : func_id(-1), line(0), column(0) {};
+  RuntimeErrorInfo(RuntimeErrorId error_id, const ast::Location &loc)
+      : RuntimeErrorInfo(error_id, static_cast<libbpf::bpf_func_id>(-1), loc) {
+        };
 
-  const int func_id;
-  const std::string filename;
-  const int line;
-  const int column;
-  const std::string source_location;
-  const std::vector<std::string> source_context;
+  RuntimeErrorInfo()
+      : error_id(RuntimeErrorId::HELPER_ERROR),
+        func_id(static_cast<libbpf::bpf_func_id>(-1)) {};
+
+  RuntimeErrorId error_id;
+  libbpf::bpf_func_id func_id;
 
 private:
   friend class cereal::access;
   template <typename Archive>
   void serialize(Archive &archive)
   {
-    archive(func_id, filename, line, column, source_location, source_context);
+    archive(error_id, func_id);
   }
 };
 
-struct HistogramArgs {
-  long bits = -1;
-  bool scalar = true;
-
-  bool operator==(const HistogramArgs &other)
-  {
-    return bits == other.bits && scalar == other.scalar;
-  }
-  bool operator!=(const HistogramArgs &other)
-  {
-    return !(*this == other);
-  }
-
-private:
-  friend class cereal::access;
-  template <typename Archive>
-  void serialize(Archive &archive)
-  {
-    archive(bits, scalar);
-  }
-};
-
-struct LinearHistogramArgs {
-  long min = -1;
-  long max = -1;
-  long step = -1;
-  bool scalar = true;
-
-  bool operator==(const LinearHistogramArgs &other)
-  {
-    return min == other.min && max == other.max && step == other.step &&
-           scalar == other.scalar;
-  }
-  bool operator!=(const LinearHistogramArgs &other)
-  {
-    return !(*this == other);
-  }
-
-private:
-  friend class cereal::access;
-  template <typename Archive>
-  void serialize(Archive &archive)
-  {
-    archive(min, max, step, scalar);
-  }
-};
-
-struct MapInfo {
-  SizedType key_type;
-  SizedType value_type;
-  std::variant<std::monostate, HistogramArgs, LinearHistogramArgs> detail;
-  int id = -1;
-  int max_entries = -1;
-  libbpf::bpf_map_type bpf_type = libbpf::BPF_MAP_TYPE_HASH;
-  bool is_scalar = false;
-
-private:
-  friend class cereal::access;
-  template <typename Archive>
-  void serialize(Archive &archive)
-  {
-    archive(key_type, value_type, detail, id, max_entries, bpf_type, is_scalar);
-  }
-};
+std::ostream &operator<<(std::ostream &os, const RuntimeErrorInfo &info);
 
 // This class contains script-specific metadata that bpftrace's runtime needs.
 //
@@ -148,7 +143,9 @@ public:
   void load_state(const uint8_t *ptr, size_t len);
 
   // Async argument metadata
-  std::vector<std::tuple<FormatString, std::vector<Field>>> printf_args;
+  std::vector<
+      std::tuple<FormatString, std::vector<Field>, PrintfSeverity, SourceInfo>>
+      printf_args;
   std::vector<std::tuple<FormatString, std::vector<Field>>> system_args;
   // fmt strings for BPF helpers (bpf_seq_printf, bpf_trace_printk)
   std::vector<FormatString> bpf_print_fmts;
@@ -190,13 +187,13 @@ public:
   // pass should be collecting this, but it's complex to move the logic.
   //
   // Don't add more async arguments here!.
-  std::unordered_map<int64_t, HelperErrorInfo> helper_error_info;
+  std::unordered_map<int64_t, RuntimeErrorInfo> runtime_error_info;
   std::vector<std::string> probe_ids;
 
   // Map metadata
   std::map<std::string, MapInfo> maps_info;
-  std::unordered_set<bpftrace::globalvars::GlobalVar> needed_global_vars;
-  bool needs_perf_event_map = false;
+  globalvars::GlobalVars global_vars;
+  bool using_skboutput = false;
 
   // Probe metadata
   //
@@ -204,6 +201,7 @@ public:
   // be collecting this, but it's complex to move the logic.
   std::vector<Probe> probes;
   std::unordered_map<std::string, Probe> special_probes;
+  std::vector<Probe> benchmark_probes;
   std::vector<Probe> signal_probes;
   std::vector<Probe> watchpoint_probes;
 
@@ -222,16 +220,16 @@ private:
             strftime_args,
             cat_args,
             non_map_print_args,
-            // Hard to annotate flex types, so skip
-            // helper_error_info,
+            runtime_error_info,
             printf_args,
             probe_ids,
             maps_info,
-            needed_global_vars,
-            needs_perf_event_map,
+            global_vars,
+            using_skboutput,
             probes,
             signal_probes,
-            special_probes);
+            special_probes,
+            benchmark_probes);
   }
 };
 

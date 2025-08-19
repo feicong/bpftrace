@@ -18,6 +18,9 @@ add_library(ast STATIC
   signal.cpp
 
   passes/c_macro_expansion.cpp
+  passes/clang_parser.cpp
+  passes/clang_build.cpp
+  passes/named_param.cpp
   passes/codegen_resources.cpp
   passes/config_analyser.cpp
   passes/deprecated.cpp
@@ -27,45 +30,33 @@ add_library(ast STATIC
   passes/link.cpp
   passes/map_sugar.cpp
   passes/macro_expansion.cpp
+  passes/pid_filter_pass.cpp
   passes/portability_analyser.cpp
   passes/printer.cpp
-  passes/probe_analyser.cpp
+  passes/probe_expansion.cpp
   passes/resource_analyser.cpp
   passes/semantic_analyser.cpp
   passes/codegen_llvm.cpp
   passes/resolve_imports.cpp
   passes/return_path_analyser.cpp
-  passes/pid_filter_pass.cpp
   passes/recursion_check.cpp
+  passes/type_system.cpp
   passes/unstable_feature.cpp
+  passes/usdt_arguments.cpp
 )
 
 add_dependencies(ast parser)
 target_compile_definitions(ast PRIVATE ${BPFTRACE_FLAGS})
-target_link_libraries(ast PRIVATE debugfs tracefs util stdlib)
-target_link_libraries(ast PUBLIC ast_defs arch compiler_core parser)
+target_link_libraries(ast PRIVATE debugfs tracefs util stdlib ${LIBBPF_LIBRARIES})
+target_link_libraries(ast PUBLIC ast_defs arch compiler_core parser btf)
+
+if (NOT SYSTEM_INCLUDE_PATHS EQUAL "auto")
+  MESSAGE(STATUS "Using SYSTEM_INCLUDE_PATHS=${SYSTEM_INCLUDE_PATHS}")
+endif()
+target_compile_definitions(ast PUBLIC SYSTEM_INCLUDE_PATHS="${SYSTEM_INCLUDE_PATHS}")
 
 if(STATIC_LINKING)
   include(Util)
-
-  set(clang_libs
-      clangAST
-      clangAnalysis
-      clangBasic
-      clangCodeGen
-      clangDriver
-      clangEdit
-      clangFormat
-      clangFrontend
-      clangIncludeFixerPlugin
-      clangIndex
-      clangLex
-      clangParse
-      clangRewrite
-      clangSema
-      clangSerialization
-      clangTidyPlugin
-      clangToolingCore)
 
   set(llvm_lib_names
       bpfcodegen
@@ -89,20 +80,19 @@ if(STATIC_LINKING)
   unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "LLVM")
   unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "$<LINK_ONLY:clang-cpp>")
 
-  if(TARGET libclang_static)
-    target_link_libraries(ast PUBLIC libclang_static)
-  else()
-    # old LLVM versions don't export libclang_static in ClangTargets.cmake; fall back to
-    # libclang.a in that case
-    target_link_libraries(ast PUBLIC libclang.a)
-  endif()
-
-  target_link_libraries(ast PUBLIC ${clang_libs})
+  target_link_libraries(ast PUBLIC libclang_static clangDriver clangFrontend clangCodeGen)
   target_link_libraries(ast PUBLIC ${llvm_libs})
 else()
-  # llvm_config macro comes from the LLVM toolchain and will auto-resolve component
-  # names to library names. USE_SHARED option will tell llvm_config macro to prefer
-  # shared library / DLL on the system over the static libraries
-  llvm_config(ast USE_SHARED bpfcodegen ipo irreader mcjit orcjit)
-  target_link_libraries(ast PUBLIC libclang)
+  if (TARGET LLVM)
+    # llvm_config macro comes from the LLVM toolchain and will auto-resolve component
+    # names to library names. USE_SHARED option will tell llvm_config macro to prefer
+    # shared library / DLL on the system over the static libraries
+    llvm_config(ast USE_SHARED bpfcodegen ipo irreader mcjit orcjit)
+  else()
+    # some build environment(e.g facebookexperimental/ExtendedAndroidTools) doesn't
+    # have libLLVM.so, drop `USE_SHARED` to avoid forcing link to `-lLLVM`.
+    llvm_config(ast bpfcodegen ipo irreader mcjit orcjit)
+  endif()
+
+  target_link_libraries(ast PUBLIC libclang clang-cpp)
 endif()

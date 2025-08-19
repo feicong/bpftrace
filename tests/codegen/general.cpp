@@ -5,9 +5,7 @@
 #include "ast/context.h"
 #include "common.h"
 
-namespace bpftrace {
-namespace test {
-namespace codegen {
+namespace bpftrace::test::codegen {
 
 using ::testing::_;
 
@@ -17,10 +15,11 @@ public:
 #ifdef __clang__
 #pragma GCC diagnostic ignored "-Winconsistent-missing-override"
 #endif
-  MOCK_METHOD4(add_probe,
-               int(ast::ASTContext &,
-                   const ast::AttachPoint &,
+  MOCK_METHOD5(add_probe,
+               int(const ast::AttachPoint &,
                    const ast::Probe &,
+                   ast::ExpansionType,
+                   std::set<std::string>,
                    int));
 #pragma GCC diagnostic pop
 
@@ -36,12 +35,12 @@ public:
   }
 
   bool is_traceable_func(
-      const std::string &__attribute__((unused))) const override
+      const std::string &__attribute__((unused)) /*func_name*/) const override
   {
     return true;
   }
 
-  bool has_kprobe_multi(void)
+  bool has_kprobe_multi()
   {
     return feature_->has_kprobe_multi();
   }
@@ -61,6 +60,9 @@ kprobe:f
                 .put(ast)
                 .put<BPFtrace>(*bpftrace)
                 .add(ast::AllParsePasses())
+                .add(ast::CreateLLVMInitPass())
+                .add(ast::CreateClangBuildPass())
+                .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())
                 .add(ast::AllCompilePasses())
@@ -79,19 +81,21 @@ kprobe:f
   // a perf event buffer
   EXPECT_TRUE(args[0].type.IsIntTy());
   EXPECT_EQ(args[0].type.GetSize(), 8U);
-  EXPECT_EQ(args[0].offset, 8);
+  EXPECT_EQ(args[0].offset, 0);
 
   EXPECT_TRUE(args[1].type.IsIntTy());
   EXPECT_EQ(args[1].type.GetSize(), 8U);
-  EXPECT_EQ(args[1].offset, 16);
+  EXPECT_EQ(args[1].offset, 8);
 
+  // Note that the string type has size + 1 in order to signal well-formedness.
+  // See clang_parser.cpp for this logic.
   EXPECT_TRUE(args[2].type.IsStringTy());
-  EXPECT_EQ(args[2].type.GetSize(), 10U);
-  EXPECT_EQ(args[2].offset, 24);
+  EXPECT_EQ(args[2].type.GetSize(), 10U + 1U);
+  EXPECT_EQ(args[2].offset, 16);
 
   EXPECT_TRUE(args[3].type.IsIntTy());
   EXPECT_EQ(args[3].type.GetSize(), 8U);
-  EXPECT_EQ(args[3].offset, 40);
+  EXPECT_EQ(args[3].offset, 32);
 }
 
 TEST(codegen, probe_count)
@@ -100,7 +104,7 @@ TEST(codegen, probe_count)
 kprobe:f { 1; } kprobe:d { 1; }
 )");
   MockBPFtrace bpftrace;
-  EXPECT_CALL(bpftrace, add_probe(_, _, _, _)).Times(2);
+  EXPECT_CALL(bpftrace, add_probe(_, _, _, _, _)).Times(2);
 
   // Override to mockbpffeature.
   bpftrace.feature_ = std::make_unique<MockBPFfeature>(true);
@@ -109,11 +113,12 @@ kprobe:f { 1; } kprobe:d { 1; }
                 .put(ast)
                 .put<BPFtrace>(bpftrace)
                 .add(ast::AllParsePasses())
+                .add(ast::CreateLLVMInitPass())
+                .add(ast::CreateClangBuildPass())
+                .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::AllCompilePasses())
                 .run();
   ASSERT_TRUE(ok && ast.diagnostics().ok());
 }
-} // namespace codegen
-} // namespace test
-} // namespace bpftrace
+} // namespace bpftrace::test::codegen

@@ -30,7 +30,7 @@ AFTER ./testprogs/syscall read
 
 # https://github.com/bpftrace/bpftrace/issues/2447
 NAME fentry_multiple_attach_point_multiple_functions
-PROG BEGIN { @a = 2; @b = 1; @c = 1 } i:s:1 { exit() } fentry:vfs_read, fentry:vfs_open /@a != 0/ { @a -= 1 } fentry:vfs_read /@b == 1/ { @b = 0 } fentry:vfs_open /@c == 1/ { @c = 0 }
+PROG begin { @a = 2; @b = 1; @c = 1 } i:s:1 { exit() } fentry:vfs_read, fentry:vfs_open /@a != 0/ { @a -= 1 } fentry:vfs_read /@b == 1/ { @b = 0 } fentry:vfs_open /@c == 1/ { @c = 0 }
 EXPECT @a: 0
        @b: 0
        @c: 0
@@ -68,18 +68,24 @@ REQUIRES_FEATURE fentry
 REQUIRES_FEATURE btf
 AFTER ./testprogs/fentry_args 1111 2222
 
-NAME fentry_warn_missing_probes
+NAME fentry_missing_probes
 PROG fentry:vfs_read,fentry:nonsense { exit(); }
-EXPECT WARNING: No BTF found for nonsense, skipping.
+EXPECT ERROR: No BTF found for nonsense.
+WILL_FAIL
+REQUIRES_FEATURE fentry
+REQUIRES_FEATURE btf
+
+NAME fentry_warn_missing_probes
+PROG config = { missing_probes = "warn" } fentry:vfs_read,fentry:nonsense { exit(); }
+EXPECT WARNING: No BTF found for nonsense.
+REQUIRES_FEATURE fentry
+REQUIRES_FEATURE btf
 
 NAME fentry_ignore_missing_probes
 PROG config = { missing_probes = "ignore" } fentry:vfs_read,fentry:nonsense { exit(); }
-EXPECT_NONE WARNING: No BTF found for nonsense, skipping.
-
-NAME fentry_error_missing_probes
-PROG config = { missing_probes = "error" } fentry:vfs_read,fentry:nonsense { exit(); }
-EXPECT ERROR: No BTF found for nonsense
-WILL_FAIL
+EXPECT_NONE WARNING: No BTF found for nonsense.
+REQUIRES_FEATURE fentry
+REQUIRES_FEATURE btf
 
 # Sanity check for kfunc/kretfunc alias
 NAME kfunc
@@ -125,6 +131,11 @@ EXPECT progs: 1
 REQUIRES bpftool
 REQUIRES_FEATURE kprobe_multi
 
+NAME kprobe_wildcard_multi_probe_count
+RUN {{BPFTRACE}} -e 'kprobe:vfs_* { exit(); }'
+EXPECT_REGEX Attached [0-9][0-9]+ probes
+REQUIRES_FEATURE kprobe_multi
+
 NAME kprobe_module
 PROG kprobe:vmlinux:vfs_read { printf("SUCCESS %d\n", pid); exit(); }
 EXPECT_REGEX SUCCESS [0-9][0-9]*
@@ -137,7 +148,7 @@ AFTER ./testprogs/syscall read
 
 NAME kprobe_module_missing
 PROG kprobe:nonsense:vfs_read { printf("SUCCESS %d\n", pid); exit(); }
-EXPECT ERROR: Error attaching probe: kprobe:nonsense:vfs_read: specified module nonsense in probe kprobe:nonsense:vfs_read is not loaded.
+EXPECT ERROR: specified module nonsense in probe kprobe:nonsense:vfs_read is not loaded.
 WILL_FAIL
 
 NAME kprobe_wildcard_all_leading_underscore
@@ -157,7 +168,7 @@ EXPECT 0
 
 NAME kprobe_func_missing
 PROG kprobe:vmlinux:nonsense { printf("SUCCESS %d\n", pid); exit(); }
-EXPECT ERROR: Error attaching probe: kprobe:vmlinux:nonsense
+EXPECT ERROR: Unable to attach probe: kprobe:vmlinux:nonsense. If this is expected, set the 'missing_probes' config variable to 'warn'.
 WILL_FAIL
 
 NAME kprobe_multi_wildcard
@@ -214,22 +225,9 @@ WILL_FAIL
 
 NAME kprobe_offset_module_error
 RUN {{BPFTRACE}} -e 'kprobe:nft_trans_alloc_gfp+0x1 { printf("hit\n"); exit(); }'
-EXPECT cannot attach kprobe, Invalid argument
+EXPECT ERROR: Unable to attach probe: kprobe:nft_trans_alloc_gfp+0x1. If this is expected, set the 'missing_probes' config variable to 'warn'.
 ARCH aarch64|ppc64le|ppc64
 REQUIRES lsmod | grep '^nf_tables'
-WILL_FAIL
-
-NAME kprobe_warn_missing_probes
-PROG kprobe:vfs_read,kprobe:nonsense { exit(); }
-EXPECT WARNING: could not attach probe kprobe:nonsense, skipping.
-
-NAME kprobe_ignore_missing_probes
-PROG config = { missing_probes = "ignore" } kprobe:vfs_read,kprobe:nonsense { exit(); }
-EXPECT_NONE WARNING: could not attach probe kprobe:nonsense, skipping.
-
-NAME kprobe_error_missing_probes
-PROG config = { missing_probes = "error" } kprobe:vfs_read,kprobe:nonsense { exit(); }
-EXPECT ERROR: Error attaching probe: kprobe:nonsense
 WILL_FAIL
 
 NAME kretprobe
@@ -341,21 +339,21 @@ RUN {{BPFTRACE}} --unsafe -e 'uprobe:./testprogs/uprobe_test:_init { printf("arg
 EXPECT_REGEX arg0: [0-9]*
 AFTER ./testprogs/uprobe_test
 
-NAME uprobe_warn_missing_probes
+NAME uprobe_missing_probes
 PROG uprobe:./testprogs/uprobe_test:uprobeFunction1,uprobe:./testprogs/uprobe_test:uprobeFunction3 { exit(); }
-EXPECT WARNING: Could not resolve symbol: ./testprogs/uprobe_test:uprobeFunction3, skipping probe.
+EXPECT ERROR: Could not resolve symbol: ./testprogs/uprobe_test:uprobeFunction3
+AFTER ./testprogs/uprobe_test
+WILL_FAIL
+
+NAME uprobe_warn_missing_probes
+PROG config = { missing_probes = "warn" } uprobe:./testprogs/uprobe_test:uprobeFunction1,uprobe:./testprogs/uprobe_test:uprobeFunction3 { exit(); }
+EXPECT WARNING: Could not resolve symbol: ./testprogs/uprobe_test:uprobeFunction3
 AFTER ./testprogs/uprobe_test
 
 NAME uprobe_ignore_missing_probes
 PROG config = { missing_probes = "ignore" } uprobe:./testprogs/uprobe_test:uprobeFunction1,uprobe:./testprogs/uprobe_test:uprobeFunction3 { exit(); }
 EXPECT_NONE WARNING: Could not resolve symbol: ./testprogs/uprobe_test:uprobeFunction3, skipping probe.
 AFTER ./testprogs/uprobe_test
-
-NAME uprobe_error_missing_probes
-PROG config = { missing_probes = "error" } uprobe:./testprogs/uprobe_test:uprobeFunction1,uprobe:./testprogs/uprobe_test:uprobeFunction3 { exit(); }
-EXPECT ERROR: Could not resolve symbol: ./testprogs/uprobe_test:uprobeFunction3, cannot attach probe.
-AFTER ./testprogs/uprobe_test
-WILL_FAIL
 
 NAME uretprobe
 PROG uretprobe:/bin/bash:echo_builtin { printf("readline: %d\n", retval); exit();}
@@ -388,13 +386,14 @@ EXPECT hit
 
 NAME tracepoint_missing
 PROG t:syscalls:nonsense { print("hit"); exit(); }
-EXPECT stdin:1:1-20: ERROR: tracepoint not found: syscalls:nonsense
+EXPECT stdin:1:1-20: ERROR: Tracepoint not found: syscalls:nonsense
+EXPECT HINT: If this is expected, set the 'missing_probes' config variable to 'warn' or 'ignore'.
 WILL_FAIL
 
 NAME tracepoint_multiattach_missing
 PROG t:syscalls:sys_exit_nanosleep,t:syscalls:nonsense { print("hit"); exit(); }
-EXPECT hit
-AFTER ./testprogs/syscall nanosleep 1e8
+EXPECT stdin:1:31-50: ERROR: Tracepoint not found: syscalls:nonsense
+EXPECT HINT: If this is expected, set the 'missing_probes' config variable to 'warn' or 'ignore'.
 WILL_FAIL
 
 NAME tracepoint args
@@ -441,7 +440,7 @@ AFTER ./testprogs/syscall nanosleep 1e8
 
 NAME rawtracepoint_module_missing
 PROG rawtracepoint:nonsense:sys_exit { printf("SUCCESS %d\n", gid); exit(); }
-EXPECT ERROR: No BTF found for nonsense:sys_exit
+EXPECT ERROR: No BTF found for nonsense:sys_exit.
 REQUIRES_FEATURE btf
 WILL_FAIL
 
@@ -505,21 +504,47 @@ NAME probe_builtin_scratch_buf
 PROG config = { on_stack_limit = 0 } software:cpu:100000 { print(probe); exit(); }
 EXPECT software:cpu:100000
 
-NAME BEGIN
-PROG BEGIN { printf("Hello\n"); exit();}
+NAME begin
+PROG begin { printf("Hello\n"); }
 EXPECT Hello
 TIMEOUT 2
 
-NAME END_processing_after_exit
-PROG interval:s:1 { exit(); } END { printf("end"); }
+NAME end_processing_after_exit
+PROG interval:s:1 { exit(); } end { printf("end"); }
 EXPECT end
 TIMEOUT 2
 
-NAME BEGIN,END
-PROG BEGIN,END { printf("Hello\n"); exit(); }
+NAME begin,end
+PROG begin,end { printf("Hello\n"); exit(); }
 EXPECT Hello
        Hello
 TIMEOUT 2
+
+NAME bench
+RUN {{BPFTRACE}} --test-mode bench -e 'begin { print("begin\n"); } bench:a { @ = count(); } end { print(@); clear(@); }'
+EXPECT_REGEX begin\n
+             @: 1000000\n\n
+             \+-----------\+--------------\+
+             \| BENCHMARK \| AVERAGE TIME \|
+             \+-----------\+--------------\+
+             \| a         \| \d+ns[ ]+\|
+             \+-----------\+--------------\+
+TIMEOUT 2
+
+NAME bench multiple
+RUN {{BPFTRACE}} --test-mode bench -e 'begin { printf("begin\n"); } bench:a { @a++; } bench:b { if (@b == 0) { print(@a); } @b++; } bench:c { if(@c == 0) { print(@b);  } @c++; } end { print(@c); clear(@a); clear(@b); clear(@c); }'
+EXPECT_REGEX begin
+             @a: 1000000
+             @b: 1000000
+             @c: 1000000\n\n
+             \+-----------\+--------------\+
+             \| BENCHMARK \| AVERAGE TIME \|
+             \+-----------\+--------------\+
+             \| a         \| \d+ns[ ]+\|
+             \| b         \| \d+ns[ ]+\|
+             \| c         \| \d+ns[ ]+\|
+             \+-----------\+--------------\+
+TIMEOUT 5
 
 # The "probe" builtin forces bpftrace to generate one BPF function for each
 # match and so we should fail on exceeding BPFTRACE_MAX_BPF_PROGS. The error is
@@ -527,7 +552,7 @@ TIMEOUT 2
 # only probe that we specify.
 NAME bpf_programs_limit
 PROG k:* { @[probe] = count(); }
-EXPECT_REGEX stdin:1:1-28: ERROR: Your program is trying to generate more than \d+ BPF programs, which exceeds the current limit of 1024\nk:\* { @\[probe\] = count\(\); }\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\nHINT: You can increase the limit through the BPFTRACE_MAX_BPF_PROGS environment variable.
+EXPECT_REGEX stdin:1:1-4: ERROR: Your program is trying to generate more than \d+ BPF programs, which exceeds the current limit of 1024\nk:\* { @\[probe\] = count\(\); }\n~~~\nHINT: You can increase the limit through the BPFTRACE_MAX_BPF_PROGS environment variable.
 WILL_FAIL
 TIMEOUT 2
 
@@ -587,6 +612,8 @@ NAME fexit_order
 RUN {{BPFTRACE}} runtime/scripts/fexit_order.bt
 EXPECT_REGEX (first)+ second
 AFTER ./testprogs/syscall nanosleep 233;
+REQUIRES_FEATURE fentry
+REQUIRES_FEATURE btf
 
 NAME software_order
 RUN {{BPFTRACE}} runtime/scripts/software_order.bt
@@ -596,3 +623,39 @@ NAME signal_order
 RUN {{BPFTRACE}} -e 'self:signal:SIGUSR1 { printf("first"); } self:signal:SIGUSR1 { printf(" second\n"); exit(); }'
 AFTER kill -s USR1 $(pidof bpftrace)
 EXPECT_REGEX (first)+ second
+
+NAME some_missing_probes_default_error
+PROG kprobe:vfs_read { exit(); } t:syscalls:nonsense { exit(); }
+EXPECT stdin:1:28-48: ERROR: Tracepoint not found: syscalls:nonsense
+EXPECT HINT: If this is expected, set the 'missing_probes' config variable to 'warn' or 'ignore'.
+WILL_FAIL
+
+NAME missing_probes_multiple_attach_points_default_error
+PROG kprobe:vfs_read, kprobe:bad { exit(); }
+EXPECT ERROR: Unable to attach probe: kprobe:bad. If this is expected, set the 'missing_probes' config variable to 'warn'.
+WILL_FAIL
+
+NAME some_missing_probes_warn
+PROG config = { missing_probes=warn } kprobe:vfs_read { exit(); } t:syscalls:nonsense { exit(); }
+EXPECT stdin:1:61-81: WARNING: Tracepoint not found: syscalls:nonsense
+
+NAME some_missing_probes_ignore
+PROG config = { missing_probes=ignore } kprobe:vfs_read { exit(); } t:syscalls:nonsense { exit(); }
+EXPECT_NONE WARNING: Unable to attach probe: tracepoint:syscalls:nonsense. Skipping.
+
+NAME all_missing_probes_warn
+PROG config = { missing_probes=warn } kprobe:nonsense { exit(); } t:syscalls:nonsense { exit(); } uprobe:./testprogs/uprobe_test:uprobeFunction3 { exit(); }
+EXPECT WARNING: Unable to attach probe: kprobe:nonsense. Skipping.
+EXPECT stdin:1:61-81: WARNING: Tracepoint not found: syscalls:nonsense
+EXPECT WARNING: Unable to attach probe: uprobe:./testprogs/uprobe_test:uprobeFunction3. Skipping.
+EXPECT ERROR: Attachment failed for all probes.
+WILL_FAIL
+
+# This is hacky because we can't easily run a separate bpftrace program in BEFORE
+# because it would require more hacks in the runtime runner.py
+# including waiting for probe attachment in the BEFORE program
+NAME attach_to_bpf_program
+RUN {{BPFTRACE}} runtime/scripts/bpf_attach.bt & sleep 3 && {{BPFTRACE}} -e 'fentry:bpf:interval_us_* { print(probe); if (@c >= 1) { exit(); } @c = count(); }'
+EXPECT_REGEX fentry:bpf:[0-9]+:interval_us_100000_1
+EXPECT_REGEX fentry:bpf:[0-9]+:interval_us_100000_2
+TIMEOUT 10

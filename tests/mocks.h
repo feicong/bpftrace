@@ -1,11 +1,13 @@
 #pragma once
 
 #include "bpffeature.h"
+#include "bpfmap.h"
 #include "bpftrace.h"
 #include "child.h"
 #include "probe_matcher.h"
 #include "procmon.h"
-#include "util/format.h"
+#include "util/result.h"
+#include "util/strings.h"
 #include "gmock/gmock-function-mocker.h"
 
 namespace bpftrace::test {
@@ -34,11 +36,37 @@ public:
 
   MOCK_CONST_METHOD0(get_fentry_symbols, std::unique_ptr<std::istream>());
 
+  MOCK_CONST_METHOD0(get_running_bpf_programs, std::unique_ptr<std::istream>());
+
 #pragma GCC diagnostic pop
+};
+
+class MockBpfMap : public BpfMap {
+public:
+  MockBpfMap(libbpf::bpf_map_type type = libbpf::BPF_MAP_TYPE_HASH,
+             std::string name = "mock_map",
+             uint32_t key_size = sizeof(uint64_t),
+             uint32_t value_size = sizeof(uint64_t),
+             uint32_t max_entries = 10)
+      : BpfMap(type, name, key_size, value_size, max_entries)
+  {
+  }
+  MOCK_CONST_METHOD1(collect_elements, Result<MapElements>(int nvalues));
+  MOCK_CONST_METHOD2(collect_histogram_data,
+                     Result<HistogramMap>(const MapInfo &map_info,
+                                          int nvalues));
+  MOCK_CONST_METHOD2(collect_tseries_data,
+                     Result<TSeriesMap>(const MapInfo &map_info, int nvalues));
 };
 
 class MockBPFtrace : public BPFtrace {
 public:
+  MOCK_METHOD2(
+      attach_probe,
+      Result<std::unique_ptr<AttachedProbe>>(Probe &probe,
+                                             const BpfBytecode &bytecode));
+
+  MOCK_METHOD1(resume_tracee, int(pid_t tracee_pid));
   std::vector<Probe> get_probes()
   {
     return resources.probes;
@@ -46,6 +74,10 @@ public:
   std::unordered_map<std::string, Probe> get_special_probes()
   {
     return resources.special_probes;
+  }
+  std::vector<Probe> get_benchmark_probes()
+  {
+    return resources.benchmark_probes;
   }
 
   int resolve_uname(const std::string &name,
@@ -136,6 +168,7 @@ public:
     has_for_each_map_elem_ = std::make_optional<bool>(has_features);
     has_get_ns_current_pid_tgid_ = std::make_optional<bool>(has_features);
     has_map_lookup_percpu_elem_ = std::make_optional<bool>(has_features);
+    has_loop_ = std::make_optional<bool>(has_features);
   };
 
   bool has_fentry() override
@@ -155,6 +188,11 @@ public:
       return find_kfunc->second;
 
     return false;
+  }
+
+  bool has_iter(std::string name __attribute__((unused))) override
+  {
+    return has_features_;
   }
 
   bool has_features_;

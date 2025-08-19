@@ -1,19 +1,25 @@
 add_library(util STATIC
+  bpf_funcs.cpp
   bpf_names.cpp
+  bpf_progs.cpp
   cgroup.cpp
   cpus.cpp
   env.cpp
   exceptions.cpp
-  format.cpp
   int_parser.cpp
   io.cpp
   kernel.cpp
   math.cpp
+  memfd.cpp
+  opaque.cpp
   paths.cpp
   result.cpp
+  strings.cpp
   symbols.cpp
   system.cpp
   temp.cpp
+  time.cpp
+  tseries.cpp
   wildcard.cpp
   )
 

@@ -1,5 +1,4 @@
 #include <filesystem>
-#include <fstream>
 #include <getopt.h>
 #include <iostream>
 #include <string>
@@ -7,7 +6,6 @@
 #include "aot.h"
 #include "bpftrace.h"
 #include "log.h"
-#include "output.h"
 #include "run_bpftrace.h"
 #include "version.h"
 
@@ -31,42 +29,12 @@ void usage(std::ostream& out, std::string_view filename)
   // clang-format on
 }
 
-std::unique_ptr<Output> prepare_output(const std::string& output_file,
-                                       const std::string& output_format)
-{
-  std::ostream* os = &std::cout;
-  std::ofstream outputstream;
-  if (!output_file.empty()) {
-    outputstream.open(output_file);
-    if (outputstream.fail()) {
-      LOG(ERROR) << "Failed to open output file: \"" << output_file
-                 << "\": " << strerror(errno);
-      return nullptr;
-    }
-    os = &outputstream;
-  }
-
-  // FIXME(#4087): We should serialize the C enum definitions as part of the AOT
-  // payload in order to allow this printing to work.
-  CDefinitions c_definitions;
-  std::unique_ptr<Output> output;
-  if (output_format.empty() || output_format == "text") {
-    output = std::make_unique<TextOutput>(c_definitions, *os);
-  } else if (output_format == "json") {
-    output = std::make_unique<JsonOutput>(c_definitions, *os);
-  } else {
-    LOG(ERROR) << "Invalid output format \"" << output_format << "\"\n"
-               << "Valid formats: 'text', 'json'";
-    return nullptr;
-  }
-
-  return output;
-}
-
 int main(int argc, char* argv[])
 {
   std::string output_file, output_format;
   int c;
+
+  std::vector<std::string> named_params;
 
   // TODO: which other options from `bpftrace` should be included?
   const char* const short_opts = "d:f:hVo:qv";
@@ -137,6 +105,18 @@ int main(int argc, char* argv[])
     }
   }
 
+  while (optind < argc) {
+    auto pos_arg = std::string(argv[optind]);
+    if (pos_arg.starts_with("--")) {
+      named_params.emplace_back(pos_arg.substr(2));
+    } else {
+      // AOT does not support positional parameters
+      LOG(ERROR) << "AOT does not support positional parameters";
+      return 1;
+    }
+    optind++;
+  }
+
   if (argv[optind]) {
     usage(std::cerr, argv[0]);
     return 1;
@@ -146,10 +126,6 @@ int main(int argc, char* argv[])
 
   libbpf_set_print(libbpf_print);
 
-  auto output = prepare_output(output_file, output_format);
-  if (!output)
-    return 1;
-
   BPFtrace bpftrace;
 
   int err = aot::load(bpftrace, argv[0]);
@@ -158,5 +134,14 @@ int main(int argc, char* argv[])
     return err;
   }
 
-  return run_bpftrace(bpftrace, *output, bpftrace.bytecode_);
+  // FIXME(#4087): We should serialize the C enum definitions as part of the AOT
+  // payload in order to allow this printing to work.
+  ast::CDefinitions no_c_defs;
+
+  return run_bpftrace(bpftrace,
+                      output_file,
+                      output_format,
+                      no_c_defs,
+                      bpftrace.bytecode_,
+                      std::move(named_params));
 }

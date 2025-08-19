@@ -1,8 +1,6 @@
 #include "common.h"
 
-namespace bpftrace {
-namespace test {
-namespace codegen {
+namespace bpftrace::test::codegen {
 
 TEST(codegen, runtime_error_check_lookup_percpu)
 {
@@ -75,7 +73,7 @@ TEST(codegen, runtime_error_check_for_map)
   bpftrace->helper_check_level_ = 1;
 
   test(*bpftrace,
-       "BEGIN { @map[16] = 32; for ($kv : @map) { @x = $kv; } }",
+       "begin { @map[16] = 32; for ($kv : @map) { @x = $kv; } }",
        NAME);
 }
 
@@ -106,6 +104,4 @@ TEST(codegen, runtime_error_check_lookup)
   test(*bpftrace, "kprobe:f { @++; }", NAME);
 }
 
-} // namespace codegen
-} // namespace test
-} // namespace bpftrace
+} // namespace bpftrace::test::codegen

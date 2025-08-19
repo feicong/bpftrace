@@ -8,22 +8,6 @@
 
 namespace bpftrace::util {
 
-class TempFileError : public ErrorInfo<TempFileError> {
-public:
-  TempFileError(std::string origin, int err)
-      : origin_(std::move(origin)), err_(err) {};
-  static char ID;
-  void log(llvm::raw_ostream &OS) const override;
-  int err() const
-  {
-    return err_;
-  }
-
-private:
-  std::string origin_;
-  int err_;
-};
-
 // TempFile provide a convenient RAII wrapper for temporary files. The use of
 // temporary files should be generally discouraged, unless they are necessary
 // to interacting with other libraries or tools.
@@ -54,7 +38,7 @@ public:
     return path_;
   }
 
-  Result<OK> write_all(std::span<char> bytes);
+  Result<OK> write_all(std::span<const char> bytes);
 
 private:
   TempFile(std::filesystem::path &&path, int fd)

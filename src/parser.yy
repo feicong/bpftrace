@@ -10,7 +10,7 @@
 %define define_location_comparison
 %define parse.assert
 %define parse.trace
-%expect 4
+%expect 0
 
 %define parse.error verbose
 
@@ -99,6 +99,9 @@ void yyerror(bpftrace::Driver &driver, const char *s);
   PTR        "->"
   STRUCT     "struct"
   UNION      "union"
+
+  // Pseudo token; see below.
+  LOW "low-precedence"
 ;
 
 %token <std::string> BUILTIN "builtin"
@@ -130,6 +133,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %token <std::string> OFFSETOF "offsetof"
 %token <std::string> LET "let"
 %token <std::string> IMPORT "import"
+%token <bool> BOOL "bool"
 
 %type <ast::Operator> unary_op compound_op
 %type <std::string> attach_point_def c_definitions ident keyword external_name
@@ -137,41 +141,50 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 
 %type <ast::AttachPoint *> attach_point
 %type <ast::AttachPointList> attach_points
-%type <ast::Block *> block_expr
+%type <ast::Block *> bare_block
+%type <ast::BlockExpr *> block_expr
 %type <ast::Call *> call
 %type <ast::Sizeof *> sizeof_expr
 %type <ast::Offsetof *> offsetof_expr
 %type <ast::Expression> and_expr addi_expr primary_expr cast_expr conditional_expr equality_expr expr logical_and_expr muli_expr
 %type <ast::Expression> logical_or_expr or_expr postfix_expr relational_expr shift_expr tuple_access_expr unary_expr xor_expr
 %type <ast::ExpressionList> vargs
-%type <ast::Subprog *> subprog
 %type <ast::SubprogArg *> subprog_arg
 %type <ast::SubprogArgList> subprog_args
-%type <ast::Macro *> macro
 %type <ast::ExpressionList> macro_args
 %type <ast::Map *> map
 %type <ast::MapAccess *> map_expr
-%type <ast::MapDeclStatement *> map_decl_stmt
 %type <ast::PositionalParameter *> param
 %type <ast::PositionalParameterCount *> param_count
 %type <ast::Predicate *> pred
-%type <ast::Probe *> probe
-%type <std::pair<ast::ProbeList, ast::SubprogList>> body probes_and_subprogs
-%type <ast::MacroList> macros
 %type <ast::Config *> config
 %type <ast::Import *> import_stmt
 %type <ast::ImportList> imports
 %type <ast::Statement> assign_stmt block_stmt expr_stmt if_stmt jump_stmt loop_stmt for_stmt
-%type <ast::MapDeclList> map_decl_list
+%type <ast::RootStatement> root_stmt macro map_decl_stmt subprog probe
+%type <ast::RootStatements> root_stmts
+%type <ast::Range *> range
 %type <ast::VarDeclStatement *> var_decl_stmt
 %type <ast::StatementList> block block_or_if stmt_list
 %type <ast::AssignConfigVarStatement *> config_assign_stmt
 %type <ast::ConfigStatementList> config_assign_stmt_list config_block
 %type <SizedType> type int_type pointer_type struct_type
 %type <ast::Variable *> var
-%type <ast::Identifier *> raw_ident
+%type <ast::VariableAddr *> var_addr
+%type <ast::MapAddr *> map_addr
 %type <ast::Program *> program
 
+
+// A pseudo token, which is the lowest precedence among all tokens.
+//
+// This helps us explicitly lower the precedence of a given rule to force shift
+// vs. reduce, and make the grammar explicit (still ambiguous, but explicitly
+// ambiguous). For example, consider the inherently ambiguous `@foo[..]`, which
+// could be interpreted as accessing the `@foo` non-scalar map, or indexing
+// into the value of the `@foo` scalar map, e.g. `(@foo)[...]`. We lower the
+// precedence of the associated rules to ensure that this is shifted, and the
+// longer `map_expr` rule will match over the `map` rule in this case.
+%left LOW
 
 %left COMMA
 %right ASSIGN LEFTASSIGN RIGHTASSIGN PLUSASSIGN MINUSASSIGN MULASSIGN DIVASSIGN MODASSIGN BANDASSIGN BORASSIGN BXORASSIGN
@@ -187,7 +200,9 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %left PLUS MINUS
 %left MUL DIV MOD
 %right LNOT BNOT
-%left LPAREN RPAREN LBRACKET RBRACKET DOT PTR
+%left DOT PTR
+%right PAREN RPAREN
+%right LBRACKET RBRACKET
 
 // In order to support the parsing of full programs and the parsing of just
 // expressions (used while expanding C macros, for example), use the trick
@@ -199,13 +214,13 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 
 %%
 
-start:          START_PROGRAM program { driver.result = $2; }
-        |       START_EXPR expr       { driver.result = $2; }
+start:          START_PROGRAM program END { driver.result = $2; }
+        |       START_EXPR expr END       { driver.result = $2; }
                 ;
 
 program:
-                c_definitions config imports map_decl_list macros body END {
-                    $$ = driver.ctx.make_node<ast::Program>($1, $2, std::move($3), std::move($4), std::move($5), std::move($6.second), std::move($6.first), @$);
+                c_definitions config imports root_stmts {
+                    $$ = driver.ctx.make_node<ast::Program>($1, $2, std::move($3), std::move($4), @$);
                 }
                 ;
 
@@ -233,35 +248,31 @@ type:
                         {"min_t", CreateMin(true)},
                         {"max_t", CreateMax(true)},
                         {"sum_t", CreateSum(true)},
-                        {"count_t", CreateCount(true)},
+                        {"count_t", CreateCount()},
                         {"avg_t", CreateAvg(true)},
                         {"stats_t", CreateStats(true)},
                         {"umin_t", CreateMin(false)},
                         {"umax_t", CreateMax(false)},
                         {"usum_t", CreateSum(false)},
-                        {"ucount_t", CreateCount(false)},
                         {"uavg_t", CreateAvg(false)},
                         {"ustats_t", CreateStats(false)},
                         {"timestamp", CreateTimestamp()},
                         {"macaddr_t", CreateMacAddress()},
                         {"cgroup_path_t", CreateCgroupPath()},
                         {"strerror_t", CreateStrerror()},
+                        {"string", CreateString(0)},
                     };
                     $$ = type_map[$1];
                 }
         |       SIZED_TYPE {
-                    if ($1 == "string") {
-                        $$ = CreateString(0);
-                    } else if ($1 == "inet") {
+                    if ($1 == "inet") {
                         $$ = CreateInet(0);
                     } else if ($1 == "buffer") {
                         $$ = CreateBuffer(0);
                     }
                 }
         |       SIZED_TYPE "[" UNSIGNED_INT "]" {
-                    if ($1 == "string") {
-                        $$ = CreateString($3);
-                    } else if ($1 == "inet") {
+                    if ($1 == "inet") {
                         $$ = CreateInet($3);
                     } else if ($1 == "buffer") {
                         $$ = CreateBuffer($3);
@@ -325,6 +336,7 @@ config_assign_stmt:
                 IDENT ASSIGN UNSIGNED_INT { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
         |       IDENT ASSIGN IDENT        { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
         |       IDENT ASSIGN STRING       { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
+        |       IDENT ASSIGN BOOL         { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
                 ;
 
 subprog:
@@ -345,31 +357,29 @@ subprog_arg:
                 VAR ":" type { $$ = driver.ctx.make_node<ast::SubprogArg>($1, $3, @$); }
                 ;
 
-macros:
-                macros macro { $$ = std::move($1); $$.push_back($2); }
-        |       %empty       { $$ = ast::MacroList{}; }
-
 macro:
                 MACRO IDENT "(" macro_args ")" block_expr { $$ = driver.ctx.make_node<ast::Macro>($2, std::move($4), $6, @$); }
-        |       MACRO IDENT "(" ")" block_expr { $$ = driver.ctx.make_node<ast::Macro>($2, ast::ExpressionList{}, $5, @$); }
+        |       MACRO IDENT "(" macro_args ")" bare_block { $$ = driver.ctx.make_node<ast::Macro>($2, std::move($4), $6, @$); }
 
 macro_args:
-                macro_args "," map { $$ = std::move($1); $$.push_back($3); }
-        |       macro_args "," var { $$ = std::move($1); $$.push_back($3); }
-        |       map                { $$ = ast::ExpressionList{$1}; }
-        |       var                { $$ = ast::ExpressionList{$1}; }
+                macro_args "," map   { $$ = std::move($1); $$.push_back($3); }
+        |       macro_args "," var   { $$ = std::move($1); $$.push_back($3); }
+        |       macro_args "," ident { $$ = std::move($1); $$.push_back(driver.ctx.make_node<ast::Identifier>($3, @$)); }
+        |       map                  { $$ = ast::ExpressionList{$1}; }
+        |       var                  { $$ = ast::ExpressionList{$1}; }
+        |       ident                { $$ = ast::ExpressionList{driver.ctx.make_node<ast::Identifier>($1, @$)}; }
+        |       %empty               { $$ = ast::ExpressionList{}; }
                 ;
 
-body:
-                probes_and_subprogs { $$ = std::move($1); }
-        |       %empty              { $$ = { ast::ProbeList{}, ast::SubprogList{}}; }
-                ;
+root_stmts:
+                root_stmts root_stmt { $$ = std::move($1); $$.push_back($2); }
+        |       %empty               { $$ = ast::RootStatements{}; }
 
-probes_and_subprogs:
-                probes_and_subprogs probe   { $$ = std::move($1); $$.first.push_back($2); }
-        |       probes_and_subprogs subprog { $$ = std::move($1); $$.second.push_back($2); }
-        |       probe        { $$ = { ast::ProbeList{$1}, ast::SubprogList{}}; }
-        |       subprog      { $$ = { ast::ProbeList{}, ast::SubprogList{$1}}; }
+root_stmt:
+                macro         { $$ = $1; }
+        |       map_decl_stmt { $$ = $1; }
+        |       subprog       { $$ = $1; }
+        |       probe         { $$ = $1; }
                 ;
 
 probe:
@@ -458,7 +468,11 @@ block_stmt:
                 loop_stmt    { $$ = $1; }
         |       if_stmt      { $$ = $1; }
         |       for_stmt     { $$ = $1; }
+        |       bare_block   { $$ = $1; }
                 ;
+
+bare_block:
+                "{" stmt_list "}"  { $$ = driver.ctx.make_node<ast::Block>(std::move($2), @2); }
 
 expr_stmt:
                 expr               { $$ = driver.ctx.make_node<ast::ExprStatement>($1, @1); }
@@ -484,6 +498,11 @@ loop_stmt:
 
 for_stmt:
                 FOR "(" var ":" map ")" block        { $$ = driver.ctx.make_node<ast::For>($3, $5, std::move($7), @1); }
+        |       FOR "(" var ":" range ")" block      { $$ = driver.ctx.make_node<ast::For>($3, $5, std::move($7), @1); }
+                ;
+
+range:
+                postfix_expr DOT DOT postfix_expr { $$ = driver.ctx.make_node<ast::Range>($1, $4, @$); }
                 ;
 
 if_stmt:
@@ -523,13 +542,8 @@ assign_stmt:
                 }
         ;
 
-map_decl_list:
-                map_decl_list map_decl_stmt ";"      { $$ = std::move($1); $$.push_back($2); }
-        |        %empty                              { $$ = ast::MapDeclList{}; }
-        ;
-
 map_decl_stmt:
-                LET MAP ASSIGN IDENT LPAREN UNSIGNED_INT RPAREN { $$ = driver.ctx.make_node<ast::MapDeclStatement>($2, $4, $6, @$); }
+                LET MAP ASSIGN IDENT LPAREN UNSIGNED_INT RPAREN ";" { $$ = driver.ctx.make_node<ast::MapDeclStatement>($2, $4, $6, @$); }
         ;
 
 var_decl_stmt:
@@ -538,15 +552,16 @@ var_decl_stmt:
         ;
 
 primary_expr:
-                raw_ident          { $$ = $1; }
-        |       UNSIGNED_INT       { $$ = driver.ctx.make_node<ast::Integer>($1, @$); }
+                UNSIGNED_INT       { $$ = driver.ctx.make_node<ast::Integer>($1, @$); }
+        |       BOOL               { $$ = driver.ctx.make_node<ast::Boolean>($1, @$); }
         |       STRING             { $$ = driver.ctx.make_node<ast::String>($1, @$); }
         |       BUILTIN            { $$ = driver.ctx.make_node<ast::Builtin>($1, @$); }
         |       LPAREN expr RPAREN { $$ = $2; }
         |       param              { $$ = $1; }
         |       param_count        { $$ = $1; }
         |       var                { $$ = $1; }
-        |       map                { $$ = $1; }
+        |       var_addr           { $$ = $1; }
+        |       map_addr           { $$ = $1; }
         |       map_expr           { $$ = $1; }
         |       "(" vargs "," expr ")"
                 {
@@ -554,6 +569,8 @@ primary_expr:
                   args.push_back($4);
                   $$ = driver.ctx.make_node<ast::Tuple>(std::move(args), @$);
                 }
+        |       map %prec LOW      { $$ = $1; }
+        |       IDENT %prec LOW    { $$ = driver.ctx.make_node<ast::Identifier>($1, @$); }
                 ;
 
 postfix_expr:
@@ -585,7 +602,7 @@ tuple_access_expr:
                 ;
 
 block_expr:
-                "{" stmt_list expr "}" { $$ = driver.ctx.make_node<ast::Block>(std::move($2), $3, @$); }
+                "{" stmt_list expr "}" { $$ = driver.ctx.make_node<ast::BlockExpr>(std::move($2), $3, @$); }
                 ;
 
 unary_expr:
@@ -721,10 +738,6 @@ ident:
         |       SIZED_TYPE    { $$ = $1; }
                 ;
 
-raw_ident:
-                IDENT         { $$ = driver.ctx.make_node<ast::Identifier>($1, @$); }
-                ;
-
 struct_field:
                 external_name                       { $$.push_back($1); }
         |       struct_field DOT external_name      { $$ = std::move($1); $$.push_back($3); }
@@ -758,6 +771,14 @@ map_expr:
 
 var:
                 VAR { $$ = driver.ctx.make_node<ast::Variable>($1, @$); }
+                ;
+
+var_addr:
+                BAND var { $$ = driver.ctx.make_node<ast::VariableAddr>($2, @$); }
+                ;
+
+map_addr:
+                BAND map { $$ = driver.ctx.make_node<ast::MapAddr>($2, @$); }
                 ;
 
 vargs:

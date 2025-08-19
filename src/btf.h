@@ -84,17 +84,25 @@ public:
     return btf_objects.size();
   }
   void load_module_btfs(const std::set<std::string>& modules);
-  std::string c_def(const std::unordered_set<std::string>& set);
   std::string type_of(std::string_view name, std::string_view field);
   std::string type_of(const BTFId& type_id, std::string_view field);
   SizedType get_stype(std::string_view type_name);
   SizedType get_var_type(std::string_view var_name);
+
+  // Returns a string containing the C definitions generated from the BTF data.
+  // If `set` is provided (non-empty), then the generated types will be limited
+  // to just those in the set. If `set` is not provided (empty), then all types
+  // will be generated.
+  std::string c_def(const std::unordered_set<std::string>& set = {});
 
   std::set<std::string> get_all_structs() const;
   std::unique_ptr<std::istream> get_all_funcs();
   std::unordered_set<std::string> get_all_iters() const;
   std::unique_ptr<std::istream> get_all_raw_tracepoints();
   FuncParamLists get_params(const std::set<std::string>& funcs) const;
+  FuncParamLists get_kprobes_params(const std::set<std::string>& funcs) const;
+  FuncParamLists get_kretprobes_params(
+      const std::set<std::string>& funcs) const;
   FuncParamLists get_rawtracepoint_params(
       const std::set<std::string>& rawtracepoints) const;
 
@@ -136,6 +144,9 @@ private:
           get_param_btf_cb) const;
   FuncParamLists get_params_from_btf(const BTFObj& btf_obj,
                                      const std::set<std::string>& funcs) const;
+  FuncParamLists get_kprobes_params_from_btf(const BTFObj& btf_obj,
+                                             const std::set<std::string>& funcs,
+                                             bool is_kretprobe) const;
   FuncParamLists get_raw_tracepoints_params_from_btf(
       const BTFObj& btf_obj,
       const std::set<std::string>& rawtracepoints) const;

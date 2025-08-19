@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "util/result.h"
+#include "util/type_name.h"
 
 namespace bpftrace::ast {
 
@@ -18,22 +19,6 @@ namespace bpftrace::ast {
 // This class is essentially a type-erased generic constant storage.
 class PassContext {
 public:
-  // TypeName is used as a template parameter to work around restrictions on
-  // literals passes as template parameters. This is essentially a string
-  // literal used to name the type.
-  template <size_t N>
-  struct TypeName {
-    constexpr TypeName(const char (&s)[N])
-    {
-      std::copy_n(s, N, value);
-    }
-    char value[N];
-    std::string str() const
-    {
-      return std::string(value, sizeof(value));
-    }
-  };
-
   // TypeId is a class which, when specialized, returns the type_id. This
   // works by storing a static variable for each specialization of the class,
   // which effectively memoizes an ID binding for the specific class.
@@ -85,6 +70,14 @@ public:
       return static_cast<T &>(extern_it->second.get());
     }
     no_object_failure(type_id);
+  }
+
+  // has indicates whether the given state is present or not.
+  template <typename T>
+  bool has()
+  {
+    int type_id = TypeId<T>::type_id();
+    return state_.contains(type_id) || extern_state_.contains(type_id);
   }
 
 private:
@@ -152,7 +145,7 @@ private:
 //   };
 //
 // The `Variables` class can then be stored in the pass context.
-template <PassContext::TypeName name>
+template <util::TypeName name>
 class State : public PassContext::State {
 public:
   static std::string type_name()

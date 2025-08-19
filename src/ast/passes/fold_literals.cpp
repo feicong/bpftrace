@@ -1,5 +1,7 @@
-#include "ast/passes/fold_literals.h"
+#include <optional>
+
 #include "ast/ast.h"
+#include "ast/passes/fold_literals.h"
 #include "ast/visitor.h"
 #include "bpftrace.h"
 #include "log.h"
@@ -9,27 +11,113 @@ namespace bpftrace::ast {
 
 namespace {
 
+const auto FLOW_ERROR = "unable to fold literals due to overflow or underflow";
+
 class LiteralFolder : public Visitor<LiteralFolder, std::optional<Expression>> {
 public:
+  LiteralFolder(ASTContext &ast) : ast_(ast) {};
   LiteralFolder(ASTContext &ast, BPFtrace &bpftrace)
-      : ast_(ast), bpftrace_(bpftrace) {};
+      : ast_(ast), bpftrace_(std::ref(bpftrace)) {};
 
   using Visitor<LiteralFolder, std::optional<Expression>>::visit;
 
   std::optional<Expression> visit(Cast &cast);
   std::optional<Expression> visit(Unop &op);
   std::optional<Expression> visit(Binop &op);
+  std::optional<Expression> visit(Ternary &op);
   std::optional<Expression> visit(PositionalParameterCount &param);
   std::optional<Expression> visit(PositionalParameter &param);
   std::optional<Expression> visit(Call &call);
   std::optional<Expression> visit(Expression &expr);
+  std::optional<Expression> visit(Probe &probe);
+  std::optional<Expression> visit(Builtin &builtin);
 
 private:
   ASTContext &ast_;
-  BPFtrace &bpftrace_;
+  std::optional<std::reference_wrapper<BPFtrace>> bpftrace_;
+
+  Node *top_level_node_ = nullptr;
 };
 
 } // namespace
+
+template <typename T>
+static Expression make_boolean(ASTContext &ast, T left, T right, Binop &op)
+{
+  bool value = true;
+  switch (op.op) {
+    case Operator::EQ:
+      value = left == right;
+      break;
+    case Operator::NE:
+      value = left != right;
+      break;
+    case Operator::LE:
+      value = left <= right;
+      break;
+    case Operator::GE:
+      value = left >= right;
+      break;
+    case Operator::LT:
+      value = left < right;
+      break;
+    case Operator::GT:
+      value = left > right;
+      break;
+    case Operator::LAND:
+      value = left && right;
+      break;
+    case Operator::LOR:
+      value = left || right;
+      break;
+    case Operator::PLUS:
+      value = left + right;
+      break;
+    case Operator::MINUS:
+      value = left - right;
+      break;
+    case Operator::MUL:
+      value = left && right;
+      break;
+    case Operator::DIV: {
+      if (!right) {
+        op.addError() << FLOW_ERROR;
+      }
+      value = static_cast<bool>(left && right);
+      break;
+    }
+    case Operator::MOD:
+      if (!right) {
+        op.addError() << FLOW_ERROR;
+      }
+      value = false;
+      break;
+    case Operator::BAND:
+      value = left & right;
+      break;
+    case Operator::BOR:
+      value = left | right;
+      break;
+    case Operator::BXOR:
+      value = left ^ right;
+      break;
+    case Operator::LEFT:
+      value = left < right;
+      break;
+    case Operator::RIGHT:
+      value = left > right;
+      break;
+    case Operator::LNOT:
+    case Operator::BNOT:
+    case Operator::INVALID:
+    case Operator::ASSIGN:
+    case Operator::INCREMENT:
+    case Operator::DECREMENT:
+      LOG(BUG) << "binary operator is not valid: " << static_cast<int>(op.op);
+  }
+
+  return ast.make_node<Boolean>(value, Location(op.loc));
+}
 
 template <typename T>
 static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
@@ -46,18 +134,6 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
   };
 
   switch (op) {
-    case Operator::EQ:
-      return static_cast<uint64_t>(left == right);
-    case Operator::NE:
-      return static_cast<uint64_t>(left != right);
-    case Operator::LE:
-      return static_cast<uint64_t>(left <= right);
-    case Operator::GE:
-      return static_cast<uint64_t>(left >= right);
-    case Operator::LT:
-      return static_cast<uint64_t>(left < right);
-    case Operator::GT:
-      return static_cast<uint64_t>(left > right);
     case Operator::PLUS:
       if (left == 0 || right == 0) {
         return clamp(left + right);
@@ -153,10 +229,16 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
       return clamp(left << right);
     case Operator::RIGHT:
       return clamp(left >> right);
+    // Comparison operators are handled in `make_boolean` and checked in
+    // `is_comparison_op`.
+    case Operator::EQ:
+    case Operator::NE:
+    case Operator::LE:
+    case Operator::GE:
+    case Operator::LT:
+    case Operator::GT:
     case Operator::LAND:
-      return static_cast<uint64_t>(left && right);
     case Operator::LOR:
-      return static_cast<uint64_t>(left || right);
     case Operator::INVALID:
     case Operator::ASSIGN:
     case Operator::INCREMENT:
@@ -180,12 +262,14 @@ std::optional<Expression> LiteralFolder::visit(Unop &op)
   visit(op.expr);
 
   if (auto *integer = op.expr.as<Integer>()) {
+    bool force_unsigned = !integer->type().IsSigned();
     if (op.op == Operator::BNOT) {
       // Still positive.
-      return ast_.make_node<Integer>(~integer->value, Location(op.loc));
+      return ast_.make_node<Integer>(~integer->value,
+                                     Location(op.loc),
+                                     force_unsigned);
     } else if (op.op == Operator::LNOT) {
-      // Still positive.
-      return ast_.make_node<Integer>(!integer->value, Location(op.loc));
+      return ast_.make_node<Boolean>(!integer->value, Location(op.loc));
     } else if (op.op == Operator::MINUS) {
       // Ensure that it is representable as a negative value.
       if (integer->value >
@@ -212,9 +296,7 @@ std::optional<Expression> LiteralFolder::visit(Unop &op)
       return ast_.make_node<Integer>(static_cast<uint64_t>(~integer->value),
                                      Location(op.loc));
     } else if (op.op == Operator::LNOT) {
-      // Always positive.
-      return ast_.make_node<Integer>(static_cast<uint64_t>(!integer->value),
-                                     Location(op.loc));
+      return ast_.make_node<Boolean>(!integer->value, Location(op.loc));
     } else if (op.op == Operator::MINUS) {
       // Ensure that it doesn't overflow. We do this by ensuring that is
       // representable as a positive number, casting, and then adding 1 to
@@ -223,6 +305,12 @@ std::optional<Expression> LiteralFolder::visit(Unop &op)
       value = -value;
       return ast_.make_node<Integer>(static_cast<uint64_t>(value) + 1,
                                      Location(op.loc));
+    }
+  } else if (auto *boolean = op.expr.as<Boolean>()) {
+    // Just supporting logical not for now but we could support other
+    // operations like BNOT (e.g. ~false == -1) in the future.
+    if (op.op == Operator::LNOT) {
+      return ast_.make_node<Boolean>(!boolean->value, Location(op.loc));
     }
   }
   return std::nullopt;
@@ -252,6 +340,13 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
                                     Location(op.loc));
     }
 
+    auto *rb = other.as<Boolean>();
+    if (rb) {
+      if (op.op == Operator::LAND || op.op == Operator::LOR) {
+        return make_boolean(ast_, !str->value.empty(), rb->value, op);
+      }
+    }
+
     // Check for another string.
     auto *rs = other.as<String>();
     if (!rs) {
@@ -266,28 +361,28 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
 
     switch (op.op) {
       case Operator::EQ:
-        return ast_.make_node<Integer>(str->value == rs->value,
+        return ast_.make_node<Boolean>(str->value == rs->value,
                                        Location(op.loc));
       case Operator::NE:
-        return ast_.make_node<Integer>(str->value != rs->value,
+        return ast_.make_node<Boolean>(str->value != rs->value,
                                        Location(op.loc));
       case Operator::LE:
-        return ast_.make_node<Integer>(str->value <= rs->value,
+        return ast_.make_node<Boolean>(str->value <= rs->value,
                                        Location(op.loc));
       case Operator::GE:
-        return ast_.make_node<Integer>(str->value >= rs->value,
+        return ast_.make_node<Boolean>(str->value >= rs->value,
                                        Location(op.loc));
       case Operator::LT:
-        return ast_.make_node<Integer>(str->value < rs->value,
+        return ast_.make_node<Boolean>(str->value < rs->value,
                                        Location(op.loc));
       case Operator::GT:
-        return ast_.make_node<Integer>(str->value > rs->value,
+        return ast_.make_node<Boolean>(str->value > rs->value,
                                        Location(op.loc));
       case Operator::LAND:
-        return ast_.make_node<Integer>(!str->value.empty() && rs->value.empty(),
+        return ast_.make_node<Boolean>(!str->value.empty() && rs->value.empty(),
                                        Location(op.loc));
       case Operator::LOR:
-        return ast_.make_node<Integer>(!str->value.empty() || rs->value.empty(),
+        return ast_.make_node<Boolean>(!str->value.empty() || rs->value.empty(),
                                        Location(op.loc));
       case Operator::PLUS:
         return ast_.make_node<String>(str->value + rs->value, Location(op.loc));
@@ -298,25 +393,72 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
     }
   }
 
+  // Handle boolean cases.
+  auto *boolean = op.left.as<Boolean>();
+  other = op.right;
+  if (boolean == nullptr) {
+    boolean = op.right.as<Boolean>();
+    other = op.left;
+  }
+  if (boolean) {
+    auto *other_boolean = other.as<Boolean>();
+    if (other_boolean) {
+      return make_boolean(ast_, boolean->value, other_boolean->value, op);
+    }
+
+    auto *ru = other.as<Integer>();
+    if (ru) {
+      if (op.op == Operator::LAND || op.op == Operator::LOR) {
+        return make_boolean(ast_, boolean->value, ru->value != 0, op);
+      }
+    }
+
+    auto *rs = other.as<NegativeInteger>();
+    if (rs) {
+      if (op.op == Operator::LAND || op.op == Operator::LOR) {
+        // Negatives are always true.
+        return make_boolean(ast_, boolean->value, true, op);
+      }
+    }
+  }
+
   // Handle all integer cases.
   std::optional<std::variant<uint64_t, int64_t>> result;
   auto *lu = op.left.as<Integer>();
   auto *ls = op.left.as<NegativeInteger>();
   auto *ru = op.right.as<Integer>();
   auto *rs = op.right.as<NegativeInteger>();
+  bool force_unsigned = false;
 
   // Only allow operations when we can safely marshall to two of the same type.
   // Then `eval_binop` effectively handles all overflow/underflow calculations.
   if (lu && ru) {
+    force_unsigned = !lu->type().IsSigned() || !ru->type().IsSigned();
+    if (is_comparison_op(op.op)) {
+      return make_boolean(ast_, lu->value, ru->value, op);
+    }
     result = eval_binop(lu->value, ru->value, op.op);
   } else if (ls && rs) {
+    if (is_comparison_op(op.op)) {
+      return make_boolean(ast_, ls->value, rs->value, op);
+    }
     result = eval_binop(ls->value, rs->value, op.op);
   } else if (lu && rs) {
+    force_unsigned = !lu->type().IsSigned();
     if (lu->value <= std::numeric_limits<int64_t>::max()) {
+      if (is_comparison_op(op.op)) {
+        return make_boolean(
+            ast_, static_cast<int64_t>(lu->value), rs->value, op);
+      }
       result = eval_binop(static_cast<int64_t>(lu->value), rs->value, op.op);
     }
   } else if (ls && ru) {
+    force_unsigned = !ru->type().IsSigned();
     if (ru->value <= std::numeric_limits<int64_t>::max()) {
+      if (is_comparison_op(op.op)) {
+        return make_boolean(
+            ast_, ls->value, static_cast<int64_t>(ru->value), op);
+      }
       result = eval_binop(ls->value, static_cast<int64_t>(ru->value), op.op);
     }
   } else {
@@ -326,14 +468,14 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
 
   if (!result) {
     // This is not a valid expression.
-    op.addError() << "unable to fold literals due to overflow or underflow";
+    op.addError() << FLOW_ERROR;
     return std::nullopt;
   }
 
   return std::visit(
       [&](const auto &v) -> Expression {
         if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
-          return ast_.make_node<Integer>(v, Location(op.loc));
+          return ast_.make_node<Integer>(v, Location(op.loc), force_unsigned);
         } else {
           return ast_.make_node<NegativeInteger>(v, Location(op.loc));
         }
@@ -341,17 +483,56 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
       result.value());
 }
 
+std::optional<Expression> LiteralFolder::visit(Ternary &op)
+{
+  visit(op.cond);
+  visit(op.left);
+  visit(op.right);
+
+  if (op.cond.is<Integer>()) {
+    if (op.cond.as<Integer>()->value != 0) {
+      return op.left;
+    } else {
+      return op.right;
+    }
+  } else if (op.cond.is<NegativeInteger>()) {
+    return op.left;
+  } else if (op.cond.is<Boolean>()) {
+    if (op.cond.as<Boolean>()->value) {
+      return op.left;
+    } else {
+      return op.right;
+    }
+  } else if (op.cond.is<String>()) {
+    if (!op.cond.as<String>()->value.empty()) {
+      return op.left;
+    } else {
+      return op.right;
+    }
+  }
+
+  return std::nullopt;
+}
+
 std::optional<Expression> LiteralFolder::visit(PositionalParameterCount &param)
 {
+  if (!bpftrace_) {
+    return std::nullopt;
+  }
   // This is always an unsigned integer value.
-  return ast_.make_node<Integer>(bpftrace_.num_params(), Location(param.loc));
+  return ast_.make_node<Integer>(bpftrace_->get().num_params(),
+                                 Location(param.loc),
+                                 /*force_unsigned=*/true);
 }
 
 std::optional<Expression> LiteralFolder::visit(PositionalParameter &param)
 {
+  if (!bpftrace_) {
+    return std::nullopt;
+  }
   // By default, we treat parameters as integer literals if we can, and
   // rely on the user to have an explicit `str` cast.
-  const std::string &val = bpftrace_.get_param(param.n);
+  const std::string &val = bpftrace_->get().get_param(param.n);
   // If empty, treat as zero. This is the documented behavior.
   if (val.empty()) {
     param.addWarning() << "Positional parameter $" << param.n
@@ -359,17 +540,20 @@ std::optional<Expression> LiteralFolder::visit(PositionalParameter &param)
     return ast_.make_node<Integer>(static_cast<uint64_t>(0),
                                    Location(param.loc));
   }
-  try {
-    if (val[0] == '-') {
-      auto v = util::to_int(val, 0);
-      return ast_.make_node<NegativeInteger>(v, Location(param.loc));
-    } else {
-      auto v = util::to_uint(val, 0);
-      return ast_.make_node<Integer>(v, Location(param.loc));
+  if (val[0] == '-') {
+    auto v = util::to_int(val);
+    if (!v) {
+      // Not parsed, treat it as a string.
+      return ast_.make_node<String>(val, Location(param.loc));
     }
-  } catch (const std::exception &e) {
-    // Treat this as the original string.
-    return ast_.make_node<String>(val, Location(param.loc));
+    return ast_.make_node<NegativeInteger>(*v, Location(param.loc));
+  } else {
+    auto v = util::to_uint(val);
+    if (!v) {
+      // Not parsed, treat it as a string.
+      return ast_.make_node<String>(val, Location(param.loc));
+    }
+    return ast_.make_node<Integer>(*v, Location(param.loc));
   }
 }
 
@@ -383,13 +567,19 @@ std::optional<Expression> LiteralFolder::visit(Call &call)
     // First, we need to check if this directly wraps a positional parameter.
     // If yes, then we prevent it from expanding to zero as is the default.
     if (auto *param = call.vargs.at(0).as<PositionalParameter>()) {
-      call.vargs[0] = ast_.make_node<String>(bpftrace_.get_param(param->n),
-                                             Location(param->loc));
+      if (!bpftrace_) {
+        return std::nullopt; // Can't fold yet.
+      }
+      call.vargs[0] = ast_.make_node<String>(
+          bpftrace_->get().get_param(param->n), Location(param->loc));
     } else if (auto *binop = call.vargs.at(0).as<Binop>()) {
       auto *param = binop->left.as<PositionalParameter>();
       if (param && binop->op == Operator::PLUS) {
-        binop->left = ast_.make_node<String>(bpftrace_.get_param(param->n),
-                                             Location(param->loc));
+        if (!bpftrace_) {
+          return std::nullopt; // Can't fold yet.
+        }
+        binop->left = ast_.make_node<String>(
+            bpftrace_->get().get_param(param->n), Location(param->loc));
       }
     }
 
@@ -438,6 +628,37 @@ std::optional<Expression> LiteralFolder::visit(Expression &expr)
     expr.value = r->value;
   }
   return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(Probe &probe)
+{
+  top_level_node_ = &probe;
+  return Visitor<LiteralFolder, std::optional<Expression>>::visit(probe);
+}
+
+std::optional<Expression> LiteralFolder::visit(Builtin &builtin)
+{
+  if (builtin.ident == "__builtin_usermode") {
+    if (auto *probe = dynamic_cast<Probe *>(top_level_node_)) {
+      for (auto *ap : probe->attach_points) {
+        if (!ap->check_available(builtin.ident)) {
+          auto probe_type = probetype(ap->provider);
+          if (probe_type == ProbeType::special) {
+            return ast_.make_node<Integer>(1, Location(builtin.loc));
+          }
+          return ast_.make_node<Integer>(0, Location(builtin.loc));
+        }
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+void fold(ASTContext &ast, Expression &expr)
+{
+  LiteralFolder folder(ast);
+  folder.visit(expr);
 }
 
 Pass CreateFoldLiteralsPass()

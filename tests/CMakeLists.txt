@@ -26,27 +26,33 @@ else()
 endif()
 
 add_executable(bpftrace_test
-  ast.cpp
+  arch.cpp
   async_action.cpp
   bpfbytecode.cpp
   bpftrace.cpp
+  btf.cpp
   child.cpp
   clang_parser.cpp
+  named_param.cpp
   config.cpp
   collect_nodes.cpp
   deprecated.cpp
   field_analyser.cpp
   fold_literals.cpp
   function_registry.cpp
+  globalvars.cpp
   imports.cpp
   location.cpp
   log.cpp
   macro_expansion.cpp
   main.cpp
+  memfd.cpp
   mocks.cpp
+  opaque.cpp
   output.cpp
   parser.cpp
   portability_analyser.cpp
+  probe_expansion.cpp
   procmon.cpp
   probe.cpp
   config_analyser.cpp
@@ -62,6 +68,7 @@ add_executable(bpftrace_test
   temp.cpp
   tracepoint_format_parser.cpp
   types.cpp
+  type_system.cpp
   unstable_feature.cpp
   utils.cpp
 
@@ -76,6 +83,7 @@ target_include_directories(bpftrace_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_definitions(bpftrace_test PRIVATE TEST_CODEGEN_LOCATION="${CMAKE_SOURCE_DIR}/tests/codegen/llvm/")
 target_link_libraries(bpftrace_test libbpftrace)
+target_link_libraries(bpftrace_test btf)
 
 target_compile_definitions(bpftrace_test PRIVATE ${BPFTRACE_FLAGS})
 

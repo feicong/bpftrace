@@ -14,7 +14,7 @@ std::string Printer::type(const SizedType &ty)
   if (ty.IsNoneTy())
     return "";
   std::stringstream buf;
-  buf << " :: [" << ty;
+  buf << " :: [" << typestr(ty, true);
   if (ty.IsCtxAccess())
     buf << ", ctx: 1";
   if (ty.GetAS() != AddrSpace::none)
@@ -26,13 +26,20 @@ std::string Printer::type(const SizedType &ty)
 void Printer::visit(Integer &integer)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << "int: " << integer.value << std::endl;
+  out_ << indent << "int: " << integer.value << type(integer.integer_type)
+       << std::endl;
 }
 
 void Printer::visit(NegativeInteger &integer)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << "signed int: " << integer.value << std::endl;
+  out_ << indent << "negative int: " << integer.value << std::endl;
+}
+
+void Printer::visit(Boolean &boolean)
+{
+  std::string indent(depth_, ' ');
+  out_ << indent << "bool: " << (boolean.value ? "true" : "false") << std::endl;
 }
 
 void Printer::visit(PositionalParameter &param)
@@ -151,16 +158,27 @@ void Printer::visit(Map &map)
   // going to be marked as `is_ctx` or have an associated address space.
   std::string indent(depth_, ' ');
   out_ << indent << "map: " << map.ident;
-  if (!map.key_type.IsNoneTy() || !map.key_type.IsNoneTy()) {
+  if (!map.key_type.IsNoneTy() || !map.value_type.IsNoneTy()) {
     out_ << " :: ";
   }
   if (!map.key_type.IsNoneTy()) {
-    out_ << "[" << map.key_type << "]";
+    out_ << "[" << typestr(map.key_type, true) << "]";
   }
   if (!map.value_type.IsNoneTy()) {
-    out_ << map.value_type;
+    out_ << typestr(map.value_type, true);
   }
   out_ << std::endl;
+}
+
+void Printer::visit(MapAddr &map_addr)
+{
+  std::string indent(depth_, ' ');
+
+  out_ << indent << "&" << std::endl;
+
+  ++depth_;
+  visit(map_addr.map);
+  --depth_;
 }
 
 void Printer::visit(Variable &var)
@@ -168,6 +186,17 @@ void Printer::visit(Variable &var)
   std::string indent(depth_, ' ');
   out_ << indent << "variable: " << var.ident << type(var.var_type)
        << std::endl;
+}
+
+void Printer::visit(VariableAddr &var_addr)
+{
+  std::string indent(depth_, ' ');
+
+  out_ << indent << "&" << std::endl;
+
+  ++depth_;
+  visit(var_addr.var);
+  --depth_;
 }
 
 void Printer::visit(Binop &binop)
@@ -330,6 +359,8 @@ void Printer::visit(AssignConfigVarStatement &assignment)
       [&](auto &v) {
         if constexpr (std::is_same_v<std::decay_t<decltype(v)>, std::string>) {
           out_ << indentVar << "string: " << v << std::endl;
+        } else if constexpr (std::is_same_v<std::decay_t<decltype(v)>, bool>) {
+          out_ << indentVar << "bool: " << (v ? "true" : "false") << std::endl;
         } else {
           out_ << indentVar << "int: " << v << std::endl;
         }
@@ -403,6 +434,21 @@ void Printer::visit(While &while_block)
   visit(while_block.block);
 }
 
+void Printer::visit(Range &range)
+{
+  std::string indent(depth_, ' ');
+
+  out_ << indent << "start\n";
+  ++depth_;
+  visit(range.start);
+  --depth_;
+
+  out_ << indent << "end\n";
+  ++depth_;
+  visit(range.end);
+  --depth_;
+}
+
 void Printer::visit(For &for_loop)
 {
   std::string indent(depth_, ' ');
@@ -420,7 +466,7 @@ void Printer::visit(For &for_loop)
   out_ << indent << " decl\n";
   ++depth_;
   visit(for_loop.decl);
-  visit(for_loop.map);
+  visit(for_loop.iterable);
   --depth_;
 
   out_ << indent << " stmts\n";
@@ -477,22 +523,32 @@ void Printer::visit(Probe &probe)
   --depth_;
 }
 
+void Printer::visit(SubprogArg &arg)
+{
+  std::string indent(depth_, ' ');
+
+  ++depth_;
+  out_ << indent << arg.name << type(arg.type) << std::endl;
+  --depth_;
+}
+
 void Printer::visit(Subprog &subprog)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << subprog.name << ": " << subprog.return_type;
-
-  out_ << "(";
-  for (size_t i = 0; i < subprog.args.size(); i++) {
-    auto &arg = subprog.args.at(i);
-    out_ << arg->name << " : " << arg->type;
-    if (i < subprog.args.size() - 1)
-      out_ << ", ";
-  }
-  out_ << ")" << std::endl;
+  out_ << indent << "subprog: " << subprog.name << type(subprog.return_type)
+       << std::endl;
 
   ++depth_;
+
+  if (!subprog.args.empty()) {
+    ++depth_;
+    out_ << indent << " args" << std::endl;
+    visit(subprog.args);
+    --depth_;
+  }
+
   visit(subprog.stmts);
+
   --depth_;
 }
 

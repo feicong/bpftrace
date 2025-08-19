@@ -33,6 +33,7 @@ private:
   State lex_attachpoint(const AttachPoint &ap);
 
   State special_parser();
+  State benchmark_parser();
   State kprobe_parser(bool allow_offset = true);
   State kretprobe_parser();
   State uprobe_parser(bool allow_offset = true, bool allow_abs_addr = true);
@@ -47,6 +48,8 @@ private:
   State fentry_parser();
   State iter_parser();
   State raw_tracepoint_parser();
+
+  State frequency_parser();
 
   State argument_count_error(int expected,
                              std::optional<int> expected2 = std::nullopt);

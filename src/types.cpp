@@ -27,7 +27,7 @@ std::ostream &operator<<(std::ostream &os, const SizedType &type)
   return os;
 }
 
-std::string typestr(const SizedType &type)
+std::string typestr(const SizedType &type, bool debug)
 {
   switch (type.GetTy()) {
     case Type::integer:
@@ -36,18 +36,22 @@ std::string typestr(const SizedType &type)
       }
       return (type.is_signed_ ? "int" : "uint") +
              std::to_string(8 * type.GetSize());
-    case Type::inet:
     case Type::string:
+      if (debug)
+        return typestr(type.GetTy()) + "[" + std::to_string(type.GetSize()) +
+               "]";
+      return typestr(type.GetTy());
+    case Type::inet:
     case Type::buffer:
       return typestr(type.GetTy()) + "[" + std::to_string(type.GetSize()) + "]";
     case Type::pointer: {
       std::string prefix;
       if (type.IsCtxAccess())
         prefix = "(ctx) ";
-      return prefix + typestr(*type.GetPointeeTy()) + " *";
+      return prefix + typestr(*type.GetPointeeTy(), debug) + " *";
     }
     case Type::array:
-      return typestr(*type.GetElementTy()) + "[" +
+      return typestr(*type.GetElementTy(), debug) + "[" +
              std::to_string(type.GetNumElements()) + "]";
     case Type::record:
       return type.GetName();
@@ -55,7 +59,7 @@ std::string typestr(const SizedType &type)
       std::string res = "(";
       size_t n = type.GetFieldCount();
       for (size_t i = 0; i < n; ++i) {
-        res += typestr(type.GetField(i).type);
+        res += typestr(type.GetField(i).type, debug);
         if (i != n - 1)
           res += ",";
       }
@@ -66,9 +70,9 @@ std::string typestr(const SizedType &type)
     case Type::min_t:
     case Type::sum_t:
     case Type::avg_t:
-    case Type::count_t:
     case Type::stats_t:
       return (type.is_signed_ ? "" : "u") + typestr(type.GetTy());
+    case Type::count_t:
     case Type::mac_address:
     case Type::kstack_t:
     case Type::ustack_t:
@@ -82,8 +86,10 @@ std::string typestr(const SizedType &type)
     case Type::strerror_t:
     case Type::hist_t:
     case Type::lhist_t:
+    case Type::tseries_t:
     case Type::none:
     case Type::voidtype:
+    case Type::boolean:
       return typestr(type.GetTy());
   }
 
@@ -181,9 +187,6 @@ std::string addrspacestr(AddrSpace as)
     case AddrSpace::user:
       return "user";
       break;
-    case AddrSpace::bpf:
-      return "bpf";
-      break;
     case AddrSpace::none:
       return "none";
       break;
@@ -203,6 +206,7 @@ std::string typestr(Type t)
     case Type::record:   return "record";   break;
     case Type::hist_t:     return "hist_t";     break;
     case Type::lhist_t:    return "lhist_t";    break;
+    case Type::tseries_t:    return "tseries_t";    break;
     case Type::count_t:    return "count_t";    break;
     case Type::sum_t:      return "sum_t";      break;
     case Type::min_t:      return "min_t";      break;
@@ -225,6 +229,7 @@ std::string typestr(Type t)
     case Type::cgroup_path_t: return "cgroup_path_t"; break;
     case Type::strerror_t: return "strerror_t"; break;
     case Type::timestamp_mode: return "timestamp_mode"; break;
+    case Type::boolean:     return "bool";     break;
       // clang-format on
   }
 
@@ -241,7 +246,7 @@ SizedType CreateInteger(size_t bits, bool is_signed)
 
 SizedType CreateBool()
 {
-  return CreateInteger(1, false);
+  return { Type::boolean, 1 };
 }
 
 SizedType CreateInt(size_t bits)
@@ -391,9 +396,9 @@ SizedType CreateSum(bool is_signed)
   return { Type::sum_t, 8, is_signed };
 }
 
-SizedType CreateCount(bool is_signed)
+SizedType CreateCount()
 {
-  return { Type::count_t, 8, is_signed };
+  return { Type::count_t, 8, false };
 }
 
 SizedType CreateAvg(bool is_signed)
@@ -426,6 +431,11 @@ SizedType CreateLhist()
 SizedType CreateHist()
 {
   return { Type::hist_t, 8 };
+}
+
+SizedType CreateTSeries()
+{
+  return { Type::tseries_t, 8 };
 }
 
 SizedType CreateUSym()
@@ -620,6 +630,30 @@ bool SizedType::FitsInto(const SizedType &t) const
 bool SizedType::NeedsPercpuMap() const
 {
   return IsHistTy() || IsLhistTy() || IsCountTy() || IsSumTy() || IsMinTy() ||
-         IsMaxTy() || IsAvgTy() || IsStatsTy();
+         IsMaxTy() || IsAvgTy() || IsStatsTy() || IsTSeriesTy();
 }
+
+std::ostream &operator<<(std::ostream &os, TSeriesAggFunc agg)
+{
+  switch (agg) {
+    case TSeriesAggFunc::none:
+      os << "none";
+      break;
+    case TSeriesAggFunc::avg:
+      os << "avg";
+      break;
+    case TSeriesAggFunc::max:
+      os << "max";
+      break;
+    case TSeriesAggFunc::min:
+      os << "min";
+      break;
+    case TSeriesAggFunc::sum:
+      os << "sum";
+      break;
+  }
+
+  return os;
+}
+
 } // namespace bpftrace

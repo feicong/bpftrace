@@ -28,14 +28,13 @@ add_library(runtime STATIC
   format_string.cpp
   globalvars.cpp
   log.cpp
-  output.cpp
   probe_matcher.cpp
   probe_types.cpp
   procmon.cpp
-  printf.cpp
   run_bpftrace.cpp
   usdt.cpp
   pcap_writer.cpp
+  types_format.cpp
   ksyms.cpp
   usyms.cpp
   ${BFD_DISASM_SRC}
@@ -45,7 +44,6 @@ add_dependencies(runtime parser)
 
 add_library(libbpftrace STATIC
   build_info.cpp
-  clang_parser.cpp
   driver.cpp
   lockdown.cpp
   tracepoint_format_parser.cpp
@@ -55,6 +53,7 @@ set_target_properties(libbpftrace PROPERTIES PREFIX "")
 
 add_executable(bpftrace
   main.cpp
+  benchmark.cpp
 )
 
 # TODO: Honor `STATIC_LINKING` properly.
@@ -65,14 +64,15 @@ endif()
 
 install(TARGETS bpftrace DESTINATION ${CMAKE_INSTALL_BINDIR})
 target_compile_definitions(bpftrace PRIVATE ${BPFTRACE_FLAGS})
-target_link_libraries(bpftrace libbpftrace)
+
+# TODO(Jiawei Zhao): this conditional can be removed when we no longer use bcc.
+if(STATIC_LINKING)
+  target_link_libraries(bpftrace libbpftrace)
+else()
+  target_link_libraries(bpftrace libbpftrace libbpf.a)
+endif(STATIC_LINKING)
 
 # compile definitions
-
-if (NOT SYSTEM_INCLUDE_PATHS EQUAL "auto")
-  MESSAGE(STATUS "Using SYSTEM_INCLUDE_PATHS=${SYSTEM_INCLUDE_PATHS}")
-endif()
-target_compile_definitions(runtime PUBLIC SYSTEM_INCLUDE_PATHS="${SYSTEM_INCLUDE_PATHS}")
 
 # This is run on every build to ensure the version string is always up-to-date
 add_custom_target(version_h
@@ -99,9 +99,9 @@ if(STATIC_LINKING)
 endif(STATIC_LINKING)
 
 
-target_link_libraries(runtime debugfs tracefs util)
+target_link_libraries(runtime debugfs output tracefs util)
 target_link_libraries(runtime ${LIBBPF_LIBRARIES} ${ZLIB_LIBRARIES})
-target_link_libraries(libbpftrace parser resources runtime aot ast arch util cxxdemangler_llvm)
+target_link_libraries(libbpftrace parser runtime aot ast arch util cxxdemangler_llvm)
 
 if(LIBPCAP_FOUND)
   target_link_libraries(libbpftrace ${LIBPCAP_LIBRARIES})
@@ -222,9 +222,10 @@ unset(BPFTRACE)
 add_subdirectory(aot)
 add_subdirectory(arch)
 add_subdirectory(ast)
+add_subdirectory(btf)
 add_subdirectory(cxxdemangler)
 add_subdirectory(debugfs)
-add_subdirectory(resources)
+add_subdirectory(output)
 add_subdirectory(stdlib)
 add_subdirectory(tracefs)
 add_subdirectory(util)

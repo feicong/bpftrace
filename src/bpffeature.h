@@ -91,16 +91,15 @@ public:
   bool has_btf_func_global();
   bool has_map_batch();
   bool has_d_path();
-  bool has_uprobe_refcnt();
   bool has_kprobe_multi();
   bool has_kprobe_session();
   bool has_uprobe_multi();
   bool has_skb_output();
   bool has_prog_fentry();
-  bool has_iter(std::string name);
   // These are virtual so they can be overridden in tests by the mock
   virtual bool has_fentry();
   virtual bool has_kernel_func(Kfunc kfunc);
+  virtual bool has_iter(std::string name);
 
   std::string report();
 
@@ -108,7 +107,6 @@ public:
   DEFINE_MAP_TEST(hash, libbpf::BPF_MAP_TYPE_HASH);
   DEFINE_MAP_TEST(percpu_array, libbpf::BPF_MAP_TYPE_PERCPU_ARRAY);
   DEFINE_MAP_TEST(stack_trace, libbpf::BPF_MAP_TYPE_STACK_TRACE);
-  DEFINE_MAP_TEST(perf_event_array, libbpf::BPF_MAP_TYPE_PERF_EVENT_ARRAY);
   DEFINE_MAP_TEST(ringbuf, libbpf::BPF_MAP_TYPE_RINGBUF);
   DEFINE_HELPER_TEST(send_signal, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_HELPER_TEST(override_return, libbpf::BPF_PROG_TYPE_KPROBE);
@@ -126,6 +124,7 @@ public:
   DEFINE_HELPER_TEST(for_each_map_elem, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_HELPER_TEST(get_ns_current_pid_tgid, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_HELPER_TEST(map_lookup_percpu_elem, libbpf::BPF_PROG_TYPE_KPROBE);
+  DEFINE_HELPER_TEST(loop, libbpf::BPF_PROG_TYPE_KPROBE); // Added in 5.13.
   DEFINE_PROG_TEST(kprobe, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_PROG_TEST(tracepoint, libbpf::BPF_PROG_TYPE_TRACEPOINT);
   DEFINE_PROG_TEST(perf_event, libbpf::BPF_PROG_TYPE_PERF_EVENT);
@@ -134,7 +133,6 @@ protected:
   std::optional<bool> has_d_path_;
   std::optional<int> insns_limit_;
   std::optional<bool> has_map_batch_;
-  std::optional<bool> has_uprobe_refcnt_;
   std::optional<bool> has_kprobe_multi_;
   std::optional<bool> has_kprobe_session_;
   std::optional<bool> has_uprobe_multi_;

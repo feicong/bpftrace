@@ -117,13 +117,13 @@ class Runner(object):
         nsenter_prefix = (" ".join(nsenter) + " ") if len(nsenter) > 0 else ""
 
         if test.run:
-            ret = re.sub("{{BPFTRACE}}", BPFTRACE_BIN, test.run)
+            ret = re.sub("{{BPFTRACE}}", BPFTRACE_BIN + " --verify-llvm-ir", test.run)
 
             return nsenter_prefix + ret
         else:  # PROG
             use_json = "-q -f json" if (len(test.expects) > 0 and test.expects[0].mode == "json") else ""
             escaped_prog = test.prog.replace("'", "'\\''")
-            cmd = nsenter_prefix + "{} {} -e '{}'".format(BPFTRACE_BIN, use_json, escaped_prog)
+            cmd = nsenter_prefix + "{} {} --verify-llvm-ir -e '{}'".format(BPFTRACE_BIN, use_json, escaped_prog)
             # We're only reusing PROG-directive tests for AOT tests
             if test.suite == 'aot':
                 return cmd + " --aot /tmp/tmpprog.btaot && /tmp/tmpprog.btaot"
@@ -151,7 +151,6 @@ class Runner(object):
         bpffeature["btf"] = output.find("btf: yes") != -1
         bpffeature["fentry"] = output.find("fentry: yes") != -1
         bpffeature["dpath"] = output.find("dpath: yes") != -1
-        bpffeature["uprobe_refcount"] = output.find("uprobe refcount") != -1
         bpffeature["signal"] = output.find("send_signal: yes") != -1
         bpffeature["iter"] = output.find("iter: yes") != -1
         bpffeature["libpath_resolv"] = output.find("bcc library path resolution: yes") != -1
@@ -405,7 +404,6 @@ class Runner(object):
                 'test': test.name,
                 '__BPFTRACE_NOTIFY_PROBES_ATTACHED': '1',
                 '__BPFTRACE_NOTIFY_AOT_PORTABILITY_DISABLED': '1',
-                'BPFTRACE_VERIFY_LLVM_IR': '1',
                 'PATH': os.environ.get('PATH', ''),
             }
             env.update(test.env)
@@ -519,13 +517,22 @@ class Runner(object):
             print(warn("[   SKIP   ] ") + label)
             return Runner.SKIP_AOT_NOT_SUPPORTED
 
-        if p and p.returncode != test.return_code and not test.will_fail and not timeout:
-            print(fail("[  FAILED  ] ") + label)
-            print('\tCommand: ' + bpf_call)
-            print('\tUnclean exit code: ' + str(p.returncode))
-            print('\tOutput: ' + to_utf8(output))
-            print_befores_and_after_output()
-            return Runner.FAIL
+        if p and not timeout:
+            if p.returncode != test.return_code and not test.will_fail:
+                print(fail("[  FAILED  ] ") + label)
+                print('\tCommand: ' + bpf_call)
+                print('\tUnclean exit code: ' + str(p.returncode))
+                print('\tOutput: ' + to_utf8(output))
+                print_befores_and_after_output()
+                return Runner.FAIL
+
+            if p.returncode == 0 and test.will_fail:
+                print(fail("[  FAILED  ] ") + label)
+                print("\tCommand: " + bpf_call)
+                print("\tClean exit code but expecting failure with WILL_FAIL directive")
+                print("\tOutput: " + to_utf8(output))
+                print_befores_and_after_output()
+                return Runner.FAIL
 
         if result:
             print(ok("[       OK ] ") + label)

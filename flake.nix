@@ -39,14 +39,18 @@
           # The default LLVM version is the latest supported release
           defaultLlvmVersion = 20;
 
-          # Override to specify the libbpf build we want
-          libbpfVersion = "1.5.0";
+          # Override to specify the libbpf build we want. Note that we need to
+          # capture a specific fix for linking which is not yet present in a
+          # release. Once this fix is present in a release, then this should be
+          # updated to the relevant version and we need to update the version
+          # constraint in `CMakeLists.txt`.
+          libbpfVersion = "5e3306e89a44cab09693ce4bfe50bfc0cb595941";
           libbpf = pkgs.libbpf.overrideAttrs {
             version = libbpfVersion;
             src = pkgs.fetchFromGitHub {
               owner = "libbpf";
               repo = "libbpf";
-              rev = "v${libbpfVersion}";
+              rev = "${libbpfVersion}";
               # Nix uses the hash to do lookups in its cache as well as check that the
               # download from the internet hasn't changed. Therefore, it's necessary to
               # update the hash every time you update the source. Failure to update the
@@ -60,7 +64,7 @@
               #   hash mismatch in fixed-output derivation '/nix/store/m1ga09c0z1a6n7rj8ky3s31dpgalsn0n-source':
               #   specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
               # got:    sha256-173gxk0ymiw94glyjzjizp8bv8g72gwkjhacigd1an09jshdrjb4
-              sha256 = "sha256-+L/rbp0a3p4PHq1yTJmuMcNj0gT5sqAPeaNRo3Sh6U8=";
+              sha256 = "sha256-giMF2DaBDk3/MKQkCzYcn5ZkcuCyrPXXoe9jI5E3QI0=";
             };
           };
 

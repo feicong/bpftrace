@@ -1,5 +1,6 @@
 #include "ast/passes/field_analyser.h"
 #include "ast/attachpoint_parser.h"
+#include "ast/passes/probe_expansion.h"
 #include "driver.h"
 #include "mocks.h"
 #include "gtest/gtest.h"
@@ -24,6 +25,7 @@ void test(BPFtrace &bpftrace, const std::string &input, bool ok = true)
                     .put(bpftrace)
                     .add(CreateParsePass())
                     .add(ast::CreateParseAttachpointsPass())
+                    .add(ast::CreateProbeExpansionPass())
                     .add(ast::CreateFieldAnalyserPass())
                     .run();
   ASSERT_TRUE(bool(result)) << msg.str();
@@ -134,7 +136,7 @@ TEST_F(field_analyser_btf, btf_arrays)
 {
   auto bpftrace = get_mock_bpftrace();
   test(*bpftrace,
-       "BEGIN {\n"
+       "begin {\n"
        "  @ = (struct Arrays *) 0;\n"
        "}",
        true);
@@ -157,8 +159,12 @@ TEST_F(field_analyser_btf, btf_arrays)
   EXPECT_EQ(arrs->GetField("int_arr").type.GetSize(), 16U);
   EXPECT_EQ(arrs->GetField("int_arr").offset, 0);
 
+  // See type construction in btf.cpp; for fixed sized fields our string type
+  // has an extra character because we need to be able to signal that it is
+  // well-formed (including the NUL), even if the field itself contains no NUL
+  // character, because the field has a known fixed size.
   EXPECT_TRUE(arrs->GetField("char_arr").type.IsStringTy());
-  EXPECT_EQ(arrs->GetField("char_arr").type.GetSize(), 8U);
+  EXPECT_EQ(arrs->GetField("char_arr").type.GetSize(), 8U + 1U);
   EXPECT_EQ(arrs->GetField("char_arr").offset, 16);
 
   EXPECT_TRUE(arrs->GetField("ptr_arr").type.IsArrayTy());
@@ -194,7 +200,7 @@ TEST_F(field_analyser_btf, DISABLED_btf_arrays_multi_dim)
 {
   auto bpftrace = get_mock_bpftrace();
   test(*bpftrace,
-       "BEGIN {\n"
+       "begin {\n"
        "  @ = (struct Arrays *) 0;\n"
        "}",
        true);
@@ -259,7 +265,7 @@ TEST_F(field_analyser_btf, arrays_compound_data)
 {
   auto bpftrace = get_mock_bpftrace();
   test(*bpftrace,
-       "BEGIN {\n"
+       "begin {\n"
        "  $x = (struct ArrayWithCompoundData *) 0;\n"
        "  $x->data[0]->foo1->a\n"
        "}",
@@ -369,7 +375,7 @@ TEST_F(field_analyser_btf, btf_types_bitfields)
 TEST_F(field_analyser_btf, btf_anon_union_first_in_struct)
 {
   auto bpftrace = get_mock_bpftrace();
-  test(*bpftrace, "BEGIN { @ = (struct FirstFieldsAreAnonUnion *)0; }");
+  test(*bpftrace, "begin { @ = (struct FirstFieldsAreAnonUnion *)0; }");
 
   ASSERT_TRUE(bpftrace->structs.Has("struct FirstFieldsAreAnonUnion"));
   auto record =

@@ -2,6 +2,7 @@
 #include <cereal/types/map.hpp>
 #include <cereal/types/memory.hpp>
 #include <cereal/types/optional.hpp>
+#include <cereal/types/set.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/tuple.hpp>
 #include <cereal/types/unordered_set.hpp>
@@ -31,6 +32,22 @@ void RequiredResources::load_state(const uint8_t *ptr, size_t len)
   std::istream istream(&mbuf);
   cereal::BinaryInputArchive archive(istream);
   archive(*this);
+}
+
+std::ostream &operator<<(std::ostream &os, const RuntimeErrorInfo &info)
+{
+  switch (info.error_id) {
+    case RuntimeErrorId::HELPER_ERROR: {
+      // Helper errors are handled separately in output
+      os << "";
+      break;
+    }
+    case RuntimeErrorId::DIVIDE_BY_ZERO: {
+      os << DIVIDE_BY_ZERO_MSG;
+      break;
+    }
+  }
+  return os;
 }
 
 } // namespace bpftrace

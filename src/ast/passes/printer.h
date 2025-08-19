@@ -15,6 +15,7 @@ public:
   using Visitor<Printer>::visit;
   void visit(Integer &integer);
   void visit(NegativeInteger &integer);
+  void visit(Boolean &boolean);
   void visit(PositionalParameter &param);
   void visit(PositionalParameterCount &param);
   void visit(String &string);
@@ -25,8 +26,10 @@ public:
   void visit(Sizeof &szof);
   void visit(Offsetof &offof);
   void visit(Map &map);
+  void visit(MapAddr &map_addr);
   void visit(MapDeclStatement &decl);
   void visit(Variable &var);
+  void visit(VariableAddr &var_addr);
   void visit(Binop &binop);
   void visit(Unop &unop);
   void visit(Ternary &ternary);
@@ -45,12 +48,14 @@ public:
   void visit(If &if_node);
   void visit(Unroll &unroll);
   void visit(While &while_block);
+  void visit(Range &range);
   void visit(For &for_loop);
   void visit(Config &config);
   void visit(Jump &jump);
   void visit(Predicate &pred);
   void visit(AttachPoint &ap);
   void visit(Probe &probe);
+  void visit(SubprogArg &arg);
   void visit(Subprog &subprog);
   void visit(Import &imp);
   void visit(Program &program);

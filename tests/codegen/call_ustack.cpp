@@ -1,14 +1,13 @@
+#include "ast/passes/named_param.h"
 #include "common.h"
 
 #include <iterator>
 
-namespace bpftrace {
-namespace test {
-namespace codegen {
+namespace bpftrace::test::codegen {
 
 TEST(codegen, call_ustack)
 {
-  auto result = NAME;
+  const auto *result = NAME;
 
   test("kprobe:f { @x = ustack(); @y = ustack(6); @z = ustack(perf) }", result);
 }
@@ -22,10 +21,14 @@ kprobe:f {
   @z = ustack(6)
 })");
   auto bpftrace = get_mock_bpftrace();
+
   auto ok = ast::PassManager()
                 .put(ast)
                 .put<BPFtrace>(*bpftrace)
                 .add(ast::AllParsePasses())
+                .add(ast::CreateLLVMInitPass())
+                .add(ast::CreateClangBuildPass())
+                .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())
                 .add(ast::AllCompilePasses())
@@ -33,7 +36,7 @@ kprobe:f {
   ASSERT_TRUE(ok && ast.diagnostics().ok());
   bpftrace->bytecode_ = std::move(ok->get<BpfBytecode>());
 
-  ASSERT_EQ(bpftrace->bytecode_.maps().size(), 8);
+  ASSERT_EQ(bpftrace->bytecode_.maps().size(), 7);
   ASSERT_EQ(bpftrace->bytecode_.countStackMaps(), 3U);
 
   StackType stack_type;
@@ -57,6 +60,9 @@ kprobe:f {
                 .put(ast)
                 .put<BPFtrace>(*bpftrace)
                 .add(ast::AllParsePasses())
+                .add(ast::CreateLLVMInitPass())
+                .add(ast::CreateClangBuildPass())
+                .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())
                 .add(ast::AllCompilePasses())
@@ -64,7 +70,7 @@ kprobe:f {
   ASSERT_TRUE(ok && ast.diagnostics().ok());
   bpftrace->bytecode_ = std::move(ok->get<BpfBytecode>());
 
-  ASSERT_EQ(bpftrace->bytecode_.maps().size(), 10);
+  ASSERT_EQ(bpftrace->bytecode_.maps().size(), 9);
   ASSERT_EQ(bpftrace->bytecode_.countStackMaps(), 4U);
 
   StackType stack_type;
@@ -76,6 +82,4 @@ kprobe:f {
   ASSERT_TRUE(bpftrace->bytecode_.hasMap(stack_type));
 }
 
-} // namespace codegen
-} // namespace test
-} // namespace bpftrace
+} // namespace bpftrace::test::codegen

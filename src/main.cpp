@@ -18,37 +18,38 @@
 #include "ast/diagnostic.h"
 #include "ast/helpers.h"
 #include "ast/pass_manager.h"
+#include "ast/passes/clang_build.h"
+#include "ast/passes/clang_parser.h"
 #include "ast/passes/codegen_llvm.h"
-#include "ast/passes/config_analyser.h"
 #include "ast/passes/fold_literals.h"
 #include "ast/passes/map_sugar.h"
+#include "ast/passes/named_param.h"
 #include "ast/passes/parser.h"
 #include "ast/passes/pid_filter_pass.h"
 #include "ast/passes/portability_analyser.h"
 #include "ast/passes/printer.h"
-#include "ast/passes/probe_analyser.h"
 #include "ast/passes/recursion_check.h"
-#include "ast/passes/resolve_imports.h"
 #include "ast/passes/resource_analyser.h"
 #include "ast/passes/return_path_analyser.h"
 #include "ast/passes/semantic_analyser.h"
+#include "ast/passes/type_system.h"
+#include "benchmark.h"
 #include "bpffeature.h"
 #include "bpftrace.h"
 #include "btf.h"
 #include "build_info.h"
 #include "child.h"
-#include "clang_parser.h"
 #include "config.h"
+#include "globalvars.h"
 #include "lockdown.h"
 #include "log.h"
-#include "output.h"
 #include "probe_matcher.h"
 #include "procmon.h"
 #include "run_bpftrace.h"
 #include "util/env.h"
-#include "util/format.h"
 #include "util/int_parser.h"
 #include "util/kernel.h"
+#include "util/strings.h"
 #include "version.h"
 
 using namespace bpftrace;
@@ -62,8 +63,10 @@ enum class OutputBufferConfig {
 };
 
 enum class TestMode {
-  UNSET = 0,
+  NONE = 0,
   CODEGEN,
+  COMPILER_BENCHMARK,
+  BPF_BENCHMARK,
 };
 
 enum class BuildMode {
@@ -76,7 +79,7 @@ enum class BuildMode {
 enum Options {
   INFO = 2000,
   NO_WARNING,
-  TEST,
+  TEST_MODE,
   AOT,
   HELP,
   VERSION,
@@ -89,6 +92,7 @@ enum Options {
   NO_FEATURE,
   DEBUG,
   DRY_RUN,
+  VERIFY_LLVM_IR,
 };
 
 constexpr auto FULL_SEARCH = "*:*";
@@ -129,6 +133,7 @@ void usage(std::ostream& out)
   out << "TROUBLESHOOTING OPTIONS:" << std::endl;
   out << "    -v                      verbose messages" << std::endl;
   out << "    --dry-run               terminate execution right after attaching all the probes" << std::endl;
+  out << "    --verify-llvm-ir        check that the generated LLVM IR is valid" << std::endl;
   out << "    -d STAGE                debug info for various stages of bpftrace execution" << std::endl;
   out << "                            ('all', 'ast', 'codegen', 'codegen-opt', 'dis', 'libbpf', 'verifier')" << std::endl;
   out << "    --emit-elf FILE         (dry run) generate ELF file with bpf programs and write to FILE" << std::endl;
@@ -294,39 +299,6 @@ std::vector<std::string> extra_flags(
   return extra_flags;
 }
 
-void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
-{
-  add(ast::CreateFoldLiteralsPass());
-  add(ast::CreatePidFilterPass());
-  add(ast::CreateSemanticPass());
-  add(ast::CreateResourcePass());
-  add(ast::CreateRecursionCheckPass());
-  add(ast::CreateReturnPathPass());
-  add(ast::CreateProbePass());
-}
-
-void CreateAotPasses(std::function<void(ast::Pass&& pass)> add)
-{
-  add(ast::CreatePortabilityPass());
-  add(ast::CreateFoldLiteralsPass());
-  add(ast::CreateSemanticPass());
-  add(ast::CreateResourcePass());
-  add(ast::CreateRecursionCheckPass());
-  add(ast::CreateReturnPathPass());
-  add(ast::CreateProbePass());
-}
-
-ast::Pass printPass(const std::string& name)
-{
-  return ast::Pass::create("print-" + name, [=](ast::ASTContext& ast) {
-    std::cerr << "AST after: " << name << std::endl;
-    std::cerr << "-------------------" << std::endl;
-    ast::Printer printer(std::cerr);
-    printer.visit(ast.root);
-    std::cerr << std::endl;
-  });
-};
-
 struct Args {
   std::string pid_str;
   std::string cmd_str;
@@ -335,7 +307,8 @@ struct Args {
   bool usdt_file_activation = false;
   int helper_check_level = 1;
   bool no_warnings = false;
-  TestMode test_mode = TestMode::UNSET;
+  bool verify_llvm_ir = false;
+  TestMode test_mode = TestMode::NONE;
   std::string script;
   std::string search;
   std::string filename;
@@ -351,6 +324,42 @@ struct Args {
   std::vector<std::string> include_files;
   std::vector<std::string> params;
   std::vector<std::string> debug_stages;
+  std::vector<std::string> named_params;
+};
+
+void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
+{
+  add(ast::CreateFoldLiteralsPass());
+  add(ast::CreatePidFilterPass());
+  add(ast::CreateClangBuildPass());
+  add(ast::CreateTypeSystemPass());
+  add(ast::CreateSemanticPass());
+  add(ast::CreateResourcePass());
+  add(ast::CreateRecursionCheckPass());
+  add(ast::CreateReturnPathPass());
+}
+
+void CreateAotPasses(std::function<void(ast::Pass&& pass)> add)
+{
+  add(ast::CreatePortabilityPass());
+  add(ast::CreateFoldLiteralsPass());
+  add(ast::CreateClangBuildPass());
+  add(ast::CreateTypeSystemPass());
+  add(ast::CreateSemanticPass());
+  add(ast::CreateResourcePass());
+  add(ast::CreateRecursionCheckPass());
+  add(ast::CreateReturnPathPass());
+}
+
+ast::Pass printPass(const std::string& name)
+{
+  return ast::Pass::create("print-" + name, [=](ast::ASTContext& ast) {
+    std::cerr << "AST after: " << name << std::endl;
+    std::cerr << "-------------------" << std::endl;
+    ast::Printer printer(std::cerr);
+    printer.visit(ast.root);
+    std::cerr << std::endl;
+  });
 };
 
 static bool parse_debug_stages(const std::string& arg)
@@ -418,10 +427,10 @@ Args parse_args(int argc, char* argv[])
             .has_arg = no_argument,
             .flag = nullptr,
             .val = Options::NO_WARNING },
-    option{ .name = "test",
+    option{ .name = "test-mode",
             .has_arg = required_argument,
             .flag = nullptr,
-            .val = Options::TEST },
+            .val = Options::TEST_MODE },
     option{ .name = "aot",
             .has_arg = required_argument,
             .flag = nullptr,
@@ -438,6 +447,10 @@ Args parse_args(int argc, char* argv[])
             .has_arg = no_argument,
             .flag = nullptr,
             .val = Options::DRY_RUN },
+    option{ .name = "verify-llvm-ir",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::VERIFY_LLVM_IR },
     option{ .name = nullptr, .has_arg = 0, .flag = nullptr, .val = 0 }, // Must
                                                                         // be
                                                                         // last
@@ -464,11 +477,16 @@ Args parse_args(int argc, char* argv[])
         args.no_warnings = true;
         args.helper_check_level = 0;
         break;
-      case Options::TEST: // --test
-        if (std::strcmp(optarg, "codegen") == 0)
+      case Options::TEST_MODE: // --test-mode
+        if (std::strcmp(optarg, "codegen") == 0) {
           args.test_mode = TestMode::CODEGEN;
-        else {
-          LOG(ERROR) << "USAGE: --test can only be 'codegen'.";
+        } else if (std::strcmp(optarg, "compiler-bench") == 0) {
+          args.test_mode = TestMode::COMPILER_BENCHMARK;
+        } else if (std::strcmp(optarg, "bench") == 0) {
+          args.test_mode = TestMode::BPF_BENCHMARK;
+        } else {
+          LOG(ERROR) << "USAGE: --test can only be 'codegen', "
+                        "'compiler-bench', or 'bench'.";
           exit(1);
         }
         break;
@@ -485,6 +503,9 @@ Args parse_args(int argc, char* argv[])
         break;
       case Options::DRY_RUN:
         dry_run = true;
+        break;
+      case Options::VERIFY_LLVM_IR:
+        args.verify_llvm_ir = true;
         break;
       case 'o':
         args.output_file = optarg;
@@ -620,14 +641,17 @@ Args parse_args(int argc, char* argv[])
       optind++;
     }
 
-    // Load positional parameters before driver runs so positional
-    // parameters used inside attach point definitions can be resolved.
+    // Parse positional and named parameters.
     while (optind < argc) {
-      args.params.emplace_back(argv[optind]);
+      auto pos_arg = std::string(argv[optind]);
+      if (pos_arg.starts_with("--")) {
+        args.named_params.emplace_back(pos_arg.substr(2));
+      } else {
+        args.params.emplace_back(argv[optind]);
+      }
       optind++;
     }
   }
-
   return args;
 }
 
@@ -662,10 +686,7 @@ static ast::ASTContext buildListProgram(const std::string& search)
   ast.root = ast.make_node<ast::Program>("",
                                          nullptr,
                                          ast::ImportList(),
-                                         ast::MapDeclList(),
-                                         ast::MacroList(),
-                                         ast::SubprogList(),
-                                         ast::ProbeList({ probe }),
+                                         ast::RootStatements({ probe }),
                                          location());
   return ast;
 }
@@ -673,18 +694,7 @@ static ast::ASTContext buildListProgram(const std::string& search)
 int main(int argc, char* argv[])
 {
   Log::get().set_colorize(is_colorize());
-  const Args args = parse_args(argc, argv);
-  std::ostream* os = &std::cout;
-  std::ofstream outputstream;
-  if (!args.output_file.empty()) {
-    outputstream.open(args.output_file);
-    if (outputstream.fail()) {
-      LOG(ERROR) << "Failed to open output file: \"" << args.output_file
-                 << "\": " << strerror(errno);
-      exit(1);
-    }
-    os = &outputstream;
-  }
+  Args args = parse_args(argc, argv);
 
   switch (args.obc) {
     case OutputBufferConfig::UNSET:
@@ -717,12 +727,20 @@ int main(int argc, char* argv[])
   bpftrace.helper_check_level_ = args.helper_check_level;
   bpftrace.boottime_ = get_boottime();
   bpftrace.delta_taitime_ = get_delta_taitime();
+  bpftrace.run_benchmarks_ = args.test_mode == TestMode::BPF_BENCHMARK;
 
   if (!args.pid_str.empty()) {
-    std::string errmsg;
-    auto maybe_pid = util::parse_pid(args.pid_str, errmsg);
-    if (!maybe_pid.has_value()) {
-      LOG(ERROR) << "Failed to parse pid: " + errmsg;
+    auto maybe_pid = util::to_uint(args.pid_str);
+    if (!maybe_pid) {
+      LOG(ERROR) << "Failed to parse pid: " << maybe_pid.takeError();
+      exit(1);
+    }
+    if (*maybe_pid > 0x400000) {
+      // The actual maximum pid depends on the configuration for the specific
+      // system, i.e. read from `/proc/sys/kernel/pid_max`. We can impose a
+      // basic sanity check here against the nominal maximum for 64-bit
+      // systems.
+      LOG(ERROR) << "Pid out of range: " << *maybe_pid;
       exit(1);
     }
     try {
@@ -743,9 +761,9 @@ int main(int argc, char* argv[])
     }
   }
 
-  // This is our primary program AST context. Initially it is empty, i.e. there
-  // is no filename set or source file. The way we set it up depends on the
-  // mode of execution below, and we expect that it will be reinitialized.
+  // This is our primary program AST context. Initially it is empty, i.e.
+  // there is no filename set or source file. The way we set it up depends on
+  // the mode of execution below, and we expect that it will be reinitialized.
   ast::ASTContext ast;
 
   // Listing probes when there is no program.
@@ -765,21 +783,26 @@ int main(int argc, char* argv[])
     // To list tracepoints, we construct a synthetic AST and then expand the
     // probe. The raw contents of the program are the initial search provided.
     ast = buildListProgram(is_search_a_type ? FULL_SEARCH : args.search);
-    CDefinitions no_c_defs; // No external C definitions may be used.
+    ast::CDefinitions no_c_defs; // No external C definitions may be used.
+    ast::TypeMetadata no_types;  // No external types may be used.
 
-    // Parse and expand all the attachpoints. We don't need to descend into the
-    // actual driver here, since we know that the program is already formed.
-    auto ok = ast::PassManager()
-                  .put(ast)
-                  .put(bpftrace)
-                  .put(no_c_defs)
-                  .add(ast::CreateParseAttachpointsPass(args.listing))
-                  .add(CreateParseBTFPass())
-                  .add(ast::CreateMapSugarPass())
-                  .add(ast::CreateSemanticPass(args.listing))
-                  .run();
-    if (!ok) {
-      std::cerr << ok.takeError() << "\n";
+    // Parse and expand all the attachpoints. We don't need to descend into
+    // the actual driver here, since we know that the program is already
+    // formed.
+    auto pmresult = ast::PassManager()
+                        .put(ast)
+                        .put(bpftrace)
+                        .put(no_c_defs)
+                        .put(no_types)
+                        .add(ast::CreateParseAttachpointsPass(args.listing))
+                        .add(CreateParseBTFPass())
+                        .add(ast::CreateMapSugarPass())
+                        .add(ast::CreateNamedParamsPass())
+                        .add(ast::CreateSemanticPass(args.listing))
+                        .run();
+
+    if (!pmresult) {
+      std::cerr << pmresult.takeError() << "\n";
       return 2;
     } else if (!ast.diagnostics().ok()) {
       ast.diagnostics().emit(std::cerr);
@@ -829,7 +852,7 @@ int main(int argc, char* argv[])
   }
 
   // If we are not running anything, then we don't require root.
-  if (args.test_mode != TestMode::CODEGEN) {
+  if (args.test_mode == TestMode::NONE) {
     check_is_root();
 
     auto lockdown_state = lockdown::detect();
@@ -845,27 +868,30 @@ int main(int argc, char* argv[])
 
   // Temporarily, we make the full `BPFTrace` object available via the pass
   // manager (and objects are temporarily mutable). As passes are refactored
-  // into lighter-weight components, the `BPFTrace` object should be decomposed
-  // into its meaningful parts. Furthermore, the codegen and field analysis
-  // passes will be rolled into the pass manager as regular passes; the final
-  // binary is merely one of the outputs that can be extracted.
+  // into lighter-weight components, the `BPFTrace` object should be
+  // decomposed into its meaningful parts. Furthermore, the codegen and field
+  // analysis passes will be rolled into the pass manager as regular passes;
+  // the final binary is merely one of the outputs that can be extracted.
   ast::PassManager pm;
   pm.put(ast);
   pm.put(bpftrace);
   auto flags = extra_flags(bpftrace, args.include_dirs, args.include_files);
 
   if (args.listing) {
-    CDefinitions no_c_defs; // See above.
-    pm.add(CreateParsePass())
+    ast::CDefinitions no_c_defs; // See above.
+    ast::TypeMetadata no_types;  // See above.
+    pm.add(CreateParsePass(bpftrace.max_ast_nodes_))
         .put(no_c_defs)
+        .put(no_types)
         .add(ast::CreateParseAttachpointsPass(args.listing))
         .add(CreateParseBTFPass())
         .add(ast::CreateMapSugarPass())
+        .add(ast::CreateNamedParamsPass())
         .add(ast::CreateSemanticPass(args.listing));
 
-    auto ok = pm.run();
-    if (!ok) {
-      std::cerr << ok.takeError() << "\n";
+    auto pmresult = pm.run();
+    if (!pmresult) {
+      std::cerr << pmresult.takeError() << "\n";
       return 2;
     } else if (!ast.diagnostics().ok()) {
       ast.diagnostics().emit(std::cerr);
@@ -889,6 +915,7 @@ int main(int argc, char* argv[])
   for (auto& pass : ast::AllParsePasses(std::move(flags))) {
     addPass(std::move(pass));
   }
+  pm.add(ast::CreateLLVMInitPass());
 
   switch (args.build_mode) {
     case BuildMode::DYNAMIC:
@@ -899,8 +926,11 @@ int main(int argc, char* argv[])
       break;
   }
 
-  pm.add(ast::CreateLLVMInitPass());
+  if (bt_debug.contains(DebugStage::Types)) {
+    pm.add(ast::CreateDumpTypesPass(std::cout));
+  }
   pm.add(ast::CreateCompilePass());
+  pm.add(ast::CreateLinkBitcodePass());
   if (bt_debug.contains(DebugStage::Codegen)) {
     pm.add(ast::Pass::create("dump-ir-prefix", [&] {
       std::cout << "LLVM IR before optimization\n";
@@ -913,10 +943,7 @@ int main(int argc, char* argv[])
     output_ir = std::ofstream(args.output_llvm + ".original.ll");
     pm.add(ast::CreateDumpIRPass(*output_ir));
   }
-  bool verify_llvm_ir = false;
-  util::get_bool_env_var("BPFTRACE_VERIFY_LLVM_IR",
-                         [&](bool x) { verify_llvm_ir = x; });
-  if (verify_llvm_ir) {
+  if (args.verify_llvm_ir) {
     pm.add(ast::CreateVerifyPass());
   }
   pm.add(ast::CreateOptimizePass());
@@ -949,6 +976,16 @@ int main(int argc, char* argv[])
   pm.add(ast::CreateExternObjectPass());
   pm.add(ast::CreateLinkPass());
 
+  if (args.test_mode == TestMode::COMPILER_BENCHMARK) {
+    info(args.no_feature);
+    auto ok = benchmark(std::cout, pm);
+    if (!ok) {
+      std::cerr << "Benchmark error: " << ok.takeError();
+      return 1;
+    }
+    return 0;
+  }
+
   auto pmresult = pm.run();
   if (!pmresult) {
     std::cerr << pmresult.takeError() << "\n";
@@ -972,21 +1009,12 @@ int main(int argc, char* argv[])
   if (args.test_mode == TestMode::CODEGEN)
     return 0;
 
-  // Our output requires the parsed C definitions in order to map enum values to
-  // the suitable display name.
-  auto& c_definitions = pmresult->get<CDefinitions>();
-  std::unique_ptr<Output> output;
-  if (args.output_format.empty() || args.output_format == "text") {
-    output = std::make_unique<TextOutput>(c_definitions, *os);
-  } else if (args.output_format == "json") {
-    output = std::make_unique<JsonOutput>(c_definitions, *os);
-  } else {
-    LOG(ERROR) << "Invalid output format \"" << args.output_format << "\"\n"
-               << "Valid formats: 'text', 'json'";
-    usage(std::cerr);
-    exit(1);
-  }
-
+  auto c_definitions = pmresult->get<ast::CDefinitions>();
   auto& bytecode = pmresult->get<BpfBytecode>();
-  return run_bpftrace(bpftrace, *output, bytecode);
+  return run_bpftrace(bpftrace,
+                      args.output_file,
+                      args.output_format,
+                      c_definitions,
+                      bytecode,
+                      std::move(args.named_params));
 }

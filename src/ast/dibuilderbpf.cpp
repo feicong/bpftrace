@@ -17,10 +17,10 @@ DIBuilderBPF::DIBuilderBPF(Module &module) : DIBuilder(module)
   file = createFile("bpftrace.bpf.o", ".");
 }
 
-void DIBuilderBPF::createFunctionDebugInfo(llvm::Function &func,
-                                           const SizedType &ret_type,
-                                           const Struct &args,
-                                           bool is_declaration)
+DILocalScope *DIBuilderBPF::createFunctionDebugInfo(llvm::Function &func,
+                                                    const SizedType &ret_type,
+                                                    const Struct &args,
+                                                    bool is_declaration)
 {
   // Return type should be at index 0
   SmallVector<Metadata *> types;
@@ -84,16 +84,17 @@ void DIBuilderBPF::createFunctionDebugInfo(llvm::Function &func,
   }
 
   func.setSubprogram(subprog);
+  return subprog;
 }
 
-void DIBuilderBPF::createProbeDebugInfo(llvm::Function &probe_func)
+DILocalScope *DIBuilderBPF::createProbeDebugInfo(llvm::Function &probe_func)
 {
   // BPF probe function has:
   // - int return type
   // - single parameter (ctx) of a pointer type
   Struct args;
   args.AddField("ctx", CreatePointer(CreateInt8()));
-  createFunctionDebugInfo(probe_func, CreateInt64(), args);
+  return createFunctionDebugInfo(probe_func, CreateInt64(), args);
 }
 
 DIType *DIBuilderBPF::getInt8Ty()
@@ -214,6 +215,63 @@ DIType *DIBuilderBPF::CreateMapStructType(const SizedType &stype)
   return result;
 }
 
+DIType *DIBuilderBPF::CreateTSeriesStructType(const SizedType &stype)
+{
+  assert(stype.IsTSeriesTy());
+
+  // The first field is the value, the second field is metadata associated with
+  // the value, and the third field is the epoch, a number representing the
+  // bucket's time interval. The interpretation of the value and metadata fields
+  // depends on the time series's aggregation function:
+  //
+  // +-----+-------+----------+----------------------------------------------+
+  // | agg | value | metadata | explanation                                  |
+  // +-----+-------+----------+----------------------------------------------+
+  // | avg | total | count    | avg = total / count                          |
+  // | max | max   | is_set   | is_set = "value is set"                      |
+  // | min | min   | is_set   | is_set = "value is set"                      |
+  // | sum | sum   | -        | metadata not used                            |
+  // | -   | value | now      | now is the timestamp when value was recorded |
+  // +-----+-------+----------+----------------------------------------------+
+  SmallVector<Metadata *, 3> fields = { createMemberType(file,
+                                                         "",
+                                                         file,
+                                                         0,
+                                                         stype.GetSize() * 8,
+                                                         0,
+                                                         0,
+                                                         DINode::FlagZero,
+                                                         getInt64Ty()),
+                                        createMemberType(file,
+                                                         "",
+                                                         file,
+                                                         0,
+                                                         stype.GetSize() * 8,
+                                                         0,
+                                                         stype.GetSize() * 8,
+                                                         DINode::FlagZero,
+                                                         getInt64Ty()),
+                                        createMemberType(file,
+                                                         "",
+                                                         file,
+                                                         0,
+                                                         stype.GetSize() * 8,
+                                                         0,
+                                                         stype.GetSize() * 16,
+                                                         DINode::FlagZero,
+                                                         getInt64Ty()) };
+  DICompositeType *result = createStructType(file,
+                                             "",
+                                             file,
+                                             0,
+                                             (stype.GetSize() * 8) * 3,
+                                             0,
+                                             DINode::FlagZero,
+                                             nullptr,
+                                             getOrCreateArray(fields));
+  return result;
+}
+
 DIType *DIBuilderBPF::CreateByteArrayType(uint64_t num_bytes)
 {
   auto *subrange = getOrCreateSubrange(0, num_bytes);
@@ -278,6 +336,8 @@ DIType *DIBuilderBPF::GetType(const SizedType &stype, bool emit_codegen_types)
   if (stype.IsMinTy() || stype.IsMaxTy() || stype.IsAvgTy() ||
       stype.IsStatsTy())
     return CreateMapStructType(stype);
+  else if (stype.IsTSeriesTy())
+    return CreateTSeriesStructType(stype);
 
   if (stype.IsPtrTy())
     return emit_codegen_types ? getInt64Ty()
@@ -319,7 +379,8 @@ DIType *DIBuilderBPF::GetMapKeyType(const SizedType &key_type,
   }
 
   // Some map types need an extra 8-byte key.
-  if (value_type.IsHistTy() || value_type.IsLhistTy()) {
+  if (value_type.IsHistTy() || value_type.IsLhistTy() ||
+      value_type.IsTSeriesTy()) {
     uint64_t size = key_type.GetSize() + 8;
     return CreateByteArrayType(size);
   }
@@ -385,6 +446,13 @@ DIGlobalVariableExpression *DIBuilderBPF::createGlobalVariable(
 {
   return createGlobalVariableExpression(
       file, name, "global", file, 0, GetType(stype, false), false);
+}
+
+DILocation *DIBuilderBPF::createDebugLocation(llvm::LLVMContext &ctx,
+                                              DILocalScope *scope,
+                                              const ast::Location &loc)
+{
+  return llvm::DILocation::get(ctx, loc->line(), loc->column(), scope);
 }
 
 } // namespace bpftrace::ast

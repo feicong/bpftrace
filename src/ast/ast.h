@@ -1,5 +1,6 @@
 #pragma once
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -13,6 +14,7 @@
 #include "probe_types.h"
 #include "types.h"
 #include "usdt.h"
+#include "util/strings.h"
 
 namespace bpftrace::ast {
 
@@ -50,25 +52,9 @@ enum class Operator {
   BNOT,
 };
 
-// There are 2 kinds of attach point expansion:
-// - full expansion  - separate LLVM function is generated for each match
-// - multi expansion - one LLVM function and BPF program is generated for all
-//                     matches, the list of expanded functions is attached to
-//                     the BPF program using the k(u)probe.multi mechanism
-// - session expansion - extension of the multi expansion when a single BPF
-//                       program is shared for both the entry and the exit probe
-//                       (when they are both attached to the same attach points)
-//                       using the kprobe.session mechanism
-enum class ExpansionType {
-  NONE,
-  FULL,
-  MULTI,
-  SESSION,
-};
-
 class Node {
 public:
-  Node(ASTContext &ctx, Location &&loc) : ctx_(ctx), loc(loc) {};
+  Node(ASTContext &ctx, Location &&loc) : state_(*ctx.state_), loc(loc) {};
   virtual ~Node() = default;
 
   Node(const Node &) = delete;
@@ -80,7 +66,12 @@ public:
   Diagnostic &addWarning() const;
 
 private:
-  ASTContext &ctx_;
+  // N.B. it is not legal to hold on to a long-term reference to `ASTContext&`,
+  // as this is generally movable. Therefore, we hold on to the internal state
+  // only, which will not be moving.
+  //
+  // See `ASTContext::State` for more information.
+  ASTContext::State &state_;
 
 public:
   // This is temporarily accessible by other classes because we don't have a
@@ -128,6 +119,7 @@ public:
 
 class Integer;
 class NegativeInteger;
+class Boolean;
 class PositionalParameter;
 class PositionalParameterCount;
 class String;
@@ -138,6 +130,8 @@ class Sizeof;
 class Offsetof;
 class Map;
 class Variable;
+class VariableAddr;
+class MapAddr;
 class Binop;
 class Unop;
 class FieldAccess;
@@ -147,10 +141,11 @@ class MapAccess;
 class Cast;
 class Tuple;
 class Ternary;
-class Block;
+class BlockExpr;
 
 class Expression : public VariantNode<Integer,
                                       NegativeInteger,
+                                      Boolean,
                                       PositionalParameter,
                                       PositionalParameterCount,
                                       String,
@@ -161,6 +156,8 @@ class Expression : public VariantNode<Integer,
                                       Offsetof,
                                       Map,
                                       Variable,
+                                      VariableAddr,
+                                      MapAddr,
                                       Binop,
                                       Unop,
                                       FieldAccess,
@@ -170,10 +167,10 @@ class Expression : public VariantNode<Integer,
                                       Cast,
                                       Tuple,
                                       Ternary,
-                                      Block> {
+                                      BlockExpr> {
 public:
   using VariantNode::VariantNode;
-  Expression() : Expression(static_cast<Block *>(nullptr)) {};
+  Expression() : Expression(static_cast<BlockExpr *>(nullptr)) {};
 
   // The `type` method is the only common thing required by all expression
   // types. This will on the variant types.
@@ -191,6 +188,7 @@ class Unroll;
 class Jump;
 class While;
 class For;
+class Block;
 
 class Statement : public VariantNode<ExprStatement,
                                      VarDeclStatement,
@@ -201,19 +199,37 @@ class Statement : public VariantNode<ExprStatement,
                                      Unroll,
                                      Jump,
                                      While,
-                                     For> {
+                                     For,
+                                     Block> {
 public:
   using VariantNode::VariantNode;
   Statement() : Statement(static_cast<ExprStatement *>(nullptr)) {};
 };
 using StatementList = std::vector<Statement>;
 
+class Macro;
+class MapDeclStatement;
+class Probe;
+class Subprog;
+
+class RootStatement
+    : public VariantNode<Probe, Subprog, Macro, MapDeclStatement> {
+public:
+  using VariantNode::VariantNode;
+  RootStatement() : RootStatement(static_cast<Probe *>(nullptr)) {};
+};
+using RootStatements = std::vector<RootStatement>;
+
 class Integer : public Node {
 public:
-  explicit Integer(ASTContext &ctx, uint64_t n, Location &&loc)
+  explicit Integer(ASTContext &ctx,
+                   uint64_t n,
+                   Location &&loc,
+                   bool force_unsigned = false)
       : Node(ctx, std::move(loc)),
-        integer_type(n >= std::numeric_limits<int64_t>::max() ? CreateUInt64()
-                                                              : CreateInt64()),
+        integer_type(force_unsigned || n > std::numeric_limits<int64_t>::max()
+                         ? CreateUInt64()
+                         : CreateInt64()),
         value(n) {};
   explicit Integer(ASTContext &ctx, const Integer &other, const Location &loc)
       : Node(ctx, loc + other.loc),
@@ -225,9 +241,13 @@ public:
     return integer_type;
   }
 
-  // This literal has a dynamic type, but it is not mutable. The type is always
-  // signed if the signed value is capable of holding the literal, otherwise it
-  // is unsigned.
+  // This literal has a dynamic type, but it is not mutable. The type is
+  // generally signed if the signed value is capable of holding the literal,
+  // otherwise it is unsigned. This is the existing convention.
+  //
+  // However, the `force_unsigned` parameter can override this. This can be
+  // used for small cases that are explicitly unsigned (e.g. `sizeof`), and is
+  // preserved when folding literals in order to provide the intuitive type.
   const SizedType integer_type;
   const uint64_t value;
 };
@@ -248,6 +268,22 @@ public:
   }
 
   const int64_t value;
+};
+
+class Boolean : public Node {
+public:
+  explicit Boolean(ASTContext &ctx, bool val, Location &&loc)
+      : Node(ctx, std::move(loc)), value(val) {};
+  explicit Boolean(ASTContext &ctx, const Boolean &other, const Location &loc)
+      : Node(ctx, loc + other.loc), value(other.value) {};
+
+  const SizedType &type() const
+  {
+    static SizedType boolean = CreateBool();
+    return boolean;
+  }
+
+  const bool value;
 };
 
 class PositionalParameter : public Node {
@@ -340,11 +376,24 @@ public:
     return builtin_type;
   }
 
-  // Check if the builtin is 'arg0' - 'arg9'
+  // Check if the builtin is 'arg0' - 'arg255'
   bool is_argx() const
   {
-    return !ident.compare(0, 3, "arg") && ident.size() == 4 &&
-           ident.at(3) >= '0' && ident.at(3) <= '9';
+    if (ident.size() < 4 || ident.size() > 6 || !ident.starts_with("arg"))
+      return false;
+
+    std::string num_part = ident.substr(3);
+
+    // no leading zeros
+    if (num_part.size() > 1 && num_part.front() == '0')
+      return false;
+
+    int arg_num = 0;
+    auto [ptr, ec] = std::from_chars(num_part.data(),
+                                     num_part.data() + num_part.size(),
+                                     arg_num);
+    return ec == std::errc() && ptr == num_part.data() + num_part.size() &&
+           arg_num >= 0 && arg_num < 256;
   }
 
   std::string ident;
@@ -385,6 +434,7 @@ public:
   // happens, this number is increased so that later error reporting can
   // correctly account for this.
   size_t injected_args = 0;
+  bool ret_val_discarded = false;
 };
 
 class Sizeof : public Node {
@@ -398,6 +448,7 @@ public:
 
   const SizedType &type() const
   {
+    // See exception for Integer type construction.
     static SizedType uint64 = CreateUInt64();
     return uint64;
   }
@@ -424,6 +475,7 @@ public:
 
   const SizedType &type() const
   {
+    // See exception for Integer type construction.
     static SizedType uint64 = CreateUInt64();
     return uint64;
   }
@@ -493,6 +545,42 @@ public:
 
   std::string ident;
   SizedType var_type;
+};
+
+class VariableAddr : public Node {
+public:
+  explicit VariableAddr(ASTContext &ctx, Variable *var, Location &&loc)
+      : Node(ctx, std::move(loc)), var(var), var_addr_type(CreateNone()) {};
+  explicit VariableAddr(ASTContext &ctx,
+                        const VariableAddr &other,
+                        const Location &loc)
+      : Node(ctx, loc + other.loc),
+        var(other.var),
+        var_addr_type(other.var_addr_type) {};
+
+  const SizedType &type() const
+  {
+    return var_addr_type;
+  }
+
+  Variable *var = nullptr;
+  SizedType var_addr_type;
+};
+
+class MapAddr : public Node {
+public:
+  explicit MapAddr(ASTContext &ctx, Map *map, Location &&loc)
+      : Node(ctx, std::move(loc)), map(map) {};
+  explicit MapAddr(ASTContext &ctx, const MapAddr &other, const Location &loc)
+      : Node(ctx, loc + other.loc), map(other.map) {};
+
+  const SizedType &type() const
+  {
+    static SizedType voidptr = CreatePointer(CreateVoid());
+    return voidptr;
+  }
+
+  Map *map = nullptr;
 };
 
 class Binop : public Node {
@@ -817,12 +905,17 @@ public:
         var(std::move(var)),
         value(std::move(value)) {};
   explicit AssignConfigVarStatement(ASTContext &ctx,
+                                    std::string var,
+                                    bool value,
+                                    Location &&loc)
+      : Node(ctx, std::move(loc)), var(std::move(var)), value(value) {};
+  explicit AssignConfigVarStatement(ASTContext &ctx,
                                     const AssignConfigVarStatement &other,
                                     const Location &loc)
       : Node(ctx, loc + other.loc), var(other.var), value(other.value) {};
 
   std::string var;
-  std::variant<uint64_t, std::string> value;
+  std::variant<uint64_t, std::string, bool> value;
 };
 using ConfigStatementList = std::vector<AssignConfigVarStatement *>;
 
@@ -830,32 +923,41 @@ class Block : public Node {
 public:
   explicit Block(ASTContext &ctx, StatementList &&stmts, Location &&loc)
       : Node(ctx, std::move(loc)), stmts(std::move(stmts)) {};
-  explicit Block(ASTContext &ctx,
-                 StatementList &&stmts,
-                 Expression expr,
-                 Location &&loc)
-      : Node(ctx, std::move(loc)),
-        stmts(std::move(stmts)),
-        expr(std::move(expr)) {};
   explicit Block(ASTContext &ctx, const Block &other, const Location &loc)
-      : Node(ctx, loc + other.loc),
-        stmts(clone(ctx, other.stmts, loc)),
-        expr(clone(ctx, other.expr, loc)) {};
+      : Node(ctx, loc + other.loc), stmts(clone(ctx, other.stmts, loc)) {};
 
-  static const SizedType &none_type()
+  const SizedType &type() const
   {
     static SizedType none = CreateNone();
     return none;
   }
+
+  StatementList stmts;
+};
+
+class BlockExpr : public Node {
+public:
+  explicit BlockExpr(ASTContext &ctx,
+                     StatementList &&stmts,
+                     Expression expr,
+                     Location &&loc)
+      : Node(ctx, std::move(loc)),
+        stmts(std::move(stmts)),
+        expr(std::move(expr)) {};
+  explicit BlockExpr(ASTContext &ctx,
+                     const BlockExpr &other,
+                     const Location &loc)
+      : Node(ctx, loc + other.loc),
+        stmts(clone(ctx, other.stmts, loc)),
+        expr(clone(ctx, other.expr, loc)) {};
+
   const SizedType &type() const
   {
-    return expr.has_value() ? expr->type() : none_type();
+    return expr.type();
   }
 
   StatementList stmts;
-  // Depending on how it is parsed, a block can also be evaluated as an
-  // expression. This follows all other statements in the block.
-  std::optional<Expression> expr;
+  Expression expr;
 };
 
 class If : public Node {
@@ -970,6 +1072,28 @@ public:
   Block *block = nullptr;
 };
 
+class Range : public Node {
+public:
+  explicit Range(ASTContext &ctx,
+                 Expression start,
+                 Expression end,
+                 Location &&loc)
+      : Node(ctx, std::move(loc)), start(start), end(end) {};
+  explicit Range(ASTContext &ctx, const Range &other, const Location &loc)
+      : Node(ctx, loc + other.loc),
+        start(clone(ctx, other.start, loc)),
+        end(clone(ctx, other.end, loc)) {};
+
+  Expression start;
+  Expression end;
+};
+
+class Iterable : public VariantNode<Map, Range> {
+public:
+  using VariantNode::VariantNode;
+  Iterable() : Iterable(static_cast<Map *>(nullptr)) {};
+};
+
 class For : public Node {
 public:
   explicit For(ASTContext &ctx,
@@ -979,16 +1103,25 @@ public:
                Location &&loc)
       : Node(ctx, std::move(loc)),
         decl(decl),
-        map(map),
+        iterable(map),
+        stmts(std::move(stmts)) {};
+  explicit For(ASTContext &ctx,
+               Variable *decl,
+               Range *range,
+               StatementList &&stmts,
+               Location &&loc)
+      : Node(ctx, std::move(loc)),
+        decl(decl),
+        iterable(range),
         stmts(std::move(stmts)) {};
   explicit For(ASTContext &ctx, const For &other, const Location &loc)
       : Node(ctx, loc + other.loc),
         decl(clone(ctx, other.decl, loc)),
-        map(clone(ctx, other.map, loc)),
+        iterable(clone(ctx, other.iterable, loc)),
         stmts(clone(ctx, other.stmts, loc)) {};
 
   Variable *decl = nullptr;
-  Map *map = nullptr;
+  Iterable iterable;
   StatementList stmts;
   SizedType ctx_type;
 };
@@ -1029,8 +1162,6 @@ public:
         len(other.len),
         mode(other.mode),
         async(other.async),
-        expansion(other.expansion),
-        ret_probe(other.ret_probe),
         address(other.address),
         func_offset(other.func_offset),
         ignore_invalid(other.ignore_invalid),
@@ -1062,25 +1193,34 @@ public:
   std::string mode;   // for watchpoint probes, the watch mode
   bool async = false; // for watchpoint probes, if it's an async watchpoint
 
-  ExpansionType expansion = ExpansionType::NONE;
-  Probe *ret_probe = nullptr; // for session probes
-
   uint64_t address = 0;
   uint64_t func_offset = 0;
+  uint64_t bpf_prog_id = 0;
   bool ignore_invalid = false;
 
   std::string name() const;
 
-  AttachPoint &create_expansion_copy(ASTContext &ctx,
+  AttachPoint *create_expansion_copy(ASTContext &ctx,
                                      const std::string &match) const;
 
   int index() const;
   void set_index(int index);
 
+  bool check_available(const std::string &identifier) const;
+
 private:
   int index_ = 0;
 };
 using AttachPointList = std::vector<AttachPoint *>;
+
+inline std::string probe_orig_name(AttachPointList &aps)
+{
+  std::vector<std::string> ap_names;
+  std::ranges::transform(aps,
+                         std::back_inserter(ap_names),
+                         [](const AttachPoint *ap) { return ap->raw_input; });
+  return util::str_join(ap_names, ",");
+}
 
 class Probe : public Node {
 public:
@@ -1092,22 +1232,22 @@ public:
       : Node(ctx, std::move(loc)),
         attach_points(std::move(attach_points)),
         pred(pred),
-        block(block) {};
+        block(block),
+        orig_name(probe_orig_name(this->attach_points)) {};
   explicit Probe(ASTContext &ctx, const Probe &other, const Location &loc)
       : Node(ctx, loc + other.loc),
         attach_points(clone(ctx, other.attach_points, loc)),
         pred(clone(ctx, other.pred, loc)),
         block(clone(ctx, other.block, loc)),
-        need_expansion(other.need_expansion),
+        orig_name(other.orig_name),
         index_(other.index_) {};
 
   AttachPointList attach_points;
   Predicate *pred = nullptr;
   Block *block = nullptr;
+  std::string orig_name;
 
-  std::string name() const;
   std::string args_typename() const;
-  bool need_expansion = false; // must build a BPF program per wildcard match
 
   int index() const;
   void set_index(int index);
@@ -1181,6 +1321,15 @@ public:
   Macro(ASTContext &ctx,
         std::string name,
         ExpressionList &&vargs,
+        BlockExpr *block_expr,
+        Location &&loc)
+      : Node(ctx, std::move(loc)),
+        name(std::move(name)),
+        vargs(std::move(vargs)),
+        block(block_expr) {};
+  Macro(ASTContext &ctx,
+        std::string name,
+        ExpressionList &&vargs,
         Block *block,
         Location &&loc)
       : Node(ctx, std::move(loc)),
@@ -1195,7 +1344,7 @@ public:
 
   std::string name;
   ExpressionList vargs;
-  Block *block;
+  std::variant<BlockExpr *, Block *> block;
 };
 using MacroList = std::vector<Macro *>;
 
@@ -1205,19 +1354,25 @@ public:
                    std::string c_definitions,
                    Config *config,
                    ImportList &&imports,
-                   MapDeclList &&map_decls,
-                   MacroList &&macros,
-                   SubprogList &&functions,
-                   ProbeList &&probes,
+                   RootStatements &&root_statements,
                    Location &&loc)
       : Node(ctx, std::move(loc)),
         c_definitions(std::move(c_definitions)),
         config(config),
-        imports(std::move(imports)),
-        map_decls(std::move(map_decls)),
-        macros(std::move(macros)),
-        functions(std::move(functions)),
-        probes(std::move(probes)) {};
+        imports(std::move(imports))
+  {
+    for (auto &stmt : root_statements) {
+      if (auto *map_decl = stmt.as<MapDeclStatement>()) {
+        map_decls.push_back(map_decl);
+      } else if (auto *macro = stmt.as<Macro>()) {
+        macros.push_back(macro);
+      } else if (auto *function = stmt.as<Subprog>()) {
+        functions.push_back(function);
+      } else if (auto *probe = stmt.as<Probe>()) {
+        probes.push_back(probe);
+      }
+    }
+  };
   explicit Program(ASTContext &ctx, const Program &other, const Location &loc)
       : Node(ctx, loc + other.loc),
         c_definitions(other.c_definitions),
@@ -1235,11 +1390,14 @@ public:
   MacroList macros;
   SubprogList functions;
   ProbeList probes;
+
+  void clear_empty_probes();
 };
 
 std::string opstr(const Binop &binop);
 std::string opstr(const Unop &unop);
 std::string opstr(const Jump &jump);
+bool is_comparison_op(Operator op);
 
 SizedType ident_to_record(const std::string &ident, int pointer_level = 0);
 SizedType ident_to_sized_type(const std::string &ident);

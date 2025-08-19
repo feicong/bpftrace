@@ -16,7 +16,7 @@ ASTSource::ASTSource(std::string &&filename, std::string &&input)
 }
 
 ASTContext::ASTContext(std::string &&filename, std::string &&contents)
-    : diagnostics_(std::make_unique<Diagnostics>()),
+    : state_(std::make_unique<State>()),
       source_(
           std::make_shared<ASTSource>(std::move(filename), std::move(contents)))
 {
@@ -28,6 +28,17 @@ ASTContext::ASTContext(const std::string &filename, const std::string &contents)
 }
 
 ASTContext::ASTContext() : ASTContext("", "")
+{
+}
+
+void ASTContext::clear()
+{
+  root = nullptr;
+  state_->nodes_.clear();
+  state_->diagnostics_->clear();
+}
+
+ASTContext::State::State() : diagnostics_(std::make_unique<Diagnostics>())
 {
 }
 

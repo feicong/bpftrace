@@ -30,13 +30,18 @@ static std::unordered_set<std::string> current_pid_paths;
 
 static void usdt_probe_each(struct bcc_usdt *usdt_probe)
 {
+#ifdef HAVE_LIBBPF_UPROBE_MULTI
+  int num_locations = 1;
+#else
+  int num_locations = usdt_probe->num_locations;
+#endif
   usdt_provider_cache[usdt_probe->bin_path][usdt_probe->provider].emplace_back(
       usdt_probe_entry{
           .path = usdt_probe->bin_path,
           .provider = usdt_probe->provider,
           .name = usdt_probe->name,
           .semaphore_offset = usdt_probe->semaphore_offset,
-          .num_locations = usdt_probe->num_locations,
+          .num_locations = num_locations,
       });
   current_pid_paths.emplace(usdt_probe->bin_path);
 }
@@ -97,7 +102,12 @@ usdt_probe_list USDTHelper::probes_for_pid(int pid, bool print_error)
 usdt_probe_list USDTHelper::probes_for_all_pids()
 {
   usdt_probe_list probes;
-  for (int pid : util::get_all_running_pids()) {
+  auto pids = util::get_all_running_pids();
+  if (!pids) {
+    LOG(ERROR) << "Unable to get pids: " << pids.takeError();
+    return probes;
+  }
+  for (int pid : *pids) {
     for (auto &probe : probes_for_pid(pid, false)) {
       probes.push_back(std::move(probe));
     }
