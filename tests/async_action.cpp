@@ -1,10 +1,10 @@
 #include <regex>
 
 #include "ast/async_event_types.h"
+#include "ast/location.h"
 #include "async_action.h"
 #include "attached_probe.h"
 #include "bpftrace.h"
-#include "location.hh"
 #include "mocks.h"
 #include "output/text.h"
 #include "types.h"
@@ -23,7 +23,7 @@ class AsyncActionTest : public testing::Test {
 public:
   AsyncActionTest()
       : bpftrace(get_mock_bpftrace()),
-        output(out),
+        output(out, out),
         handlers(*bpftrace, no_c_defs, output) {};
 
   std::unique_ptr<MockBPFtrace> bpftrace;
@@ -173,18 +173,18 @@ TEST_F(AsyncActionTest, runtime_error)
 {
   struct TestCase {
     RuntimeErrorId rte_id;
-    libbpf::bpf_func_id func_id;
+    bpf_func_id func_id;
     int return_value;
     std::string expected_substring;
     std::string filename;
-    unsigned int line;
-    unsigned int column;
+    int line;
+    int column;
   };
 
   std::vector<TestCase> test_cases = {
     // case 1: `map_update_elem` returns `-E2BIG`
     { .rte_id = RuntimeErrorId::HELPER_ERROR,
-      .func_id = libbpf::BPF_FUNC_map_update_elem,
+      .func_id = BPF_FUNC_map_update_elem,
       .return_value = -E2BIG,
       .expected_substring = "WARNING: Map full; can't update element",
       .filename = std::string("test1.bt"),
@@ -192,7 +192,7 @@ TEST_F(AsyncActionTest, runtime_error)
       .column = 5 },
     // case 2: `map_delete_elem` returns `-ENOENT`
     { .rte_id = RuntimeErrorId::HELPER_ERROR,
-      .func_id = libbpf::BPF_FUNC_map_delete_elem,
+      .func_id = BPF_FUNC_map_delete_elem,
       .return_value = -ENOENT,
       .expected_substring =
           "WARNING: Can't delete map element because it does not exist",
@@ -201,7 +201,7 @@ TEST_F(AsyncActionTest, runtime_error)
       .column = 8 },
     // case 3: `map_lookup_elem` failed to lookup map element
     { .rte_id = RuntimeErrorId::HELPER_ERROR,
-      .func_id = libbpf::BPF_FUNC_map_lookup_elem,
+      .func_id = BPF_FUNC_map_lookup_elem,
       .return_value = 0,
       .expected_substring =
           "WARNING: Can't lookup map element because it does not exist",
@@ -210,7 +210,7 @@ TEST_F(AsyncActionTest, runtime_error)
       .column = 3 },
     // case 4: default case - other function ID and error code
     { .rte_id = RuntimeErrorId::HELPER_ERROR,
-      .func_id = libbpf::BPF_FUNC_trace_printk,
+      .func_id = BPF_FUNC_trace_printk,
       .return_value = -EPERM,
       .expected_substring = "WARNING: " + std::string(strerror(EPERM)),
       .filename = std::string("test4.bt"),
@@ -218,8 +218,8 @@ TEST_F(AsyncActionTest, runtime_error)
       .column = 1 },
     // case 5: divide by zero error
     { .rte_id = RuntimeErrorId::DIVIDE_BY_ZERO,
-      .func_id = libbpf::BPF_FUNC_trace_printk, // unused
-      .return_value = 0,                        // unused
+      .func_id = BPF_FUNC_trace_printk, // unused
+      .return_value = 0,                // unused
       .expected_substring =
           "WARNING: Divide or modulo by 0 detected. This can lead to "
           "unexpected results. 1 is being used as the result.",
@@ -230,8 +230,9 @@ TEST_F(AsyncActionTest, runtime_error)
 
   uint64_t async_id = 1;
   for (const auto &tc : test_cases) {
-    auto src_loc = ast::SourceLocation(
-        location(&tc.filename, tc.line, tc.column));
+    ast::SourceLocation src_loc;
+    src_loc.begin = { .line = tc.line, .column = tc.column };
+    src_loc.end = { .line = tc.line, .column = tc.column };
     auto location_chain = std::make_shared<ast::LocationChain>(src_loc);
     RuntimeErrorInfo info(tc.rte_id, tc.func_id, location_chain);
 

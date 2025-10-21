@@ -9,6 +9,71 @@ and this project adheres to
 ## Unreleased
 
 #### Breaking Changes
+- `exit()` is no longer allowed inside loops. `return` was always disallowed, and `exit()` implicitly returns, which may result in undefined behavior.
+  - [#4587](https://github.com/bpftrace/bpftrace/pull/4587)
+- Restrict bpftrace script licenses to those that are GPL compatible
+  - [#4677](https://github.com/bpftrace/bpftrace/pull/4677)
+- Remove the deprecated `sarg` builtin
+  - [#4686](https://github.com/bpftrace/bpftrace/pull/4686)
+#### Added
+- Add support for indexing string types
+  - [#4540](https://github.com/bpftrace/bpftrace/pull/4540)
+- Automatic dereferencing is supported via `.`, now the preferred access operator
+  - [#4673](https://github.com/bpftrace/bpftrace/pull/4673)
+- Add `signal_thread()` to target the current thread
+  - [#4700](https://github.com/bpftrace/bpftrace/pull/4700)
+- Add `probetype` builtin
+  - [#4712](https://github.com/bpftrace/bpftrace/pull/4712)
+- Allow array-style access for tuples
+  - [#4715](https://github.com/bpftrace/bpftrace/pull/4715)
+#### Changed
+- Apply `-B` buffering semantics to file outputs.
+  - [#4637](https://github.com/bpftrace/bpftrace/pull/4637)
+- Link against libbpf vendored from a submodule by default
+  - [#4688](https://github.com/bpftrace/bpftrace/pull/4688)
+- Increase RLIMIT_NOFILE on startup as needed
+  - [#4716](https://github.com/bpftrace/bpftrace/pull/4716)
+#### Deprecated
+#### Removed
+- Drop support for LLVM 16
+  - [#4534](https://github.com/bpftrace/bpftrace/pull/4534)
+#### Fixed
+- Improved tuple binop comparison
+  - [#4523](https://github.com/bpftrace/bpftrace/pull/4523)
+- Fix off-by-one for function argument size comparison
+  - [#4698](https://github.com/bpftrace/bpftrace/pull/4698)
+- Fix resolution of enum-typed tracepoint args
+  - [#4714](https://github.com/bpftrace/bpftrace/pull/4714)
+- Fix block expression handling inside print statements
+  - [#4704](https://github.com/bpftrace/bpftrace/issues/4704)
+#### Security
+#### Docs
+#### Tools
+- opensnoop.bt: support full file path
+  - [#4601](https://github.com/bpftrace/bpftrace/pull/4601)
+- gethostlatency.bt: add more APIs support
+  - [#4600](https://github.com/bpftrace/bpftrace/pull/4600)
+- oomkill.bt: support memory cgroup
+  - [#4533](https://github.com/bpftrace/bpftrace/pull/4533)
+
+## [0.24.1] 2025-10-03
+
+#### Fixed
+- Fix missing location.hh build error on Alpine
+  - [#4635](https://github.com/bpftrace/bpftrace/pull/4635)
+- Fix build with gcc-16
+  - [#4614](https://github.com/bpftrace/bpftrace/pull/4614)
+- ast: Avoid undefined behavior in literal folding
+  - [#4649](https://github.com/bpftrace/bpftrace/pull/4649)
+- Fix missing map key buffers for map aggregate functions
+  - [#4670](https://github.com/bpftrace/bpftrace/pull/4670)
+#### Docs
+- Fix docs for PERCPU map types
+  - [#4646](https://github.com/bpftrace/bpftrace/pull/4646)
+
+## [0.24.0] 2025-09-17
+
+#### Breaking Changes
 - Drop majority of DWARF support. Only uprobe argument parsing remains.
   - [#3921](https://github.com/bpftrace/bpftrace/pull/3921)
   - [#3950](https://github.com/bpftrace/bpftrace/pull/3950)
@@ -29,6 +94,8 @@ and this project adheres to
 - JSON serialization for unsupported and unknown types (e.g. `float`) may now
   use `null` now rather than the empty string
   - [#4302](https://github.com/bpftrace/bpftrace/pull/4302)
+- Text mode now emits all non-script generated output (e.g., errors, attached notifications) to `stderr` instead of `stdout`
+  - [#4504](https://github.com/bpftrace/bpftrace/pull/4504)
 #### Added
 - Add ncpus builtin to get the number of CPUs.
   - [#4105](https://github.com/bpftrace/bpftrace/pull/4105)
@@ -82,6 +149,12 @@ and this project adheres to
   - [#4414](https://github.com/bpftrace/bpftrace/pull/4414)
 - Add ability to call most builtins with call-style syntax e.g. `comm()`
   - [#4420](https://github.com/bpftrace/bpftrace/pull/4420)
+- Allow non-constant array access
+  - [#4491](https://github.com/bpftrace/bpftrace/pull/4491)
+- Add '0' flag for printf to fill with leading 0s
+  - [#4510](https://github.com/bpftrace/bpftrace/pull/4510)
+- Add support for LLVM 21
+  - [#4528](https://github.com/bpftrace/bpftrace/pull/4528)
 #### Changed
 - kprobe: support verbose mode listing
   - [#4362](https://github.com/bpftrace/bpftrace/pull/4362)
@@ -111,6 +184,8 @@ and this project adheres to
   - [#4367](https://github.com/bpftrace/bpftrace/pull/4367)
 - Make probe provider names case insensitive
   - [#4371](https://github.com/bpftrace/bpftrace/pull/4371)
+- If, for, while and unroll statements can have omitted parentheses for unary expressions
+  - [#4503](https://github.com/bpftrace/bpftrace/pull/4503)
 #### Deprecated
 #### Removed
 #### Fixed

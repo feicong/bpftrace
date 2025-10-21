@@ -14,10 +14,6 @@
 #include <sstream>
 #include <sys/mman.h>
 
-#if LLVM_VERSION_MAJOR <= 16
-#include <clang/Basic/DebugInfoOptions.h>
-#endif
-
 #include "arch/arch.h"
 #include "ast/ast.h"
 #include "ast/passes/clang_build.h"
@@ -78,12 +74,25 @@ static Result<> build(CompileContext &ctx,
   // a string, which we can then capture and associate with the import.
   std::string errstr;
   llvm::raw_string_ostream err(errstr);
+#if LLVM_VERSION_MAJOR < 21
   auto diagOpts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
   auto diags = std::make_unique<clang::DiagnosticsEngine>(
       llvm::makeIntrusiveRefCnt<clang::DiagnosticIDs>(),
       diagOpts,
       new clang::TextDiagnosticPrinter(err, diagOpts.get()));
-
+#else
+  // Clang 21: DiagnosticOptions is NOT intrusive-refcounted anymore.
+  // Keep it alive for the program lifetime (or store it on a longer-lived
+  // object).
+  static std::shared_ptr<clang::DiagnosticOptions> diagOpts =
+      std::make_shared<clang::DiagnosticOptions>();
+  llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs> diagID(
+      new clang::DiagnosticIDs());
+  auto client = std::make_unique<clang::TextDiagnosticPrinter>(err, *diagOpts);
+  auto diags = std::make_unique<clang::DiagnosticsEngine>(diagID,
+                                                          *diagOpts,
+                                                          client.release());
+#endif
   // We create a temporary memfd that we can use to store the output,
   // since the ClangDriver API is framed in terms of filenames. Perhaps
   // we could use the internals here, but that carries other risks.
@@ -114,18 +123,20 @@ static Result<> build(CompileContext &ctx,
                                             llvm::ArrayRef<const char *>(args),
                                             *diags);
   inv->getTargetOpts().Triple = "bpf";
-#if LLVM_VERSION_MAJOR <= 16
-  inv->getCodeGenOpts().setDebugInfo(clang::codegenoptions::FullDebugInfo);
-#else
   inv->getCodeGenOpts().setDebugInfo(llvm::codegenoptions::FullDebugInfo);
-#endif
   inv->getCodeGenOpts().DebugColumnInfo = true;
 
   clang::CompilerInstance ci;
-  ci.setInvocation(inv);
+  // Cross-version friendly: assign into the existing invocation
+  // (works across modern Clang majors, including 21)
+  ci.getInvocation() = *inv;
   ci.setDiagnostics(diags.release());
   ci.setFileManager(new clang::FileManager(clang::FileSystemOptions(), vfs));
+#if LLVM_VERSION_MAJOR >= 22
+  ci.createSourceManager();
+#else
   ci.createSourceManager(ci.getFileManager());
+#endif
 
   // Generate the object file, which should include the required BTF
   // debug information. This also generates the module as a

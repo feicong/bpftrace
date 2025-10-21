@@ -19,6 +19,11 @@ Basically all functions or macros that don't have arguments or have default argu
 Simple assertion macro that will exit the entire script with an error code if the condition is not met.
 
 
+### assert_str
+
+Checks that this value is string-like.
+
+
 ### bswap
 - `uint8 bswap(uint8 n)`
 - `uint16 bswap(uint16 n)`
@@ -185,6 +190,11 @@ Pointer to `struct task_struct` of the current task
 This utilizes the BPF helper `get_current_task`
 
 
+### default_str_length
+
+Returns the default unbounded length.
+
+
 ### delete
 - `bool delete(map m, mapkey k)`
 - deprecated `bool delete(mapkey k)`
@@ -280,6 +290,17 @@ BEGIN {
 ```
 
 
+### fail
+- `void fail(const string fmt, args...)`
+
+`fail()` formats and prints data (similar to [`printf`](#printf)) as an error message with the source location but, as opposed to [`errorf`](#errorf), is treated like a static assert and halts compilation if it is visited. All args have to be literals since they are evaluated at compile time.
+
+```
+BEGIN { if ($1 < 2) { fail("Expected the first positional param to be greater than 1. Got %d", $1); } }
+```
+
+
+
 ### func
 - `string func()`
 - `string func`
@@ -322,10 +343,9 @@ This utilizes the BPF helper `get_current_uid_gid`
 ### has_key
 - `boolean has_key(map m, mapkey k)`
 
-Return true (1) if the key exists in this map.
-Otherwise return false (0).
+Return `true` if the key exists in this map.
+Otherwise return `false`.
 Error if called with a map that has no keys (aka scalar map).
-Return value can also be used for scratch variables and map keys/values.
 
 ```
 kprobe:dummy {
@@ -338,11 +358,26 @@ kprobe:dummy {
     if (has_key(@scalar)) { // error
       print(("hello"));
     }
-
-    $a = has_key(@associative, (1,2)); // ok
-    @b[has_key(@associative, (1,2))] = has_key(@associative, (1,2)); // ok
 }
 ```
+
+
+### is_array
+- `bool is_array(any expression)`
+
+Determine whether the given expression is an array.
+
+
+### is_ptr
+- `bool is_ptr(any expression)`
+
+Determine whether the given expression is a pointer.
+
+
+### is_str
+- `bool is_str(any expression)`
+
+Determine whether the given expression is a string.
 
 
 ### jiffies
@@ -671,7 +706,7 @@ be rejected.
 interval:s:1 {
   $runqueues = (struct rq *)percpu_kaddr("runqueues", 0);
   if ($runqueues != 0) {         // The check is mandatory here
-    print($runqueues->nr_running);
+    print($runqueues.nr_running);
   }
 }
 ```
@@ -757,6 +792,16 @@ Name of the fully expanded probe
 For example: `kprobe:do_nanosleep`
 
 
+### probetype
+- `string probetype()`
+- `string probetype`
+
+Name of the probe type.
+Note: `begin` and `end` probes are of type `special`.
+
+For example: `kprobe`, `special`, `tracepoint`
+
+
 ### pton
 - `char addr[4] pton(const string *addr_v4)`
 - `char addr[16] pton(const string *addr_v6)`
@@ -805,13 +850,12 @@ For kretprobe and uretprobe, its type is uint64, but for fexit it depends. You c
 
 **unsafe**
 
-**Kernel** 5.3
-
-This utilizes the BPF helper `bpf_send_signal`
+This utilizes the BPF helper `bpf_send_signal`.
 
 Probe types: k(ret)probe, u(ret)probe, USDT, profile
 
-Send a signal to the process being traced.
+Send a signal to the process being traced (any thread).
+Use `signal_thread` to send to the thread being traced.
 The signal can either be identified by name, e.g. `SIGSTOP` or by ID, e.g. `19` as found in `kill -l`.
 
 ```
@@ -824,6 +868,21 @@ kprobe:__x64_sys_execve
 $ ls
 Trace/breakpoint trap (core dumped)
 ```
+
+
+### signal_thread
+- `void signal_thread(const string sig)`
+- `void signal_thread(uint32 signum)`
+
+**unsafe**
+
+This utilizes the BPF helper `bpf_send_signal_thread`.
+
+Probe types: k(ret)probe, u(ret)probe, USDT, profile
+
+Send a signal to the thread being traced.
+Use `signal` to send to the process being traced (any thread).
+The signal can either be identified by name, e.g. `SIGSTOP` or by ID, e.g. `19` as found in `kill -l`.
 
 
 ### sizeof
@@ -860,12 +919,12 @@ Usage
 ```
 # cat dump.bt
 fentry:napi_gro_receive {
-  $ret = skboutput("receive.pcap", args.skb, args.skb->len, 0);
+  $ret = skboutput("receive.pcap", args.skb, args.skb.len, 0);
 }
 
 fentry:dev_queue_xmit {
   // setting offset to 14, to exclude ethernet header
-  $ret = skboutput("output.pcap", args.skb, args.skb->len, 14);
+  $ret = skboutput("output.pcap", args.skb, args.skb.len, 14);
   printf("skboutput returns %d\n", $ret);
 }
 
@@ -895,8 +954,8 @@ This function returns a `uint64` unique number on success, or 0 if **sk** is NUL
 ```
 fentry:tcp_rcv_established
 {
-  $cookie = socket_cookie(args->sk);
-  @psize[$cookie] = hist(args->skb->len);
+  $cookie = socket_cookie(args.sk);
+  @psize[$cookie] = hist(args.skb.len);
 }
 ```
 
@@ -917,6 +976,12 @@ Prints:
 ```
 
 
+### static_assert
+- `void static_assert(bool condition, string msg)`
+
+Assert something is true or fail the build.
+
+
 ### str
 - `string str(char * data [, uint32 length)`
 
@@ -929,24 +994,34 @@ In case the string is longer than the specified length only `length - 1` bytes a
 When available (starting from kernel 5.5, see the `--info` flag) bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see [Address-spaces](./language.md#address-spaces) for more information.
 
 
+### strcap
+- `int64 strcap(string exp)`
+- `int64 strcap(int8 exp[])`
+- `int64 strcap(int8 *exp)`
+
+Returns the "capacity" of a string-like object.
+
+In most cases this is the same as the length, but for bpftrace-native
+strings and arrays, this is the underlying object capacity. This is used to
+bound searches and lookups without needing to scan the string itself.
+
+
 ### strcontains
-- `int64 strcontains(const char *haystack, const char *needle)`
+- `bool strcontains(string haystack, string needle)`
 
-`strcontains` compares whether the string haystack contains the string needle.
-If needle is contained `1` is returned, else zero is returned.
+Compares whether the string haystack contains the string needle.
 
-bpftrace doesn’t read past the length of the shortest string.
+If needle is contained then true is returned, else false is returned.
 
 
 ### strerror
-- `strerror_t strerror(int error)`
+- `string strerror(int error)`
 
 Convert errno code to string.
-This is done asynchronously in userspace when the strerror value is printed, hence the returned value can only be used for printing.
 
 ```
 #include <errno.h>
-BEGIN {
+begin {
   print(strerror(EPERM));
 }
 ```
@@ -975,6 +1050,14 @@ bpftrace also supports the following format string extensions:
 | `%f` | Microsecond as a decimal number, zero-padded on the left |
 
 
+### strlen
+- `int64 strlen(string exp)`
+- `int64 strlen(int8 exp[])`
+- `int64 strlen(int8 *exp)`
+
+Returns the length of a string-like object.
+
+
 ### strncmp
 - `int64 strncmp(char * s1, char * s2, int64 n)`
 
@@ -984,6 +1067,12 @@ If they’re equal `0` is returned, else a non-zero value is returned.
 bpftrace doesn’t read past the length of the shortest string.
 
 The use of the `==` and `!=` operators is recommended over calling `strncmp` directly.
+
+
+### strstr
+- `int64 strstr(string haystack, string needle)`
+
+Returns the index of the first occurrence of the string needle in the string haystack. If needle is not in haystack then -1 is returned.
 
 
 ### system
@@ -1236,6 +1325,32 @@ uprobe:/bin/bash:readline
 ```
 
 
+### warnf
+- `void warnf(const string fmt, args...)`
+
+**async**
+
+`warnf()` formats and prints data (similar to [`printf`](#printf)) as an warning message with the source location. This respects the "--no-warnings" flag and will be silent if that is used.
+
+```
+BEGIN { warnf("Something kinda bad with args: %d, %s", 10, "arg2"); }
+```
+
+Prints:
+
+```
+EXPECT stdin:1:9-62: WARNING: Something kinda bad with args: 10, arg2
+```
+
+
+### zero
+- `void zero(map m)`
+
+**async**
+
+Set all values (for all keys) in the map to zero.
+
+
 ## Map Value Functions
 
 Map value functions can only be assigned to maps (when scalar) or map keys.
@@ -1270,7 +1385,7 @@ Count how often this function is called.
 
 Using `@=count()` is conceptually similar to `@++`.
 The difference is that the `count()` function uses a map type optimized for
-performance and correctness using cheap, thread-safe writes (PER_CPU). However, sync reads
+performance and correctness using cheap, thread-safe writes ([PERCPU](./language.md#percpu-types)). However, sync reads
 can be expensive as bpftrace needs to iterate over all the cpus to collect and
 sum these values.
 
@@ -1374,7 +1489,7 @@ Prints:
 * `max_t max(int64 n)`
 
 Update the map with `n` if `n` is bigger than the current value held.
-Similar to `count` this uses a PER_CPU map (thread-safe, fast writes, slow reads).
+Similar to `count` this uses a [PERCPU](./language.md#percpu-types) map (thread-safe, fast writes, slow reads).
 
 Note: this is different than the typical userspace `max()` in that bpftrace’s `max()`
 only takes a single argument. The logical "other" argument to compare to is the value
@@ -1402,7 +1517,7 @@ be returned.
 * `min_t min(int64 n)`
 
 Update the map with `n` if `n` is smaller than the current value held.
-Similar to `count` this uses a PER_CPU map (thread-safe, fast writes, slow reads).
+Similar to `count` this uses a [PERCPU](./language.md#percpu-types) map (thread-safe, fast writes, slow reads).
 
 See `max()` above for how this differs from the typical userspace `min()`.
 
@@ -1433,7 +1548,7 @@ Calculate the sum of all `n` passed.
 
 Using `@=sum(5)` is conceptually similar to `@+=5`.
 The difference is that the `sum()` function uses a map type optimized for
-performance and correctness using cheap, thread-safe writes (PER_CPU). However, sync reads
+performance and correctness using cheap, thread-safe writes ([PERCPU](./language.md#percpu-types)). However, sync reads
 can be expensive as bpftrace needs to iterate over all the cpus to collect and
 sum these values.
 

@@ -84,6 +84,11 @@ void Printer::visit(String &string)
   out_ << indent << "string: " << ss.str() << std::endl;
 }
 
+void Printer::visit([[maybe_unused]] None &none)
+{
+  // Just omit this, since it adds tons of noise.
+}
+
 void Printer::visit(Builtin &builtin)
 {
   std::string indent(depth_, ' ');
@@ -137,6 +142,26 @@ void Printer::visit(Offsetof &offof)
   for (const auto &field : offof.field) {
     out_ << indentParam << field << std::endl;
   }
+  --depth_;
+}
+
+void Printer::visit(Typeof &typeof)
+{
+  std::string indent(depth_, ' ');
+  out_ << indent << "typeof: " << std::endl;
+
+  ++depth_;
+  visit(typeof.record);
+  --depth_;
+}
+
+void Printer::visit(Typeinfo &typeinfo)
+{
+  std::string indent(depth_, ' ');
+  out_ << indent << "typeinfo: " << std::endl;
+
+  ++depth_;
+  visit(typeinfo.typeof);
   --depth_;
 }
 
@@ -220,16 +245,24 @@ void Printer::visit(Unop &unop)
   --depth_;
 }
 
-void Printer::visit(Ternary &ternary)
+void Printer::visit(IfExpr &if_expr)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << "?:" << type(ternary.result_type) << std::endl;
+  out_ << indent << "if" << type(if_expr.result_type) << std::endl;
 
   ++depth_;
-  visit(ternary.cond);
-  visit(ternary.left);
-  visit(ternary.right);
-  --depth_;
+  visit(if_expr.cond);
+
+  ++depth_;
+  out_ << indent << " then" << std::endl;
+  visit(if_expr.left);
+
+  if (!if_expr.right.is<None>()) {
+    out_ << indent << " else" << std::endl;
+    visit(if_expr.right);
+  }
+
+  depth_ -= 2;
 }
 
 void Printer::visit(FieldAccess &acc)
@@ -373,8 +406,8 @@ void Printer::visit(VarDeclStatement &decl)
 {
   std::string indent(depth_, ' ');
 
-  if (decl.type) {
-    out_ << indent << "decl" << type(*decl.type) << std::endl;
+  if (decl.typeof) {
+    out_ << indent << "decl" << type(decl.typeof->type()) << std::endl;
   } else {
     out_ << indent << "decl" << std::endl;
   }
@@ -382,27 +415,6 @@ void Printer::visit(VarDeclStatement &decl)
   ++depth_;
   visit(decl.var);
   --depth_;
-}
-
-void Printer::visit(If &if_node)
-{
-  std::string indent(depth_, ' ');
-
-  out_ << indent << "if" << std::endl;
-
-  ++depth_;
-  visit(if_node.cond);
-
-  ++depth_;
-  out_ << indent << " then" << std::endl;
-
-  visit(if_node.if_block);
-
-  if (!if_node.else_block->stmts.empty()) {
-    out_ << indent << " else" << std::endl;
-    visit(if_node.else_block);
-  }
-  depth_ -= 2;
 }
 
 void Printer::visit(Unroll &unroll)
@@ -471,7 +483,7 @@ void Printer::visit(For &for_loop)
 
   out_ << indent << " stmts\n";
   ++depth_;
-  visit(for_loop.stmts);
+  visit(for_loop.block);
   --depth_;
 
   --depth_;
@@ -497,16 +509,6 @@ void Printer::visit(Jump &jump)
   --depth_;
 }
 
-void Printer::visit(Predicate &pred)
-{
-  std::string indent(depth_, ' ');
-  out_ << indent << "pred" << std::endl;
-
-  ++depth_;
-  visit(pred.expr);
-  --depth_;
-}
-
 void Printer::visit(AttachPoint &ap)
 {
   std::string indent(depth_, ' ');
@@ -518,7 +520,6 @@ void Printer::visit(Probe &probe)
   visit(probe.attach_points);
 
   ++depth_;
-  visit(probe.pred);
   visit(probe.block);
   --depth_;
 }
@@ -528,15 +529,15 @@ void Printer::visit(SubprogArg &arg)
   std::string indent(depth_, ' ');
 
   ++depth_;
-  out_ << indent << arg.name << type(arg.type) << std::endl;
+  out_ << indent << arg.var->ident << type(arg.typeof->type()) << std::endl;
   --depth_;
 }
 
 void Printer::visit(Subprog &subprog)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << "subprog: " << subprog.name << type(subprog.return_type)
-       << std::endl;
+  out_ << indent << "subprog: " << subprog.name
+       << type(subprog.return_type->type()) << std::endl;
 
   ++depth_;
 
@@ -547,7 +548,7 @@ void Printer::visit(Subprog &subprog)
     --depth_;
   }
 
-  visit(subprog.stmts);
+  visit(subprog.block);
 
   --depth_;
 }
@@ -560,8 +561,9 @@ void Printer::visit(Import &imp)
 
 void Printer::visit(Program &program)
 {
-  if (!program.c_definitions.empty())
-    out_ << program.c_definitions << std::endl;
+  for (const auto &stmt : program.c_statements) {
+    out_ << stmt->data << std::endl;
+  }
 
   std::string indent(depth_, ' ');
   out_ << indent << "Program" << std::endl;

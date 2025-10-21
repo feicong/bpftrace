@@ -133,11 +133,11 @@ RUN {{BPFTRACE}} -e 'begin { if (strncmp(str($1), str($2), 4) == 0) { printf("I 
 EXPECT I got hhvm-proc
 
 NAME strncmp function argument
-RUN {{BPFTRACE}} -e 'struct F {char s[8];} u:./testprogs/string_args:print { @=strncmp(((struct F*)arg0)->s, "hello", 5); }' -c ./testprogs/string_args
+RUN {{BPFTRACE}} -e 'struct F {char s[8];} u:./testprogs/string_args:print { @=strncmp(((struct F*)arg0).s, "hello", 5); }' -c ./testprogs/string_args
 EXPECT @: 0
 
 NAME short non null-terminated string print
-RUN {{BPFTRACE}} -e 'struct F {char s[5];} u:./testprogs/string_args:print { $a = ((struct F*)arg0)->s; printf("%s %s\n", $a, $a); }' -c ./testprogs/string_args
+RUN {{BPFTRACE}} -e 'struct F {char s[5];} u:./testprogs/string_args:print { $a = ((struct F*)arg0).s; printf("%s %s\n", $a, $a); }' -c ./testprogs/string_args
 EXPECT hello hello
 
 NAME optional_positional_int
@@ -234,17 +234,24 @@ EXPECT end
 AFTER  ./testprogs/syscall nanosleep 2e9; pkill -SIGINT bpftrace
 
 NAME bitfield access
-PROG struct Foo { unsigned int a:4, b:8, c:3, d:1, e:16; } uprobe:./testprogs/bitfield_test:func{ $foo = (struct Foo *)arg0; printf("%d %d %d %d %d\n", $foo->a, $foo->b, $foo->c, $foo->d, $foo->e); exit()}
+PROG struct Foo { unsigned int a:4, b:8, c:3, d:1, e:16; } uprobe:./testprogs/bitfield_test:func{ $foo = (struct Foo *)arg0; printf("%d %d %d %d %d\n", $foo.a, $foo.b, $foo.c, $foo.d, $foo.e); exit()}
 EXPECT 1 2 5 0 65535
 AFTER ./testprogs/bitfield_test
 
 NAME bitfield_access_2
-PROG struct Bar { short a:4, b:8, c:3, d:1; int e:9, f:15, g:1, h:2, i:5 } uprobe:./testprogs/bitfield_test:func2 { $bar = (struct Bar *)arg0; printf("%d %d %d %d %d", $bar->a, $bar->b, $bar->c, $bar->d, $bar->e); printf(" %d %d %d %d", $bar->f, $bar->g, $bar->h, $bar->i); exit()}
+PROG struct Bar { short a:4, b:8, c:3, d:1; int e:9, f:15, g:1, h:2, i:5 } uprobe:./testprogs/bitfield_test:func2 { $bar = (struct Bar *)arg0; printf("%d %d %d %d %d", $bar.a, $bar.b, $bar.c, $bar.d, $bar.e); printf(" %d %d %d %d", $bar.f, $bar.g, $bar.h, $bar.i); exit()}
 EXPECT 1 217 5 1 500 31117 1 2 27
 AFTER ./testprogs/bitfield_test
 
-NAME exit exits immediately
+NAME exit with unreachable code
 PROG i:ms:100 { @++; exit(); @++ }
+EXPECT stdin:1:10-30: WARNING: Unreachable statement.
+       i:ms:100 { @++; exit(); @++ }
+                ~~~~~~~~~~~~~~~~~~~~
+TIMEOUT 1
+
+NAME exit exits immediately
+PROG i:ms:100 { @++; if (@) { exit(); } @++ }
 EXPECT @: 1
 TIMEOUT 1
 
@@ -358,7 +365,7 @@ EXPECT 1
 
 NAME invalid license
 PROG config={license="Potato"} begin { @p[1] = 1; print(len(@p));  }
-EXPECT ERROR: Your bpftrace program cannot load because you are using a license that is non-GPL compatible. License: Potato
+EXPECT_REGEX .*ERROR: Invalid value for license. Found: Potato. Valid values: Dual MIT/GPL, Dual BSD/GPL, Dual MPL/GPL, GPL and additional rights, GPL v2, GPL.*
 WILL_FAIL
 
 NAME named command line params

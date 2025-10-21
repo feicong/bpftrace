@@ -1,11 +1,18 @@
 #include <csignal>
+#include <cstring>
 #include <fstream>
+#include <linux/version.h>
+#include <optional>
+#include <sys/utsname.h>
 
 #include "log.h"
+#include "output/buffer_mode.h"
 #include "output/json.h"
 #include "output/text.h"
 #include "run_bpftrace.h"
 #include "types_format.h"
+#include "util/kernel.h"
+#include "version.h"
 
 using namespace bpftrace;
 
@@ -38,20 +45,82 @@ void check_is_root()
   }
 }
 
+// Simple forwarding streambuf that can flush on-demand.
+namespace {
+class flushing_streambuf : public std::streambuf {
+public:
+  flushing_streambuf(std::streambuf *dest, OutputBufferConfig mode)
+      : dest_(dest), mode_(mode)
+  {
+  }
+
+protected:
+  int_type overflow(int_type ch) override
+  {
+    if (traits_type::eq_int_type(ch, traits_type::eof()))
+      return dest_->sputc(ch);
+
+    auto res = dest_->sputc(traits_type::to_char_type(ch));
+    if (mode_ == OutputBufferConfig::NONE ||
+        ((mode_ == OutputBufferConfig::UNSET ||
+          mode_ == OutputBufferConfig::LINE) &&
+         ch == '\n'))
+      dest_->pubsync();
+    return res;
+  }
+
+  std::streamsize xsputn(const char *s, std::streamsize n) override
+  {
+    auto res = dest_->sputn(s, n);
+    if (res > 0) {
+      if (mode_ == OutputBufferConfig::NONE) {
+        dest_->pubsync();
+      } else if (mode_ == OutputBufferConfig::UNSET ||
+                 mode_ == OutputBufferConfig::LINE) {
+        // Flush if any newline was written
+        if (std::memchr(s, '\n', static_cast<size_t>(res)) != nullptr)
+          dest_->pubsync();
+      }
+    }
+    return res;
+  }
+
+  int sync() override
+  {
+    return dest_->pubsync();
+  }
+
+private:
+  std::streambuf *dest_;
+  OutputBufferConfig mode_;
+};
+} // namespace
+
 int run_bpftrace(BPFtrace &bpftrace,
                  const std::string &output_file,
                  const std::string &output_format,
                  const ast::CDefinitions &c_definitions,
                  BpfBytecode &bytecode,
-                 std::vector<std::string> &&named_params)
+                 std::vector<std::string> &&named_params,
+                 OutputBufferConfig out_buf_config)
 {
   int err;
 
-  // Check for required features.
-  if (!bpftrace.feature_->has_map_ringbuf()) {
-    LOG(ERROR) << "Your kernel is too old and is missing the "
-                  "BPF_MAP_TYPE_RINGBUF, which bpftrace requires.";
-    return 1;
+  auto k_version = util::kernel_version(util::KernelVersionMethod::UTS);
+  auto min_k_version = static_cast<uint32_t>(
+      KERNEL_VERSION(MIN_KERNEL_VERSION_MAJOR,
+                     MIN_KERNEL_VERSION_MINOR,
+                     MIN_KERNEL_VERSION_PATCH));
+
+  if (k_version < min_k_version) {
+    struct utsname utsname;
+    uname(&utsname);
+
+    LOG(WARNING) << "Kernel version (" << utsname.release
+                 << ") is lower than the minimum supported kernel version ("
+                 << MIN_KERNEL_VERSION_MAJOR << "." << MIN_KERNEL_VERSION_MINOR
+                 << "." << MIN_KERNEL_VERSION_PATCH
+                 << "). Some features/scripts may not work as expected.";
   }
 
   // Process all arguments.
@@ -86,7 +155,19 @@ int run_bpftrace(BPFtrace &bpftrace,
     os = &outputstream;
   }
   std::unique_ptr<output::Output> output;
+
+  // Optionally wrap the output stream to control flushing behavior.
+  // Keep these local so their lifetime covers the entire execution.
+  std::optional<flushing_streambuf> fsb;
+  std::optional<std::ostream> wrapped_os;
+  if (out_buf_config != OutputBufferConfig::FULL) {
+    fsb.emplace(os->rdbuf(), out_buf_config);
+    wrapped_os.emplace(&*fsb);
+    os = &wrapped_os.value();
+  }
   if (output_format.empty() || output_format == "text") {
+    // Note that there are two parameters here: we leave the err output as
+    // std::cerr, so this can be seen while running.
     output = std::make_unique<output::TextOutput>(*os);
   } else if (output_format == "json") {
     output = std::make_unique<output::JsonOutput>(*os);

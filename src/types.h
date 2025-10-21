@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cereal/access.hpp>
 #include <cereal/types/variant.hpp>
+#include <compare>
 #include <map>
 #include <memory>
 #include <ostream>
@@ -50,7 +51,6 @@ enum class Type : uint8_t {
   timestamp,
   mac_address,
   cgroup_path_t,
-  strerror_t,
   timestamp_mode,
   // clang-format on
 };
@@ -167,7 +167,6 @@ public:
   StackType stack_type;
   int funcarg_idx = -1;
   bool is_internal = false;
-  bool is_tparg = false;
   bool is_funcarg = false;
   TimestampMode ts_mode = TimestampMode::boot;
 
@@ -197,7 +196,6 @@ private:
     archive(type_,
             stack_type,
             is_internal,
-            is_tparg,
             is_funcarg,
             funcarg_idx,
             is_signed_,
@@ -262,7 +260,7 @@ public:
 
   bool IsEqual(const SizedType &t) const;
   bool operator==(const SizedType &t) const;
-  bool operator!=(const SizedType &t) const;
+  std::strong_ordering operator<=>(const SizedType &t) const;
   bool IsSameType(const SizedType &t) const;
   // This is primarily for Tuples which have equal total size (due to padding)
   // but their individual elements have different sizes.
@@ -473,10 +471,6 @@ public:
   {
     return type_ == Type::cgroup_path_t;
   };
-  bool IsStrerrorTy() const
-  {
-    return type_ == Type::strerror_t;
-  };
   bool IsTimestampModeTy() const
   {
     return type_ == Type::timestamp_mode;
@@ -572,7 +566,6 @@ SizedType CreateBuffer(size_t size);
 SizedType CreateTimestamp();
 SizedType CreateMacAddress();
 SizedType CreateCgroupPath();
-SizedType CreateStrerror();
 SizedType CreateTimestampMode();
 
 std::string addrspacestr(AddrSpace as);

@@ -22,11 +22,8 @@ reasonable runtime fallback strategy or detailed error message.
 ## LLVM (dynamically linked)
 
 LLVM is bpftrace's biggest build time dependency. The project always supports
-the latest LLVM release as soon as it's practical (available in CI). We support
-some number of previous LLVM releases. Given LLVM's twice annual release
-cadence, we have historically supported somewhere around the last 3 years'
-worth. We do not provide a hard guarantee, but it's probably safe to the
-versions from the previous year will be supported.
+the latest LLVM release as soon as it's practical (available in CI). On top of
+that, we support 4 previous LLVM releases (i.e. 5 LLVM versions in total).
 
 ## LLVM (statically linked)
 
@@ -41,3 +38,20 @@ Please consult [static.sh][0] for the source of truth.
 
 
 [0]: https://github.com/bpftrace/bpftrace/blob/master/.github/include/static.sh
+
+## libbpf
+
+bpftrace relies on libbpf for most of the tasks related to management of BPF
+programs, particularly loading and attachment. Occasionally, it is necessary to
+introduce patches to libbpf to enable some bpftrace functionality or to fix
+bugs. For this reason, we require a very recent, often unreleased, version of
+libbpf.
+
+To simplify development and building, bpftrace vendors libbpf as a submodule and
+by default links against the vendored version statically. Since linking against
+vendored library versions is not preferred by most distributions, we also allow
+building against system libbpf by using `-DUSE_SYSTEM_LIBBPF=On` in CMake. Note
+that it is the responsibility of the builder to ensure that the linked libbpf
+contains all the necessary patches. The general recommendation is that the
+linked libbpf should be at or beyond the commit referenced by the libbpf
+submodule, which will be kept up to date when required patches change.

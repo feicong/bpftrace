@@ -4,7 +4,9 @@
 #include <iostream>
 #include <regex>
 
-#include "ast/attachpoint_parser.h"
+#include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/attachpoint_passes.h"
+#include "ast/passes/builtins.h"
 #include "ast/passes/c_macro_expansion.h"
 #include "ast/passes/clang_build.h"
 #include "ast/passes/clang_parser.h"
@@ -15,7 +17,7 @@
 #include "ast/passes/named_param.h"
 #include "ast/passes/parser.h"
 #include "ast/passes/pid_filter_pass.h"
-#include "ast/passes/probe_expansion.h"
+#include "ast/passes/args_resolver.h"
 #include "ast/passes/recursion_check.h"
 #include "ast/passes/resolve_imports.h"
 #include "ast/passes/resource_analyser.h"
@@ -32,8 +34,6 @@
 namespace bpftrace::test::codegen {
 
 #define NAME (::testing::UnitTest::GetInstance()->current_test_info()->name())
-
-class codegen_btf : public test_btf {};
 
 static std::string get_expected(const std::string &name)
 {
@@ -65,13 +65,19 @@ static void test(BPFtrace &bpftrace,
                 .put(ast)
                 .put(bpftrace)
                 .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateCheckAttachpointsPass())
                 .add(ast::CreateResolveImportsPass())
+                .add(ast::CreatePidFilterPass())
+                .add(ast::CreateControlFlowPass())
                 .add(ast::CreateImportInternalScriptsPass())
                 .add(ast::CreateMacroExpansionPass())
-                .add(ast::CreateParseAttachpointsPass())
-                .add(ast::CreateProbeExpansionPass())
+                .add(ast::CreateProbeAndApExpansionPass())
+                .add(ast::CreateArgsResolverPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreateClangParsePass())
+                .add(ast::CreateArgsResolverPass({ProbeType::tracepoint}))
+                .add(ast::CreateBuiltinsPass())
                 .add(ast::CreateCMacroExpansionPass())
                 .add(ast::CreateFoldLiteralsPass())
                 .add(ast::CreateMapSugarPass())
@@ -80,7 +86,6 @@ static void test(BPFtrace &bpftrace,
                 .add(ast::CreateClangBuildPass())
                 .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
-                .add(ast::CreatePidFilterPass())
                 .add(ast::CreateRecursionCheckPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())

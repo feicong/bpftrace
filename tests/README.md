@@ -47,8 +47,8 @@ Run `./tests/codegen-tests.sh -u`. This updates all the codegen tests.
 
 Runtime tests will call the bpftrace executable. These are located in `tests/runtime` and are managed by a custom framework.
 
-* Run: `sudo make runtime_tests` inside your build directory or `sudo <builddir>/tests/runtime-tests.sh`
-* Use the `TEST_FILTER` environment variable (or the `--filter` arg when running `runtime-tests.sh`) to only run a subset of the tests e.g. `TEST_FILTER="uprobe.*" sudo make runtime-tests`
+* Run: `sudo <builddir>/tests/runtime-tests.sh`
+* Use the `TEST_FILTER` environment variable (or the `--filter` arg when running `runtime-tests.sh`) to only run a subset of the tests e.g. `sudo <builddir>/tests/runtime-tests.sh --filter=".*uprobe.*"`
 * There are environment variables to override paths for the bpftrace executables, if necessary. See runtime-tests.sh for details.
 
 Runtime tests are grouped into "suites". A suite is usually a single file. The
@@ -125,6 +125,10 @@ Required directives: `NAME`, (`RUN` or `PROG`), (one or more [`EXPECT`, `EXPECT_
   pair per test is accepted.
 * `TIMEOUT`: The timeout for the testcase (in seconds). This field is required.
 * `WILL_FAIL`: Mark that this test case will exit uncleanly (ie exit code != 0)
+* `LOCALIZE_TIMESTAMPS`: Before comparing actual output to expected output,
+  format `%H` timestamp strings to match the local time zone. This currently
+  only works with `EXPECT_FILE`.
+
 
 If you need to run a test program to probe (eg, uprobe/USDT), you can use the
 `BEFORE` clause. The test scripts will wait for the test program to have a pid.

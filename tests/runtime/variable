@@ -111,7 +111,7 @@ PROG begin { let $a; $a = 10; printf("a=%d\n", $a); }
 EXPECT a=10
 
 NAME variable declaration with builtin
-PROG begin { let $f: struct task_struct *; $f = curtask; print($f->pid); }
+PROG begin { let $f: struct task_struct *; $f = curtask; print($f.pid); }
 EXPECT_REGEX [0-9]+
 
 NAME variable declaration with unresolved type
@@ -119,7 +119,7 @@ PROG begin { let $x: struct Foo[1];  }
 EXPECT Attached 1 probe
 
 NAME variable declaration not initialized
-PROG begin { let $a; if (false) { $a = 1; } @b = $a; }
+PROG begin { let $a; if ($a) { $a = 1; } @b = $a; }
 EXPECT @b: 0
 
 NAME variable doesn't escape scope
@@ -133,7 +133,7 @@ EXPECT (b, 2)
 EXPECT (c, 0)
 
 NAME late map evaluation with ctx capture
-RUN {{BPFTRACE}} -e 'interval:ms:100 { $x = 1; for ($kv : @a) { print(($x, $kv.0, $kv.1)); exit(); } @a[1] = 1; }'
+RUN {{BPFTRACE}} -e 'interval:ms:100 { $x = 1; for ($kv : @a) { print(($x, $kv.0, $kv.1)); break; } if (@a[1]) { exit(); } @a[1] = 1; }'
 EXPECT (1, 1, 1)
 
 NAME variable address with int

@@ -17,7 +17,10 @@ Result<SizedType> getCompatType([[maybe_unused]] const Void &type)
 
 Result<SizedType> getCompatType(const Integer &type)
 {
-  return CreateInt(8 * type.bytes());
+  if (type.is_bool()) {
+    return CreateBool();
+  }
+  return CreateInteger(8 * type.bytes(), type.is_signed());
 }
 
 Result<SizedType> getCompatType(const Pointer &type)

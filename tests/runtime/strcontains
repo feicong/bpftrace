@@ -1,7 +1,7 @@
 NAME path
-PROG fentry:security_file_open { if (strcontains(path(args.file->f_path, 128), "tmp")) { printf("OK\n"); exit(); } }
+PROG fentry:security_file_open { if (strcontains(path(args.file.f_path, 128), "tmp")) { printf("OK\n"); exit(); } }
 EXPECT OK
-REQUIRES_FEATURE dpath fentry
+REQUIRES_FEATURE dpath
 AFTER TMPDIR=/tmp ./testprogs/syscall open
 
 NAME literals
@@ -105,3 +105,27 @@ NAME null character in both
 PROG begin { $haystack = "hello\0world"; $needle = "wo\0rld"; print(strcontains($haystack, $needle));  }
 EXPECT false
 TIMEOUT 1
+
+NAME indexing
+PROG begin { $a = "foo"; printf("%c is the first letter", $a[0]); }
+EXPECT f is the first letter
+
+# This test just ensures that the probe passes verification. There are no
+# guardrails here, if the read comes from proberead then we expect zero, but if
+# it points to BPF memory then it may be legitimate but random.
+NAME invalid indexing
+PROG begin { $a = "foo"; $i = (uint64)10; printf("the mystery letter is %c", $a[$i]); }
+EXPECT_REGEX the mystery letter is .*
+
+NAME types
+PROG BEGIN { strcontains("foo", 1) }
+EXPECT_REGEX .* ERROR:.*
+WILL_FAIL
+
+NAME variable not present
+PROG BEGIN { $a = "bar"; print(strcontains("foo", $a)) }
+EXPECT false
+
+NAME variable present
+PROG BEGIN { $a = "bar"; print(strcontains("foobar", $a)) }
+EXPECT true

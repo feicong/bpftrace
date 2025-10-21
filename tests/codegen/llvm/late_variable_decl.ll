@@ -36,18 +36,21 @@ entry:
   %"$x" = alloca i64, align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"$x")
   store i64 0, ptr %"$x", align 8
-  br i1 true, label %if_body, label %if_end
+  br i1 true, label %left, label %right
 
-if_body:                                          ; preds = %entry
+left:                                             ; preds = %entry
   store i64 1, ptr %"$x", align 8
-  br label %if_end
+  br label %done
 
-if_end:                                           ; preds = %if_body, %entry
+right:                                            ; preds = %entry
+  br label %done
+
+done:                                             ; preds = %right, %left
   store i64 2, ptr %"$x1", align 8
   store i64 1, ptr %"$i", align 8
   br label %while_cond
 
-while_cond:                                       ; preds = %while_body, %if_end
+while_cond:                                       ; preds = %while_body, %done
   %1 = load i64, ptr %"$i", align 8
   %true_cond = icmp ne i64 %1, 0
   br i1 %true_cond, label %while_body, label %while_end, !llvm.loop !56
@@ -98,9 +101,6 @@ for_body:
 
 for_continue:                                     ; preds = %for_body
   ret i64 0
-
-for_break:                                        ; No predecessors!
-  ret i64 1
 }
 
 ; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: write)

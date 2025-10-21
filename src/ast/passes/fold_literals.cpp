@@ -24,22 +24,51 @@ public:
   std::optional<Expression> visit(Cast &cast);
   std::optional<Expression> visit(Unop &op);
   std::optional<Expression> visit(Binop &op);
-  std::optional<Expression> visit(Ternary &op);
+  std::optional<Expression> visit(IfExpr &if_expr);
   std::optional<Expression> visit(PositionalParameterCount &param);
   std::optional<Expression> visit(PositionalParameter &param);
   std::optional<Expression> visit(Call &call);
   std::optional<Expression> visit(Expression &expr);
   std::optional<Expression> visit(Probe &probe);
   std::optional<Expression> visit(Builtin &builtin);
+  std::optional<Expression> visit(BlockExpr &block_expr);
+  std::optional<Expression> visit(ArrayAccess &acc);
+  std::optional<Expression> visit(TupleAccess &acc);
+  std::optional<Expression> visit(Comptime &comptime);
+  std::optional<Expression> visit(Variable &var);
+  std::optional<Expression> visit(Map &map);
 
 private:
+  // Return nullopt if we can't compare the tuples now
+  // e.g. they contain variables, which are resolved at runtime
+  std::optional<bool> compare_tuples(Tuple *left_tuple, Tuple *right_tuple);
+
   ASTContext &ast_;
   std::optional<std::reference_wrapper<BPFtrace>> bpftrace_;
 
+  bool comptime = false; // Set recursively.
   Node *top_level_node_ = nullptr;
 };
 
 } // namespace
+
+static bool eval_bool(Expression expr)
+{
+  if (auto *integer = expr.as<Integer>()) {
+    return integer->value != 0;
+  }
+  if (expr.is<NegativeInteger>()) {
+    return true;
+  }
+  if (auto *str = expr.as<String>()) {
+    return !str->value.empty();
+  }
+  if (auto *boolean = expr.as<Boolean>()) {
+    return boolean->value;
+  }
+  LOG(BUG) << "Expression is not a literal";
+  return false;
+}
 
 template <typename T>
 static Expression make_boolean(ASTContext &ast, T left, T right, Binop &op)
@@ -109,14 +138,84 @@ static Expression make_boolean(ASTContext &ast, T left, T right, Binop &op)
       break;
     case Operator::LNOT:
     case Operator::BNOT:
-    case Operator::INVALID:
     case Operator::ASSIGN:
-    case Operator::INCREMENT:
-    case Operator::DECREMENT:
+    case Operator::PRE_INCREMENT:
+    case Operator::PRE_DECREMENT:
+    case Operator::POST_INCREMENT:
+    case Operator::POST_DECREMENT:
       LOG(BUG) << "binary operator is not valid: " << static_cast<int>(op.op);
   }
 
   return ast.make_node<Boolean>(value, Location(op.loc));
+}
+
+std::optional<bool> LiteralFolder::compare_tuples(Tuple *left_tuple,
+                                                  Tuple *right_tuple)
+{
+  if (left_tuple->elems.size() != right_tuple->elems.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < left_tuple->elems.size(); ++i) {
+    auto l_expr = left_tuple->elems[i];
+    auto r_expr = right_tuple->elems[i];
+
+    visit(l_expr);
+    visit(r_expr);
+
+    if (!l_expr.is_literal() || !r_expr.is_literal()) {
+      return std::nullopt;
+    }
+
+    if (auto *l_int = l_expr.as<Integer>()) {
+      if (auto *r_int = r_expr.as<Integer>()) {
+        if (l_int->value != r_int->value) {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+
+    if (auto *l_nint = l_expr.as<NegativeInteger>()) {
+      if (auto *r_nint = r_expr.as<NegativeInteger>()) {
+        if (l_nint->value != r_nint->value) {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+
+    if (auto *l_str = l_expr.as<String>()) {
+      if (auto *r_str = r_expr.as<String>()) {
+        if (l_str->value != r_str->value) {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+
+    if (auto *l_bool = l_expr.as<Boolean>()) {
+      if (auto *r_bool = r_expr.as<Boolean>()) {
+        if (l_bool->value != r_bool->value) {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+
+    if (auto *l_tuple = l_expr.as<Tuple>()) {
+      if (auto *r_tuple = r_expr.as<Tuple>()) {
+        return compare_tuples(l_tuple, r_tuple);
+      }
+      return false;
+    }
+  }
+
+  return true;
 }
 
 template <typename T>
@@ -144,17 +243,16 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
             res > static_cast<uint64_t>(right)) {
           return res;
         }
+        return std::nullopt;
       }
       if constexpr (std::is_same_v<T, int64_t>) {
         if ((left > 0 && right < 0) || (left < 0 && right > 0)) {
           return clamp(left + right);
         }
         if (left < 0 && right < 0) {
-          auto res = left + right;
-          if (res < left && res < right) {
-            return res;
-          }
-          return std::nullopt;
+          if (std::numeric_limits<int64_t>::min() - left > right)
+            return std::nullopt;
+          return left + right;
         }
       }
       return std::nullopt;
@@ -177,18 +275,15 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
       } else {
         if (right == 0) {
           return clamp(left);
-        } else if (right < 0) {
-          auto res = left - right;
-          if (res < left) {
-            return std::nullopt;
-          }
-          return clamp(res);
         } else {
-          auto res = left - right;
-          if (res > left) {
+          if (left > 0 && right < 0 &&
+              std::numeric_limits<int64_t>::max() - left < -right) {
+            return std::nullopt;
+          } else if (left < 0 && right > 0 &&
+                     std::numeric_limits<int64_t>::min() - left > -right) {
             return std::nullopt;
           }
-          return clamp(res);
+          return clamp(left - right);
         }
       }
     case Operator::MUL:
@@ -226,8 +321,15 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
     case Operator::BXOR:
       return clamp(left ^ right);
     case Operator::LEFT:
+      // Shifting negative amount of bits or more bits than the width of `left`
+      // (which is always 64 in our case) is undefined behavior in C++
+      if (right < 0 || right >= 64)
+        return std::nullopt;
       return clamp(left << right);
     case Operator::RIGHT:
+      // Same as above
+      if (right < 0 || right >= 64)
+        return std::nullopt;
       return clamp(left >> right);
     // Comparison operators are handled in `make_boolean` and checked in
     // `is_comparison_op`.
@@ -239,10 +341,11 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
     case Operator::GT:
     case Operator::LAND:
     case Operator::LOR:
-    case Operator::INVALID:
     case Operator::ASSIGN:
-    case Operator::INCREMENT:
-    case Operator::DECREMENT:
+    case Operator::PRE_INCREMENT:
+    case Operator::PRE_DECREMENT:
+    case Operator::POST_INCREMENT:
+    case Operator::POST_DECREMENT:
     case Operator::LNOT:
     case Operator::BNOT:
       break;
@@ -254,6 +357,10 @@ static std::optional<std::variant<uint64_t, int64_t>> eval_binop(T left,
 std::optional<Expression> LiteralFolder::visit(Cast &cast)
 {
   visit(cast.expr);
+  if (cast.type().IsBoolTy() && cast.expr.is_literal()) {
+    return ast_.make_node<Boolean>(eval_bool(cast.expr),
+                                   Location(cast.expr.loc()));
+  }
   return std::nullopt;
 }
 
@@ -350,10 +457,6 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
     // Check for another string.
     auto *rs = other.as<String>();
     if (!rs) {
-      // Let's just make sure it's not a negative literal.
-      if (other.is<NegativeInteger>()) {
-        op.addError() << "illegal literal operation with strings";
-      }
       // This is a mix of a string and something else. This may be a runtime
       // type, and we need to leave it up to the semantic analysis.
       return std::nullopt;
@@ -422,6 +525,21 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
     }
   }
 
+  if (op.left.is<Tuple>() && op.right.is<Tuple>() &&
+      (op.op == Operator::EQ || op.op == Operator::NE)) {
+    auto *left_tuple = op.left.as<Tuple>();
+    auto *right_tuple = op.right.as<Tuple>();
+    auto same = compare_tuples(left_tuple, right_tuple);
+    if (same) {
+      return ast_.make_node<Boolean>(*same ? op.op == Operator::EQ
+                                           : op.op == Operator::NE,
+                                     Location(op.loc));
+    } else {
+      // Can't compare here
+      return std::nullopt;
+    }
+  }
+
   // Handle all integer cases.
   std::optional<std::variant<uint64_t, int64_t>> result;
   auto *lu = op.left.as<Integer>();
@@ -483,31 +601,35 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
       result.value());
 }
 
-std::optional<Expression> LiteralFolder::visit(Ternary &op)
+std::optional<Expression> LiteralFolder::visit(IfExpr &if_expr)
 {
-  visit(op.cond);
-  visit(op.left);
-  visit(op.right);
+  visit(if_expr.left);
+  visit(if_expr.right);
 
-  if (op.cond.is<Integer>()) {
-    if (op.cond.as<Integer>()->value != 0) {
-      return op.left;
-    } else {
-      return op.right;
+  if (auto *comptime = if_expr.cond.as<Comptime>()) {
+    visit(comptime->expr);
+    if (comptime->expr.is_literal()) {
+      if (eval_bool(comptime->expr)) {
+        return if_expr.left;
+      } else {
+        return if_expr.right;
+      }
     }
-  } else if (op.cond.is<NegativeInteger>()) {
-    return op.left;
-  } else if (op.cond.is<Boolean>()) {
-    if (op.cond.as<Boolean>()->value) {
-      return op.left;
-    } else {
-      return op.right;
-    }
-  } else if (op.cond.is<String>()) {
-    if (!op.cond.as<String>()->value.empty()) {
-      return op.left;
-    } else {
-      return op.right;
+  } else {
+    visit(if_expr.cond);
+    if (if_expr.cond.is_literal()) {
+      // If everything is a literal, we can still fold.
+      if (if_expr.left.is_literal() && if_expr.right.is_literal()) {
+        if (eval_bool(if_expr.cond)) {
+          return if_expr.left;
+        } else {
+          return if_expr.right;
+        }
+      } else {
+        // At least simplify the conditional expression.
+        if_expr.cond = ast_.make_node<Boolean>(eval_bool(if_expr.cond),
+                                               Location(if_expr.cond.loc()));
+      }
     }
   }
 
@@ -614,8 +736,13 @@ std::optional<Expression> LiteralFolder::visit(Call &call)
     }
     return ast_.make_node<String>(s, Location(call.loc));
   } else {
-    // Visit normally.
-    Visitor<LiteralFolder, std::optional<Expression>>::visit(call);
+    if (!comptime) {
+      // Visit normally; we are just simplifying literals.
+      Visitor<LiteralFolder, std::optional<Expression>>::visit(call);
+    } else {
+      // We can't evalute the call here; ensure the error is recorded.
+      call.addError() << "Unable to evaluate call at compilation time.";
+    }
   }
 
   return std::nullopt;
@@ -652,6 +779,103 @@ std::optional<Expression> LiteralFolder::visit(Builtin &builtin)
     }
   }
 
+  return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(BlockExpr &expr)
+{
+  Visitor<LiteralFolder, std::optional<Expression>>::visit(expr);
+
+  // We fold this only if the statement list is empty, and we find a literal
+  // as the expression value. We should have recorded an error if there was an
+  // attempt to access variables, calls, or generally do anything non-hermetic.
+  if (expr.stmts.empty() && (expr.expr.is_literal() || expr.expr.is<Tuple>())) {
+    return expr.expr;
+  }
+
+  return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(ArrayAccess &acc)
+{
+  visit(acc.expr);
+  visit(acc.indexpr);
+
+  if (auto *str = acc.expr.as<String>()) {
+    if (auto *index = acc.indexpr.as<Integer>()) {
+      if (index->value > str->value.size()) {
+        // This error happens later on.
+        return std::nullopt;
+      }
+      const char *s = str->value.c_str();
+      return ast_.make_node<Integer>(static_cast<uint64_t>(s[index->value]),
+                                     Location(acc.loc));
+    }
+  } else if (acc.expr.type().IsTupleTy()) {
+    if (auto *index = acc.indexpr.as<Integer>()) {
+      return ast_.make_node<TupleAccess>(acc.expr,
+                                         static_cast<ssize_t>(index->value),
+                                         Location(acc.loc));
+    } else {
+      acc.addError()
+          << "Array-style access for tuples only valid for integer literals";
+    }
+  } else if (comptime) {
+    acc.addError() << "Unable to evaluate at compile time.";
+  }
+
+  return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(TupleAccess &acc)
+{
+  visit(acc.expr);
+
+  // Other elements may contain blocks or statements that are evaluated. We
+  // only toss these if we are in a comptime block.
+  if (acc.expr.is<Tuple>() && (comptime || acc.expr.is_literal())) {
+    auto *tuple = acc.expr.as<Tuple>();
+    if (acc.index >= tuple->elems.size()) {
+      // This access error happens in a later pass.
+      return std::nullopt;
+    }
+    return tuple->elems[acc.index];
+  }
+
+  return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(Comptime &comptime)
+{
+  // This will fold into an expression directly. If this should not be used for
+  // cases where folding needs to happen above the comptime, e.g. `IfExpr`,
+  // which handles this in a special way.
+  bool old_comptime = this->comptime;
+  this->comptime = true;
+  visit(comptime.expr);
+  this->comptime = old_comptime;
+  if (comptime.expr.is_literal()) {
+    return comptime.expr;
+  }
+  if (auto *nested = comptime.expr.as<Comptime>()) {
+    return nested->expr; // Prune redundant comptime.
+  }
+  return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(Variable &var)
+{
+  if (comptime) {
+    var.addError() << "Unable to evaluate at compile time.";
+  }
+  return std::nullopt;
+}
+
+std::optional<Expression> LiteralFolder::visit(Map &map)
+{
+  if (comptime) {
+    map.addError() << "Unable to evaluate at compile time.";
+  }
   return std::nullopt;
 }
 

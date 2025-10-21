@@ -98,14 +98,6 @@ public:
                                Value *src,
                                AddrSpace as,
                                const Location &loc);
-  Value *CreateUSDTReadArgument(Value *ctx,
-                                AttachPoint *attach_point,
-                                int usdt_location_index,
-                                int arg_num,
-                                Builtin &builtin,
-                                std::optional<pid_t> pid,
-                                AddrSpace as,
-                                const Location &loc);
   Value *CreateStrncmp(Value *str1, Value *str2, uint64_t n, bool inverse);
   Value *CreateStrcontains(Value *haystack,
                            uint64_t haystack_sz,
@@ -118,11 +110,10 @@ public:
                                bool inverse,
                                const Location &loc,
                                MDNode *metadata);
-  CallInst *CreateGetNs(TimestampMode ts, const Location &loc);
+  Value *CreateGetNs(TimestampMode ts, const Location &loc);
   CallInst *CreateJiffies64(const Location &loc);
   CallInst *CreateGetCurrentCgroupId(const Location &loc);
   CallInst *CreateGetUidGid(const Location &loc);
-  CallInst *CreateGetNumaId(const Location &loc);
   CallInst *CreateGetCpuId(const Location &loc);
   CallInst *CreateGetCurrentTask(const Location &loc);
   CallInst *CreateGetRandom(const Location &loc);
@@ -159,7 +150,7 @@ public:
                                 const Location &loc);
   void CreateCheckSetRecursion(const Location &loc, int early_exit_ret);
   void CreateUnSetRecursion(const Location &loc);
-  CallInst *CreateHelperCall(libbpf::bpf_func_id func_id,
+  CallInst *CreateHelperCall(bpf_func_id func_id,
                              FunctionType *helper_type,
                              ArrayRef<Value *> args,
                              bool is_pure,
@@ -187,15 +178,14 @@ public:
                          Value *fmt_size,
                          const std::vector<Value *> &values,
                          const Location &loc);
-  void CreateSignal(Value *sig, const Location &loc);
-  void CreateOverrideReturn(Value *ctx, Value *rc);
+  void CreateSignal(Value *sig, const Location &loc, bool target_thread);
   void CreateRuntimeError(RuntimeErrorId rte_id, const Location &loc);
   void CreateRuntimeError(RuntimeErrorId rte_id,
                           Value *return_value,
-                          libbpf::bpf_func_id func_id,
+                          bpf_func_id func_id,
                           const Location &loc);
   void CreateHelperErrorCond(Value *return_value,
-                             libbpf::bpf_func_id func_id,
+                             bpf_func_id func_id,
                              const Location &loc,
                              bool suppress_error = false);
   StructType *GetStackStructType(bool is_ustack);
@@ -263,6 +253,18 @@ public:
 
   llvm::Value *CreateCheckedBinop(Binop &binop, Value *lhs, Value *rhs);
 
+  // Check to see if the current basic block already has a terminator. This is
+  // useful in cases where you've generated a nested block, but it may already
+  // have a terminator and you can't unconditionally generate another.
+  //
+  // For example:
+  //   if foo {
+  //     return;
+  //   } else {
+  //     ...
+  //   }
+  bool HasTerminator();
+
 private:
   Module &module_;
   BPFtrace &bpftrace_;
@@ -274,11 +276,6 @@ private:
                           AllocaInst *ret,
                           const Location &loc);
   llvm::Type *BpfPidnsInfoType();
-  Value *CreateUSDTReadArgument(Value *ctx,
-                                struct bcc_usdt_argument *argument,
-                                Builtin &builtin,
-                                AddrSpace as,
-                                const Location &loc);
   CallInst *createMapLookup(const std::string &map_name,
                             Value *key,
                             const std::string &name = "lookup_elem");
@@ -311,7 +308,7 @@ private:
   Value *createScratchBuffer(std::string_view global_var_name,
                              const Location &loc,
                              size_t key);
-  libbpf::bpf_func_id selectProbeReadHelper(AddrSpace as, bool str);
+  bpf_func_id selectProbeReadHelper(AddrSpace as, bool str);
 
   void CreateRingbufOutput(Value *data, size_t size, const Location &loc);
 

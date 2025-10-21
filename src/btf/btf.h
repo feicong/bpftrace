@@ -294,6 +294,12 @@ public:
       : Type<Integer, BTF_KIND_INT>(std::move(handle), type_id) {};
 
   size_t bytes() const;
+  bool is_bool() const {
+    return btf_int_encoding(btf_type()) & BTF_INT_BOOL;
+  }
+  bool is_signed() const {
+    return btf_int_encoding(btf_type()) & BTF_INT_SIGNED;
+  }
 
 private:
   static Result<Integer> add(HandleRef handle,

@@ -31,6 +31,10 @@ struct Foo4 {
   unsigned int d : 20;
 };
 
+enum FooEnum {
+  VALUE
+};
+
 struct Foo3 *func_1(int a,
                     struct Foo1 *foo1,
                     struct Foo2 *foo2,
@@ -133,10 +137,6 @@ long bpf_map_sum_elem_count(const struct bpf_map *map)
 {
   return 0;
 }
-_Bool bpf_session_is_return()
-{
-  return 1;
-}
 
 long __probestub_event_rt(void *__data, long first_real_arg)
 {
@@ -163,6 +163,7 @@ int main(void)
   struct bpf_iter__task_vma iter_task_vma;
   struct bpf_map bpf_map;
   struct sock sk;
+  enum FooEnum e;
 
   func_1(0, 0, 0, 0, 0);
 

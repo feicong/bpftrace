@@ -1,0 +1,143 @@
+// String helpers.
+//
+// This file contains various string-related functions and helpers. Strings are
+// complex, especially C strings. In general, the complexities come from the
+// need for dynamically-sized types or dynamic memory management. In bpftrace,
+// we introduce an automatic parameterized `string` type in order to make this
+// simpler, but it also makes it more complex. These string helpers are
+// intended to operate uniformally on the wider class of "string-like" objects.
+//
+// This means that these functions should efficiently support:
+//  * Pointers to int8 (signed char)
+//  * Arrays of int8
+//  * Native bpftrace `string` objects of various sizes
+
+// Checks that this value is string-like.
+macro assert_str(exp) {
+  if comptime is_str(exp) {
+    true
+  } else if comptime is_array(exp) {
+    static_assert(typeinfo(exp[0]) == typeinfo(int8), "string-like arrays must contain a char-like type");
+    true
+  } else if comptime is_ptr(exp) {
+    static_assert(typeinfo(exp[0]) == typeinfo(int8), "string-like pointers must point to a char-like type");
+    true
+  } else {
+    static_assert(false, "string-like values must be either strings, arrays or pointers");
+    false
+  }
+}
+
+// Returns the default unbounded length.
+macro default_str_length() {
+  sizeof(str((int8*)0))
+}
+
+// Returns the length of a string-like object.
+// :variant int64 strlen(string exp)
+// :variant int64 strlen(int8 exp[])
+// :variant int64 strlen(int8 *exp)
+macro strlen($var) {
+  assert_str($var);
+  let $sz = (int64)0;
+  if comptime is_str($var) {
+    $sz = __strnlen(&$var, sizeof($var));
+  } else if comptime is_array($var) {
+    $sz = __strnlen($var, sizeof($var));
+  } else {
+    $sz = __strnlen($var, default_str_length());
+  }
+  (uint64)$sz
+}
+
+macro strlen(exp) {
+  assert_str(exp);
+  if comptime (is_str(exp) || is_array(exp)) {
+    // This must be unbound, unfortunately we need to bind it.
+    let $x = exp;
+    strlen($x)
+  } else {
+    (uint64)__strnlen(exp, default_str_length())
+  }
+}
+
+macro __strnlen(ptr, max_size) {
+  __bpf_strnlen(ptr, (int64)max_size)
+}
+
+// Returns the "capacity" of a string-like object.
+//
+// In most cases this is the same as the length, but for bpftrace-native
+// strings and arrays, this is the underlying object capacity. This is used to
+// bound searches and lookups without needing to scan the string itself.
+// :variant int64 strcap(string exp)
+// :variant int64 strcap(int8 exp[])
+// :variant int64 strcap(int8 *exp)
+macro strcap(exp) {
+  assert_str(exp);
+  if comptime is_str(exp) {
+    sizeof(exp)
+  } else if comptime is_array(exp) {
+    sizeof(exp)/sizeof(exp[0])
+  } else {
+    strlen(exp) // Pointer, so pass by value.
+  }
+}
+
+// Returns the index of the first occurrence of the string needle in the string haystack. If needle is not in haystack then -1 is returned.
+// :variant int64 strstr(string haystack, string needle)
+macro strstr($haystack, $needle) {
+  assert_str($haystack);
+  assert_str($needle);
+  let $haystack_size = strcap($haystack);
+  let $needle_size = strcap($needle);
+  if ($needle_size == 0) {
+    // Special case: the needle is zero-sized.
+    0
+  } else if ($needle[0] == 0) {
+    // Special case: the needle is empty.
+    0
+  } else {
+    __bpf_strnstr(&$haystack, &$needle, (uint64)$haystack_size, (uint64)$needle_size)
+  }
+}
+macro strstr($haystack, needle) {
+  let $needle = needle;
+  strstr($haystack, $needle)
+}
+macro strstr(haystack, $needle) {
+  let $haystack = haystack;
+  strstr($haystack, $needle)
+}
+macro strstr(haystack, needle) {
+  let $haystack = haystack;
+  strstr($haystack, needle)
+}
+
+// :variant bool strcontains(string haystack, string needle)
+// Compares whether the string haystack contains the string needle.
+//
+// If needle is contained then true is returned, else false is returned.
+macro strcontains(haystack, needle) {
+  strstr(haystack, needle) >= 0
+}
+
+// :variant string strerror(int error)
+//
+// Convert errno code to string.
+//
+// ```
+// #include <errno.h>
+// begin {
+//   print(strerror(EPERM));
+// }
+// ```
+macro strerror(errno) {
+  let $v : string[64];
+  // Ensure that the size of the string is equal to the size of the returned
+  // buffer. On the C side, it will be a compilation error if any of the
+  // strings exceed this size.
+  static_assert(sizeof($v) == sizeof(*__strerror((int32)errno, &$v)), "$v is sized correctly");
+  __strerror((int32)errno, &$v);
+  $v
+}

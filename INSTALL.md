@@ -240,7 +240,7 @@ make install
 
 # bpftrace
 cd $builddir
-git clone https://github.com/bpftrace/bpftrace
+git clone --recurse-submodules https://github.com/bpftrace/bpftrace
 cd bpftrace
 mkdir build; cd build
 cmake3 ..
@@ -272,13 +272,12 @@ Use specific OS build sections listed earlier if available.
 - Libcereal
 - Kernel requirements described earlier
 - Libpcap
-- Systemtap SDT headers
 - Zlib development package
 
 ### Compilation
 
 ```
-git clone https://github.com/bpftrace/bpftrace
+git clone --recurse-submodules https://github.com/bpftrace/bpftrace
 mkdir -p bpftrace/build
 cd bpftrace/build
 cmake -DCMAKE_BUILD_TYPE=Release ../
@@ -291,6 +290,12 @@ A debug build of bpftrace can be set up with `cmake -DCMAKE_BUILD_TYPE=Debug ../
 The bpftrace binary will be in installed in /usr/local/bin/bpftrace, and tools
 in /usr/local/share/bpftrace/tools. You can change the install location using an
 argument to cmake, where the default is `-DCMAKE_INSTALL_PREFIX=/usr/local`.
+
+By default, bpftrace vendors libbpf and links against it statically. To change
+that, it is possible to use `-DUSE_SYSTEM_LIBBPF` in CMake to force linking
+against system libbpf, however, beware that system libbpf may not contain all
+the features that bpftrace requires from libbpf. See our [dependency
+support](docs/dependency_support.md#libbpf) for more details.
 
 To test that the build works, you can try running the unit tests and a one-liner:
 

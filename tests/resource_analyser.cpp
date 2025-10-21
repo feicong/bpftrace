@@ -8,6 +8,7 @@
 namespace bpftrace::test::resource_analyser {
 
 using ::testing::_;
+using ::testing::ElementsAre;
 
 void test(BPFtrace &bpftrace,
           const std::string &input,
@@ -85,7 +86,7 @@ TEST(resource_analyser, fmt_string_args_size_arrays)
       R"(struct Foo { int a; char b[10]; } begin { $foo = (struct Foo *)0; $foo2 = (struct Foo *)1; printf("%d %s %d %s\n", $foo->a, $foo->b, $foo2->a, $foo2->b) })",
       true,
       &resources);
-  EXPECT_EQ(resources.max_fmtstring_args_size, 56);
+  EXPECT_EQ(resources.max_fmtstring_args_size, 40);
 }
 
 TEST(resource_analyser, fmt_string_args_size_strings)
@@ -115,6 +116,16 @@ TEST(resource_analyser, fmt_string_args_non_map_print_arr)
 
   // See clang_parser.cpp; the increase signal well-formedness.
   EXPECT_EQ(resources.max_fmtstring_args_size, 40U + 1U);
+}
+
+TEST(resource_analyser, print_non_map_print_correct_args_order)
+{
+  RequiredResources resources;
+  test(R"(begin { print({ $x = 1; print("bob"); $x > 1}) })", true, &resources);
+
+  EXPECT_THAT(resources.non_map_print_args,
+              ElementsAre(SizedType(Type::string, 4),
+                          SizedType(Type::boolean, 1)));
 }
 
 } // namespace bpftrace::test::resource_analyser

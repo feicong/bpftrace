@@ -18,89 +18,89 @@ declare i64 @llvm.bpf.pseudo(i64 %0, i64 %1) #0
 ; Function Attrs: nounwind
 define i64 @kprobe_foo_1(ptr %0) #0 section "s_kprobe_foo_1" !dbg !35 {
 entry:
-  %strcontains.j = alloca i64, align 8
-  %strcontains.i = alloca i64, align 8
-  call void @llvm.lifetime.start.p0(i64 -1, ptr %strcontains.i)
-  store i64 0, ptr %strcontains.i, align 8
-  call void @llvm.lifetime.start.p0(i64 -1, ptr %strcontains.j)
-  br label %strcontains.empty.check
+  %array_access = alloca i8, align 1
+  %"$$strstr_4_$needle_size" = alloca i64, align 8
+  call void @llvm.lifetime.start.p0(i64 -1, ptr %"$$strstr_4_$needle_size")
+  store i64 0, ptr %"$$strstr_4_$needle_size", align 8
+  %"$$strstr_4_$haystack_size" = alloca i64, align 8
+  call void @llvm.lifetime.start.p0(i64 -1, ptr %"$$strstr_4_$haystack_size")
+  store i64 0, ptr %"$$strstr_4_$haystack_size", align 8
+  %"$$strstr_3_$needle" = alloca [5 x i8], align 1
+  call void @llvm.lifetime.start.p0(i64 -1, ptr %"$$strstr_3_$needle")
+  call void @llvm.memset.p0.i64(ptr align 1 %"$$strstr_3_$needle", i8 0, i64 5, i1 false)
+  %"$$strstr_2_$haystack" = alloca [17 x i8], align 1
+  call void @llvm.lifetime.start.p0(i64 -1, ptr %"$$strstr_2_$haystack")
+  call void @llvm.memset.p0.i64(ptr align 1 %"$$strstr_2_$haystack", i8 0, i64 17, i1 false)
+  call void @llvm.memcpy.p0.p0.i64(ptr align 1 %"$$strstr_2_$haystack", ptr align 1 @hello-test-world, i64 17, i1 false)
+  call void @llvm.memcpy.p0.p0.i64(ptr align 1 %"$$strstr_3_$needle", ptr align 1 @test, i64 5, i1 false)
+  store i64 17, ptr %"$$strstr_4_$haystack_size", align 8
+  store i64 5, ptr %"$$strstr_4_$needle_size", align 8
+  %1 = load i64, ptr %"$$strstr_4_$needle_size", align 8
+  %2 = icmp eq i64 %1, 0
+  %true_cond = icmp ne i1 %2, false
+  br i1 %true_cond, label %left, label %right
 
-strcontains.empty.check:                          ; preds = %entry
-  %1 = load i8, ptr @test, align 1
-  %2 = icmp eq i8 %1, 0
-  br i1 %2, label %strcontains.true, label %strcontains.outer.cond
+left:                                             ; preds = %entry
+  br label %done
 
-strcontains.outer.cond:                           ; preds = %strcontains.outer.incr, %strcontains.empty.check
-  %3 = load i64, ptr %strcontains.i, align 8
-  %4 = icmp ult i64 %3, 17
-  br i1 %4, label %strcontains.outer.cond.cmp, label %strcontains.false
+right:                                            ; preds = %entry
+  %3 = ptrtoint ptr %"$$strstr_3_$needle" to i64
+  %4 = inttoptr i64 %3 to ptr
+  %5 = call ptr @llvm.preserve.static.offset(ptr %4)
+  %6 = getelementptr i8, ptr %5, i64 0
+  call void @llvm.lifetime.start.p0(i64 -1, ptr %array_access)
+  %probe_read_kernel = call i64 inttoptr (i64 113 to ptr)(ptr %array_access, i32 1, ptr %6)
+  %7 = load i8, ptr %array_access, align 1
+  call void @llvm.lifetime.end.p0(i64 -1, ptr %array_access)
+  %8 = sext i8 %7 to i64
+  %9 = icmp eq i64 %8, 0
+  %true_cond3 = icmp ne i1 %9, false
+  br i1 %true_cond3, label %left1, label %right2
 
-strcontains.outer.cond.cmp:                       ; preds = %strcontains.outer.cond
-  %5 = getelementptr i8, ptr @hello-test-world, i64 %3
-  %6 = load i8, ptr %5, align 1
-  %7 = icmp ne i8 %6, 0
-  br i1 %7, label %strcontains.outer.body, label %strcontains.false
-
-strcontains.outer.body:                           ; preds = %strcontains.outer.cond.cmp
-  store i64 0, ptr %strcontains.j, align 8
-  br label %strcontains.inner.cond
-
-strcontains.inner.cond:                           ; preds = %strcontains.inner.incr, %strcontains.outer.body
-  %8 = load i64, ptr %strcontains.j, align 8
-  %9 = icmp ult i64 %8, 5
-  br i1 %9, label %strcontains.inner.body, label %strcontains.outer.incr
-
-strcontains.inner.body:                           ; preds = %strcontains.inner.cond
-  %10 = getelementptr i8, ptr @test, i64 %8
-  %11 = load i8, ptr %10, align 1
-  %12 = icmp eq i8 %11, 0
-  br i1 %12, label %strcontains.true, label %strcontains.inner.notnull
-
-strcontains.inner.notnull:                        ; preds = %strcontains.inner.body
-  %13 = add i64 %3, %8
-  %14 = icmp uge i64 %13, 17
-  br i1 %14, label %strcontains.outer.incr, label %strcontains.inner.cmp
-
-strcontains.inner.cmp:                            ; preds = %strcontains.inner.notnull
-  %15 = getelementptr i8, ptr @hello-test-world, i64 %13
-  %16 = load i8, ptr %15, align 1
-  %17 = icmp ne i8 %16, %11
-  br i1 %17, label %strcontains.outer.incr, label %strcontains.inner.incr
-
-strcontains.inner.incr:                           ; preds = %strcontains.inner.cmp
-  %18 = load i64, ptr %strcontains.j, align 8
-  %19 = add i64 %18, 1
-  store i64 %19, ptr %strcontains.j, align 8
-  br label %strcontains.inner.cond
-
-strcontains.outer.incr:                           ; preds = %strcontains.inner.cmp, %strcontains.inner.notnull, %strcontains.inner.cond
-  %20 = load i64, ptr %strcontains.i, align 8
-  %21 = add i64 %20, 1
-  store i64 %21, ptr %strcontains.i, align 8
-  br label %strcontains.outer.cond
-
-strcontains.true:                                 ; preds = %strcontains.inner.body, %strcontains.empty.check
-  br label %strcontains.done
-
-strcontains.false:                                ; preds = %strcontains.outer.cond.cmp, %strcontains.outer.cond
-  br label %strcontains.done
-
-strcontains.done:                                 ; preds = %strcontains.true, %strcontains.false
-  %result = phi i1 [ false, %strcontains.false ], [ true, %strcontains.true ]
-  call void @llvm.lifetime.end.p0(i64 -1, ptr %strcontains.j)
-  call void @llvm.lifetime.end.p0(i64 -1, ptr %strcontains.i)
-  %22 = zext i1 %result to i64
+done:                                             ; preds = %done4, %left
+  %result5 = phi i64 [ 0, %left ], [ %result, %done4 ]
+  %10 = icmp sge i64 %result5, 0
   ret i64 0
+
+left1:                                            ; preds = %right
+  br label %done4
+
+right2:                                           ; preds = %right
+  %11 = load i64, ptr %"$$strstr_4_$haystack_size", align 8
+  %12 = load i64, ptr %"$$strstr_4_$needle_size", align 8
+  %__bpf_strnstr = call i32 @__bpf_strnstr(ptr %"$$strstr_2_$haystack", ptr %"$$strstr_3_$needle", i64 %11, i64 %12), !dbg !41
+  %13 = sext i32 %__bpf_strnstr to i64
+  br label %done4
+
+done4:                                            ; preds = %right2, %left1
+  %result = phi i64 [ 0, %left1 ], [ %13, %right2 ]
+  br label %done
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.start.p0(i64 immarg %0, ptr nocapture %1) #1
 
+; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: write)
+declare void @llvm.memset.p0.i64(ptr nocapture writeonly %0, i8 %1, i64 %2, i1 immarg %3) #2
+
+; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly %0, ptr noalias nocapture readonly %1, i64 %2, i1 immarg %3) #3
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare ptr @llvm.preserve.static.offset(ptr readnone %0) #4
+
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(i64 immarg %0, ptr nocapture %1) #1
 
+; Function Attrs: alwaysinline nounwind
+declare dso_local i32 @__bpf_strnstr(ptr noundef %0, ptr noundef %1, i64 noundef %2, i64 noundef %3) #5
+
 attributes #0 = { nounwind }
 attributes #1 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+attributes #2 = { nocallback nofree nounwind willreturn memory(argmem: write) }
+attributes #3 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
+attributes #4 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #5 = { alwaysinline nounwind }
 
 !llvm.dbg.cu = !{!31}
 !llvm.module.flags = !{!33, !34}
@@ -146,3 +146,4 @@ attributes #1 = { nocallback nofree nosync nounwind willreturn memory(argmem: re
 !38 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !4, size: 64)
 !39 = !{!40}
 !40 = !DILocalVariable(name: "ctx", arg: 1, scope: !35, file: !2, type: !38)
+!41 = !DILocation(line: 101, column: 5, scope: !35)

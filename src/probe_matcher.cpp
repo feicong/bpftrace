@@ -340,9 +340,11 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_usdt(
   usdt_probe_list usdt_probes;
 
   if (pid.has_value())
-    usdt_probes = USDTHelper::probes_for_pid(*pid);
+    usdt_probes = USDTHelper::probes_for_pid(
+        *pid, bpftrace_->feature_->has_uprobe_multi());
   else if (target == "*")
-    usdt_probes = USDTHelper::probes_for_all_pids();
+    usdt_probes = USDTHelper::probes_for_all_pids(
+        bpftrace_->feature_->has_uprobe_multi());
   else if (!target.empty()) {
     std::vector<std::string> real_paths;
     if (target.find('*') != std::string::npos)
@@ -351,7 +353,8 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_usdt(
       real_paths.push_back(target);
 
     for (auto& real_path : real_paths) {
-      auto target_usdt_probes = USDTHelper::probes_for_path(real_path);
+      auto target_usdt_probes = USDTHelper::probes_for_path(
+          real_path, bpftrace_->feature_->has_uprobe_multi());
       usdt_probes.insert(usdt_probes.end(),
                          target_usdt_probes.begin(),
                          target_usdt_probes.end());
@@ -389,13 +392,7 @@ std::unique_ptr<std::istream> ProbeMatcher::kernel_probe_list()
     if (!p.show_in_kernel_list) {
       continue;
     }
-    if (p.type == ProbeType::fentry) {
-      // fentry must be available
-      if (bpftrace_->feature_->has_fentry())
-        probes += p.name + "\n";
-    } else {
-      probes += p.name + "\n";
-    }
+    probes += p.name + "\n";
   }
 
   return std::make_unique<std::istringstream>(probes);

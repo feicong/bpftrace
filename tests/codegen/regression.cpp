@@ -9,7 +9,8 @@ using ::testing::_;
 
 TEST(codegen, regression_957)
 {
-  ast::ASTContext ast("stdin", "t:sched:sched_one* { cat(\"%s\", probe); }");
+  ast::ASTContext ast("stdin",
+                      "t:sched:sched_one* { cat(\"/proc/%d/maps\", pid); }");
   auto bpftrace = get_mock_bpftrace();
 
   ast::CDefinitions no_c_defs; // Output from clang parser.
@@ -23,13 +24,17 @@ TEST(codegen, regression_957)
                 .add(ast::CreateResolveImportsPass())
                 .add(ast::CreateImportInternalScriptsPass())
                 .add(ast::CreateParseAttachpointsPass())
+                .add(ast::CreateCheckAttachpointsPass())
+                .add(ast::CreateControlFlowPass())
                 .add(ast::CreateMacroExpansionPass())
-                .add(ast::CreateProbeExpansionPass())
+                .add(ast::CreateProbeAndApExpansionPass())
+                .add(ast::CreateArgsResolverPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreateNamedParamsPass())
                 .add(ast::CreateMapSugarPass())
                 .add(ast::CreateLLVMInitPass())
                 .add(ast::CreateClangBuildPass())
+                .add(ast::CreateArgsResolverPass({ ProbeType::tracepoint }))
                 .add(ast::CreateTypeSystemPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateResourcePass())

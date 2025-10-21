@@ -27,6 +27,19 @@ const SizedType &Expression::type() const
       value);
 }
 
+bool Expression::is_literal() const
+{
+  if (is<Integer>() || is<NegativeInteger>() || is<String>() || is<Boolean>()) {
+    return true;
+  }
+  if (auto *tuple = as<Tuple>()) {
+    return std::ranges::all_of(tuple->elems, [](const auto &elem) {
+      return elem.is_literal();
+    });
+  }
+  return false;
+}
+
 static constexpr std::string_view ENUM = "enum ";
 
 std::string opstr(const Jump &jump)
@@ -102,13 +115,13 @@ std::string opstr(const Unop &unop)
       return "-";
     case Operator::MUL:
       return "dereference";
-    case Operator::INCREMENT:
-      if (unop.is_post_op)
-        return "++ (post)";
+    case Operator::POST_INCREMENT:
+      return "++ (post)";
+    case Operator::PRE_INCREMENT:
       return "++ (pre)";
-    case Operator::DECREMENT:
-      if (unop.is_post_op)
-        return "-- (post)";
+    case Operator::POST_DECREMENT:
+      return "-- (post)";
+    case Operator::PRE_DECREMENT:
       return "-- (pre)";
     default:
       return {};
@@ -139,10 +152,11 @@ bool is_comparison_op(Operator op)
     case Operator::BXOR:
     case Operator::LEFT:
     case Operator::RIGHT:
-    case Operator::INVALID:
     case Operator::ASSIGN:
-    case Operator::INCREMENT:
-    case Operator::DECREMENT:
+    case Operator::PRE_INCREMENT:
+    case Operator::PRE_DECREMENT:
+    case Operator::POST_INCREMENT:
+    case Operator::POST_DECREMENT:
     case Operator::LNOT:
     case Operator::BNOT:
       return false;
@@ -160,7 +174,6 @@ AttachPoint *AttachPoint::create_expansion_copy(ASTContext &ctx,
   auto *ap = ctx.make_node<AttachPoint>(raw_input,
                                         ignore_invalid,
                                         Location(loc));
-  ap->index_ = index_;
   ap->provider = provider;
   ap->target = target;
   ap->lang = lang;
@@ -289,32 +302,8 @@ bool AttachPoint::check_available(const std::string &identifier) const
       case ProbeType::rawtracepoint:
         return false;
     }
-  } else if (identifier == "signal") {
-    switch (type) {
-      case ProbeType::kprobe:
-      case ProbeType::kretprobe:
-      case ProbeType::uprobe:
-      case ProbeType::uretprobe:
-      case ProbeType::usdt:
-      case ProbeType::tracepoint:
-      case ProbeType::profile:
-      case ProbeType::fentry:
-      case ProbeType::fexit:
-      case ProbeType::rawtracepoint:
-        return true;
-      case ProbeType::invalid:
-      case ProbeType::special:
-      case ProbeType::benchmark:
-      case ProbeType::interval:
-      case ProbeType::software:
-      case ProbeType::hardware:
-      case ProbeType::watchpoint:
-      case ProbeType::asyncwatchpoint:
-      case ProbeType::iter:
-        return false;
-    }
   } else if (identifier == "skboutput" || identifier == "socket_cookie") {
-    return bpftrace::progtype(type) == libbpf::BPF_PROG_TYPE_TRACING;
+    return bpftrace::progtype(type) == BPF_PROG_TYPE_TRACING;
   }
 
   if (type == ProbeType::invalid)
@@ -350,19 +339,9 @@ std::string AttachPoint::name() const
   return n;
 }
 
-int AttachPoint::index() const
-{
-  return index_;
-}
-
-void AttachPoint::set_index(int index)
-{
-  index_ = index;
-}
-
 std::string Probe::args_typename() const
 {
-  return "struct " + orig_name + "_args";
+  return "struct " + orig_name + "_" + attach_points.front()->func + "_args";
 }
 
 int Probe::index() const
@@ -380,6 +359,15 @@ bool Probe::has_ap_of_probetype(ProbeType probe_type)
   return std::ranges::any_of(attach_points, [probe_type](auto *ap) {
     return probetype(ap->provider) == probe_type;
   });
+}
+
+ProbeType Probe::get_probetype()
+{
+  if (attach_points.empty()) {
+    return ProbeType::invalid;
+  }
+  assert(attach_points.size() == 1);
+  return probetype(attach_points.at(0)->provider);
 }
 
 void Program::clear_empty_probes()

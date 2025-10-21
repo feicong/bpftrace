@@ -253,6 +253,16 @@ macro elapsed() {
 // }
 // ```
 
+// :function fail
+// :variant void fail(const string fmt, args...)
+//
+// `fail()` formats and prints data (similar to [`printf`](#printf)) as an error message with the source location but, as opposed to [`errorf`](#errorf), is treated like a static assert and halts compilation if it is visited. All args have to be literals since they are evaluated at compile time.
+//
+// ```
+// BEGIN { if ($1 < 2) { fail("Expected the first positional param to be greater than 1. Got %d", $1); } }
+// ```
+//
+
 // :variant string func()
 // Name of the current function being traced (kprobes,uprobes,fentry)
 macro func() {
@@ -292,10 +302,9 @@ macro gid() {
 // :function has_key
 // :variant boolean has_key(map m, mapkey k)
 //
-// Return true (1) if the key exists in this map.
-// Otherwise return false (0).
+// Return `true` if the key exists in this map.
+// Otherwise return `false`.
 // Error if called with a map that has no keys (aka scalar map).
-// Return value can also be used for scratch variables and map keys/values.
 //
 // ```
 // kprobe:dummy {
@@ -308,9 +317,6 @@ macro gid() {
 //     if (has_key(@scalar)) { // error
 //       print(("hello"));
 //     }
-//
-//     $a = has_key(@associative, (1,2)); // ok
-//     @b[has_key(@associative, (1,2))] = has_key(@associative, (1,2)); // ok
 // }
 // ```
 
@@ -452,6 +458,23 @@ macro jiffies() {
 //
 // For kstack/ustack, return the depth (measured in # of frames) of the call stack.
 
+macro len(@map) {
+  if (comptime is_scalar(@map)) {
+    fail("call to len() expects a map with explicit keys (non-scalar map)")
+  } else {
+    (int64)__elem_count((void *)&@map)
+  }
+}
+
+macro len(e) {
+  if comptime (typeinfo(e) != typeinfo(ustack) && typeinfo(e) != typeinfo(kstack)) {
+    fail("call to len() expects a map, ustack, or kstack")
+  } else {
+    // This is handled in codegen for now
+    stack_len(e)
+  }
+}
+
 // :function macaddr
 // :variant macaddr_t macaddr(char [6] mac)
 //
@@ -521,7 +544,7 @@ macro ncpus() {
 //
 // This utilizes the BPF helper `numa_node_id`
 macro numaid() {
-  __builtin_numaid
+  (uint64)__get_numa_node_id()
 }
 
 // :function offsetof
@@ -585,6 +608,17 @@ macro numaid() {
 // ioctl(PERF_EVENT_IOC_SET_BPF): Invalid argument
 // Error attaching probe: 'kprobe:vfs_read'
 // ```
+macro override(expr) {
+  if comptime (probetype != "kprobe") {
+    fail("override() can only be used inside kprobes");
+  } else if comptime (__builtin_safe_mode) {
+    fail("override() is unsafe. To use you need the --unsafe flag");
+  } else if comptime (typeinfo(expr).1 != typeinfo(0).1) {
+    fail("override() only supports int arguments (%s provided)", typeinfo(expr).1);
+  } else {
+    __override((void *)ctx, (uint64)expr);
+  }
+}
 
 // :function path
 // :variant char * path(struct path * path [, int32 size])
@@ -625,7 +659,7 @@ macro numaid() {
 // interval:s:1 {
 //   $runqueues = (struct rq *)percpu_kaddr("runqueues", 0);
 //   if ($runqueues != 0) {         // The check is mandatory here
-//     print($runqueues->nr_running);
+//     print($runqueues.nr_running);
 //   }
 // }
 // ```
@@ -798,6 +832,15 @@ macro probe() {
   __builtin_probe
 }
 
+// :variant string probetype()
+// Name of the probe type.
+// Note: `begin` and `end` probes are of type `special`.
+//
+// For example: `kprobe`, `special`, `tracepoint`
+macro probetype() {
+  __builtin_probetype
+}
+
 // :function pton
 // :variant char addr[4] pton(const string *addr_v4)
 // :variant char addr[16] pton(const string *addr_v6)
@@ -836,19 +879,17 @@ macro retval() {
   __builtin_retval
 }
 
-// :function signal
 // :variant void signal(const string sig)
 // :variant void signal(uint32 signum)
 //
 // **unsafe**
 //
-// **Kernel** 5.3
-//
-// This utilizes the BPF helper `bpf_send_signal`
+// This utilizes the BPF helper `bpf_send_signal`.
 //
 // Probe types: k(ret)probe, u(ret)probe, USDT, profile
 //
-// Send a signal to the process being traced.
+// Send a signal to the process being traced (any thread).
+// Use `signal_thread` to send to the thread being traced.
 // The signal can either be identified by name, e.g. `SIGSTOP` or by ID, e.g. `19` as found in `kill -l`.
 //
 // ```
@@ -861,6 +902,39 @@ macro retval() {
 // $ ls
 // Trace/breakpoint trap (core dumped)
 // ```
+macro signal($var) {
+  if comptime (is_str($var)) {
+    fail("this first argument to signal() must be a string literal or a positive integer");
+  }
+  __signal($var, false);
+}
+
+macro signal(expr) {
+  __signal(expr, false);
+}
+
+// :variant void signal_thread(const string sig)
+// :variant void signal_thread(uint32 signum)
+//
+// **unsafe**
+//
+// This utilizes the BPF helper `bpf_send_signal_thread`.
+//
+// Probe types: k(ret)probe, u(ret)probe, USDT, profile
+//
+// Send a signal to the thread being traced.
+// Use `signal` to send to the process being traced (any thread).
+// The signal can either be identified by name, e.g. `SIGSTOP` or by ID, e.g. `19` as found in `kill -l`.
+macro signal_thread($var) {
+  if comptime (is_str($var)) {
+    fail("this first argument to signal_thread() must be a string literal or a positive integer");
+  }
+  __signal($var, true);
+}
+
+macro signal_thread(expr) {
+  __signal(expr, true);
+}
 
 // :function sizeof
 // :variant uint64 sizeof(TYPE)
@@ -895,12 +969,12 @@ macro retval() {
 // ```
 // # cat dump.bt
 // fentry:napi_gro_receive {
-//   $ret = skboutput("receive.pcap", args.skb, args.skb->len, 0);
+//   $ret = skboutput("receive.pcap", args.skb, args.skb.len, 0);
 // }
 //
 // fentry:dev_queue_xmit {
 //   // setting offset to 14, to exclude ethernet header
-//   $ret = skboutput("output.pcap", args.skb, args.skb->len, 14);
+//   $ret = skboutput("output.pcap", args.skb, args.skb.len, 14);
 //   printf("skboutput returns %d\n", $ret);
 // }
 //
@@ -929,8 +1003,8 @@ macro retval() {
 // ```
 // fentry:tcp_rcv_established
 // {
-//   $cookie = socket_cookie(args->sk);
-//   @psize[$cookie] = hist(args->skb->len);
+//   $cookie = socket_cookie(args.sk);
+//   @psize[$cookie] = hist(args.skb.len);
 // }
 // ```
 //
@@ -960,27 +1034,6 @@ macro retval() {
 // In case the string is longer than the specified length only `length - 1` bytes are copied and a NULL byte is appended at the end.
 //
 // When available (starting from kernel 5.5, see the `--info` flag) bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see [Address-spaces](./language.md#address-spaces) for more information.
-
-// :function strcontains
-// :variant int64 strcontains(const char *haystack, const char *needle)
-//
-// `strcontains` compares whether the string haystack contains the string needle.
-// If needle is contained `1` is returned, else zero is returned.
-//
-// bpftrace doesn’t read past the length of the shortest string.
-
-// :function strerror
-// :variant strerror_t strerror(int error)
-//
-// Convert errno code to string.
-// This is done asynchronously in userspace when the strerror value is printed, hence the returned value can only be used for printing.
-//
-// ```
-// #include <errno.h>
-// BEGIN {
-//   print(strerror(EPERM));
-// }
-// ```
 
 // :function strftime
 // :variant timestamp strftime(const string fmt, int64 timestamp_ns)
@@ -1259,3 +1312,20 @@ macro username() {
 // **async**
 //
 // Set all values (for all keys) in the map to zero.
+
+// :function warnf
+// :variant void warnf(const string fmt, args...)
+//
+// **async**
+//
+// `warnf()` formats and prints data (similar to [`printf`](#printf)) as an warning message with the source location. This respects the "--no-warnings" flag and will be silent if that is used.
+//
+// ```
+// BEGIN { warnf("Something kinda bad with args: %d, %s", 10, "arg2"); }
+// ```
+//
+// Prints:
+//
+// ```
+// EXPECT stdin:1:9-62: WARNING: Something kinda bad with args: 10, arg2
+// ```

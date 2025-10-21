@@ -2,13 +2,16 @@
 #include <cstdint>
 #include <cstring>
 
-#include "ast/attachpoint_parser.h"
+#include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/args_resolver.h"
+#include "ast/passes/attachpoint_passes.h"
 #include "ast/passes/clang_parser.h"
 #include "ast/passes/codegen_llvm.h"
+#include "ast/passes/control_flow_analyser.h"
 #include "ast/passes/field_analyser.h"
+#include "ast/passes/macro_expansion.h"
 #include "ast/passes/map_sugar.h"
 #include "ast/passes/named_param.h"
-#include "ast/passes/probe_expansion.h"
 #include "ast/passes/semantic_analyser.h"
 #include "ast/passes/type_system.h"
 #include "bpfmap.h"
@@ -49,30 +52,32 @@ static std::string kprobe_name(const std::string &attach_point,
   return "kprobe:" + attach_point + str;
 }
 
-static auto parse_probe(const std::string &str,
-                        BPFtrace &bpftrace,
-                        int usdt_num_locations = 0)
+static auto parse_probe(const std::string &str, BPFtrace &bpftrace)
 {
   ast::ASTContext ast("stdin", str);
 
   ast::TypeMetadata no_types; // No external types defined.
 
   // N.B. Don't use tracepoint format parser here.
-  auto usdt = get_mock_usdt_helper(usdt_num_locations);
   auto ok = ast::PassManager()
                 .put(ast)
                 .put(bpftrace)
                 .put(no_types)
                 .add(CreateParsePass())
                 .add(ast::CreateParseAttachpointsPass())
-                .add(ast::CreateProbeExpansionPass())
+                .add(ast::CreateCheckAttachpointsPass())
+                .add(ast::CreateControlFlowPass())
+                .add(ast::CreateProbeAndApExpansionPass())
+                .add(ast::CreateMacroExpansionPass())
+                .add(ast::CreateArgsResolverPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreateClangParsePass())
+                .add(ast::CreateArgsResolverPass({ ProbeType::tracepoint }))
                 .add(ast::CreateMapSugarPass())
                 .add(ast::CreateNamedParamsPass())
                 .add(ast::CreateSemanticPass())
                 .add(ast::CreateLLVMInitPass())
-                .add(ast::CreateCompilePass(std::ref(*usdt)))
+                .add(ast::CreateCompilePass())
                 .run();
   ASSERT_TRUE(ok && ast.diagnostics().ok());
 }
@@ -342,7 +347,7 @@ TEST(bpftrace, add_probes_uprobe_string_offset)
 TEST(bpftrace, add_probes_usdt)
 {
   auto bpftrace = get_strict_mock_bpftrace();
-  parse_probe("usdt:/bin/sh:prov1:mytp {}", *bpftrace, 1);
+  parse_probe("usdt:/bin/sh:prov1:mytp {}", *bpftrace);
 
   ASSERT_EQ(1U, bpftrace->get_probes().size());
   ASSERT_EQ(0U, bpftrace->get_special_probes().size());
@@ -360,28 +365,18 @@ TEST(bpftrace, add_probes_usdt_empty_namespace_conflict)
               get_symbols_from_usdt(no_pid, "/bin/sh"))
       .Times(1);
 
-  parse_probe("usdt:/bin/sh:tp {}", *bpftrace, 1);
+  parse_probe("usdt:/bin/sh:tp {}", *bpftrace);
 }
 
 TEST(bpftrace, add_probes_usdt_duplicate_markers)
 {
   auto bpftrace = get_strict_mock_bpftrace();
 
-  parse_probe("usdt:/bin/sh:prov1:mytp {}", *bpftrace, 3);
+  parse_probe("usdt:/bin/sh:prov1:mytp {}", *bpftrace);
 
-  ASSERT_EQ(3U, bpftrace->get_probes().size());
+  ASSERT_EQ(1U, bpftrace->get_probes().size());
   ASSERT_EQ(0U, bpftrace->get_special_probes().size());
   check_usdt(bpftrace->get_probes().at(0),
-             "/bin/sh",
-             "prov1",
-             "mytp",
-             "usdt:/bin/sh:prov1:mytp");
-  check_usdt(bpftrace->get_probes().at(1),
-             "/bin/sh",
-             "prov1",
-             "mytp",
-             "usdt:/bin/sh:prov1:mytp");
-  check_usdt(bpftrace->get_probes().at(2),
              "/bin/sh",
              "prov1",
              "mytp",
@@ -809,6 +804,9 @@ TEST(bpftrace, resolve_timestamp)
   static const auto bootmode = static_cast<uint32_t>(TimestampMode::boot);
   auto bpftrace = get_strict_mock_bpftrace();
 
+  if (std::chrono::system_clock::period::den < 1000000000)
+    GTEST_SKIP() << "Timestamp test requires nanosecond precision";
+
   // Basic sanity check
   bpftrace->boottime_ = { .tv_sec = 3, .tv_nsec = 0 };
   bpftrace->resources.strftime_args.emplace_back("%s.%f");
@@ -956,10 +954,9 @@ basic_map_4[7]: 5
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
-    auto mock_map = std::make_unique<MockBpfMap>(libbpf::BPF_MAP_TYPE_HASH,
-                                                 tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_HASH, tc.name);
     EXPECT_CALL(*mock_map, collect_elements(testing::_))
         .WillOnce(testing::Return(testing::ByMove(MapElements(key_values))));
 
@@ -1031,12 +1028,12 @@ max_map_4[3]: 10
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
 
     bpftrace->ncpus_ = 3;
-    auto mock_map = std::make_unique<MockBpfMap>(
-        libbpf::BPF_MAP_TYPE_PERCPU_HASH, tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_PERCPU_HASH,
+                                                 tc.name);
     EXPECT_CALL(*mock_map, collect_elements(testing::_))
         .WillOnce(testing::Return(testing::ByMove(MapElements(key_values))));
 
@@ -1107,12 +1104,12 @@ avg_map_4[3]: 100
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
 
     bpftrace->ncpus_ = 3;
-    auto mock_map = std::make_unique<MockBpfMap>(
-        libbpf::BPF_MAP_TYPE_PERCPU_HASH, tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_PERCPU_HASH,
+                                                 tc.name);
     EXPECT_CALL(*mock_map, collect_elements(testing::_))
         .WillOnce(testing::Return(testing::ByMove(MapElements(key_values))));
 
@@ -1178,11 +1175,10 @@ string_map_4[3]: hello
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
 
-    auto mock_map = std::make_unique<MockBpfMap>(libbpf::BPF_MAP_TYPE_HASH,
-                                                 tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_HASH, tc.name);
     EXPECT_CALL(*mock_map, collect_elements(testing::_))
         .WillOnce(testing::Return(testing::ByMove(MapElements(key_values))));
 
@@ -1272,11 +1268,10 @@ lhist_map_3[0]:
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
 
-    auto mock_map = std::make_unique<MockBpfMap>(libbpf::BPF_MAP_TYPE_HASH,
-                                                 tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_HASH, tc.name);
     EXPECT_CALL(*mock_map, collect_histogram_data(testing::_, testing::_))
         .WillOnce(
             testing::Return(testing::ByMove(HistogramMap(values_by_key))));
@@ -1375,11 +1370,10 @@ hist_map_3[0]:
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
 
-    auto mock_map = std::make_unique<MockBpfMap>(libbpf::BPF_MAP_TYPE_HASH,
-                                                 tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_HASH, tc.name);
     EXPECT_CALL(*mock_map, collect_histogram_data(testing::_, testing::_))
         .WillOnce(
             testing::Return(testing::ByMove(HistogramMap(values_by_key))));
@@ -1463,11 +1457,10 @@ hh:mm:ss.ms  |___________________________________________________|
 
   for (const auto &tc : test_cases) {
     std::stringstream out;
-    output::TextOutput output(out);
+    output::TextOutput output(out, out);
     auto bpftrace = get_mock_bpftrace();
 
-    auto mock_map = std::make_unique<MockBpfMap>(libbpf::BPF_MAP_TYPE_HASH,
-                                                 tc.name);
+    auto mock_map = std::make_unique<MockBpfMap>(BPF_MAP_TYPE_HASH, tc.name);
     EXPECT_CALL(*mock_map, collect_tseries_data(testing::_, testing::_))
         .WillOnce(testing::Return(testing::ByMove(TSeriesMap(values_by_key))));
 

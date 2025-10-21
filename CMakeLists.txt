@@ -5,7 +5,7 @@ cmake_policy(SET CMP0057 NEW)
 
 # bpftrace version number components.
 set(bpftrace_VERSION_MAJOR 0)
-set(bpftrace_VERSION_MINOR 23)
+set(bpftrace_VERSION_MINOR 24)
 set(bpftrace_VERSION_PATCH 0)
 
 include(GNUInstallDirs)
@@ -15,12 +15,15 @@ set(HARDENED_STDLIB OFF CACHE BOOL "Enable hardened definitions for standard lib
 set(STATIC_LINKING OFF CACHE BOOL "Build bpftrace as a statically linked executable")
 
 set(BUILD_ASAN OFF CACHE BOOL "Build bpftrace with -fsanitize=address")
+set(BUILD_UBSAN OFF CACHE BOOL "Build bpftrace with -fsanitize=undefined")
 set(ENABLE_MAN ON CACHE BOOL "Build man pages")
 set(BUILD_TESTING ON CACHE BOOL "Build test suite")
 set(ENABLE_TEST_VALIDATE_CODEGEN ON CACHE BOOL "Run LLVM IR validation tests")
 set(ENABLE_SYSTEMD OFF CACHE BOOL "Enable systemd integration")
 set(KERNEL_HEADERS_DIR "" CACHE PATH "Hard-code kernel headers directory")
 set(SYSTEM_INCLUDE_PATHS "auto" CACHE STRING "Hard-code system include paths (colon separated, the default value \"auto\" queries clang at runtime)")
+set(USE_SYSTEM_LIBBPF OFF CACHE BOOL
+    "Use system libbpf instead of vendoring it from a submodule")
 
 set(ENABLE_SKB_OUTPUT ON CACHE BOOL "Enable skb_output, will include libpcap")
 
@@ -32,16 +35,20 @@ set (CMAKE_CXX_EXTENSIONS OFF)
 
 add_compile_options("-Wall")
 add_compile_options("-Wextra")
-add_compile_options("-Werror=missing-field-initializers")
 add_compile_options("-Werror=undef")
 add_compile_options("-Wpointer-arith")
 add_compile_options("-Wcast-align")
 add_compile_options("-Wwrite-strings")
 add_compile_options("-Wcast-qual")
-#add_compile_options("-Wconversion")
 add_compile_options("-Wunreachable-code")
-#add_compile_options("-Wformat=2")
 add_compile_options("-Wdisabled-optimization")
+
+# libbpf has a standardized macro which requires partial initialization. In
+# general this is well-specified [1] and will zero-initialize (or run default
+# constructors) for non-specified fields, which is what we want. Therefore,
+# we disable this warning broadly and allow this syntax.
+# [1]: https://en.cppreference.com/w/cpp/language/aggregate_initialization.html
+add_compile_options("-Wno-missing-field-initializers")
 
 if(HARDENED_STDLIB)
   add_compile_definitions("-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG")
@@ -96,8 +103,8 @@ include_directories(SYSTEM ${LIBBCC_INCLUDE_DIRS})
 
 find_package(LibBpf REQUIRED)
 include_directories(SYSTEM ${LIBBPF_INCLUDE_DIRS})
-if("${LIBBPF_VERSION_MAJOR}.${LIBBPF_VERSION_MINOR}" VERSION_LESS 1.5)
-  message(SEND_ERROR "bpftrace requires libbpf 1.5 or greater")
+if(USE_SYSTEM_LIBBPF)
+  message(WARNING "Using system libbpf, please ensure that the version is greater than or equal to the submodule")
 endif()
 
 find_package(LibElf REQUIRED)
@@ -159,7 +166,7 @@ else()
   find_package(LLVM REQUIRED)
 endif()
 
-set(MIN_LLVM_MAJOR 16)
+set(MIN_LLVM_MAJOR 17)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   # We assume bpftrace is not being packaged when CMAKE_BUILD_TYPE=Debug.
   # So allow building with any LLVM version. This is purely for developers.
@@ -167,7 +174,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   # releases.
   set(MAX_LLVM_MAJOR 999)
 else()
-  set(MAX_LLVM_MAJOR 20)
+  set(MAX_LLVM_MAJOR 21)
 endif()
 
 if((${LLVM_VERSION_MAJOR} VERSION_LESS ${MIN_LLVM_MAJOR}) OR (${LLVM_VERSION_MAJOR} VERSION_GREATER ${MAX_LLVM_MAJOR}))
@@ -180,7 +187,9 @@ message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}: ${LLVM_CMAKE_DIR}")
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
-find_package(Clang ${LLVM_PACKAGE_VERSION} REQUIRED)
+string(REGEX REPLACE "-rc[0-9]+" "" CLANG_VERSION ${LLVM_PACKAGE_VERSION})
+
+find_package(Clang ${CLANG_VERSION} REQUIRED)
 include_directories(SYSTEM ${CLANG_INCLUDE_DIRS})
 
 # BPFtrace compile definitions
@@ -209,16 +218,13 @@ if(LIBPCAP_FOUND)
   set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_LIBPCAP)
 endif(LIBPCAP_FOUND)
 
-if (HAVE_LIBBPF_UPROBE_MULTI)
-  set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_LIBBPF_UPROBE_MULTI)
-endif(HAVE_LIBBPF_UPROBE_MULTI)
-
 if(ENABLE_SYSTEMD)
   set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_LIBSYSTEMD)
 endif()
 
 if(LIBBLAZESYM_FOUND)
   set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_BLAZESYM)
+  include_directories(SYSTEM ${LIBBLAZESYM_INCLUDE_DIRS})
 endif()
 
 add_subdirectory(src)

@@ -114,7 +114,7 @@ PROG i:ms:1 { printf("SUCCESS %p\n", curtask); exit(); }
 EXPECT_REGEX SUCCESS 0x[0-9a-f]+
 
 NAME curtask_field
-PROG struct task_struct {int x;} i:ms:1 { printf("SUCCESS %d\n", curtask->x); exit(); }
+PROG struct task_struct {int x;} i:ms:1 { printf("SUCCESS %d\n", curtask.x); exit(); }
 EXPECT_REGEX SUCCESS -?[0-9][0-9]*
 
 NAME rand
@@ -124,10 +124,9 @@ EXPECT_REGEX SUCCESS [0-9]+
 NAME cgroup
 PROG i:ms:1 { printf("SUCCESS %llu\n", cgroup); exit(); }
 EXPECT_REGEX SUCCESS [0-9]+
-MIN_KERNEL 4.18
 
 NAME ctx
-PROG struct x {unsigned long x}; i:ms:1 { printf("SUCCESS %lu\n", ((struct x*)ctx)->x); exit(); }
+PROG struct x {unsigned long x}; i:ms:1 { printf("SUCCESS %lu\n", ((struct x*)ctx).x); exit(); }
 EXPECT_REGEX SUCCESS [0-9]+
 
 NAME cat
@@ -184,19 +183,16 @@ EXPECT_REGEX ^0 4$
 NAME print args in fentry
 PROG fentry:vfs_open { print(args); exit(); }
 EXPECT_REGEX { .path = 0x[0-9a-f]+, .file = 0x[0-9a-f]+ }
-REQUIRES_FEATURE fentry
 AFTER ./testprogs/syscall open
 
 NAME args in fentry store in map
 PROG fentry:vfs_open { @= args; exit(); }
 EXPECT_REGEX @: { .path = 0x[0-9a-f]+, .file = 0x[0-9a-f]+ }
-REQUIRES_FEATURE fentry
 AFTER ./testprogs/syscall open
 
 NAME args in fentry as a map key
 PROG fentry:vfs_open { @[args] = 1; exit(); }
 EXPECT_REGEX @[{ .path = 0x[0-9a-f]+, .file = 0x[0-9a-f]+ }]: 1
-REQUIRES_FEATURE fentry
 AFTER ./testprogs/syscall open
 
 NAME args in uprobe print
@@ -227,11 +223,13 @@ REQUIRES_FEATURE dwarf
 TIMEOUT 5
 BEFORE ./testprogs/uprobe_test
 
+NAME mixed probe args
+PROG rawtracepoint:irq_handler_entry, rawtracepoint:irq_handler_exit, fentry:do_nanosleep { args }
+EXPECT Attached 3 probes
+
 NAME jiffies
 PROG i:ms:1 { printf("SUCCESS %llu\n", jiffies); exit(); }
 EXPECT_REGEX SUCCESS [0-9]+
-REQUIRES_FEATURE jiffies64
-MIN_KERNEL 5.9
 
 NAME ustack builtin with stack_mode config
 RUN {{BPFTRACE}} -e 'config = { stack_mode=raw } uprobe:./testprogs/uprobe_test:uprobeFunction1 { @c[ustack] = 1; exit(); }'
@@ -261,6 +259,7 @@ EXPECT 1 1
 ARCH x86_64
 
 NAME usermode_builtin_in_unsupported_arch
-PROG begin { printf("%d ", usermode);  } end { print(usermode); }
-EXPECT ERROR: 'usermode' builtin is only supported on x86_64
+PROG i:1ms { print(usermode); exit(); }
+EXPECT_REGEX .*ERROR: 'usermode' builtin is only supported on x86_64.*
 ARCH aarch64
+WILL_FAIL

@@ -3,19 +3,12 @@
 #include <bcc/bcc_syms.h>
 #include <sstream>
 
-#ifdef HAVE_BLAZESYM
-#include <blazesym.h>
-#endif
-
 #include "config.h"
 #include "log.h"
 #include "scopeguard.h"
 #include "usyms.h"
 #include "util/symbols.h"
 #include "util/system.h"
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
 namespace {
 #ifdef HAVE_BLAZESYM
@@ -444,5 +437,3 @@ struct bcc_symbol_option &Usyms::get_symbol_opts()
 }
 
 } // namespace bpftrace
-
-#pragma GCC diagnostic pop

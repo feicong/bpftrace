@@ -25,17 +25,14 @@ entry:
   %2 = zext i32 %pid to i64
   %3 = icmp ne i64 %2, 1
   %true_cond = icmp ne i1 %3, false
-  br i1 %true_cond, label %if_body, label %if_end
+  br i1 %true_cond, label %left, label %right
 
-if_body:                                          ; preds = %entry
+left:                                             ; preds = %entry
   ret i64 0
 
-if_end:                                           ; preds = %unreach, %entry
+right:                                            ; preds = %entry
   store i64 1, ptr %"$x", align 8
   ret i64 0
-
-unreach:                                          ; No predecessors!
-  br label %if_end
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)

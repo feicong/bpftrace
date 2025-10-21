@@ -1,11 +1,11 @@
 #include <climits>
 #include <sstream>
 
-#include "ast/attachpoint_parser.h"
+#include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/attachpoint_passes.h"
 #include "ast/passes/c_macro_expansion.h"
 #include "ast/passes/clang_parser.h"
 #include "ast/passes/printer.h"
-#include "ast/passes/probe_expansion.h"
 #include "driver.h"
 #include "gtest/gtest.h"
 
@@ -157,12 +157,6 @@ Program
   builtin: __builtin_elapsed
 )");
 
-  test("kprobe:f { __builtin_numaid }", R"(
-Program
- kprobe:f
-  builtin: __builtin_numaid
-)");
-
   test("kprobe:f { __builtin_cpu }", R"(
 Program
  kprobe:f
@@ -209,12 +203,6 @@ Program
 Program
  kprobe:f
   builtin: arg0
-)");
-
-  test("kprobe:f { sarg0 }", R"(
-Program
- kprobe:f
-  builtin: sarg0
 )");
 
   test("kprobe:f { __builtin_retval }", R"(
@@ -360,18 +348,18 @@ TEST(Parser, positional_param_attachpoint)
 stdin:1:1-20: ERROR: invalid trailing character for positional param: 0. Try quoting this entire part if this is intentional e.g. "$0".
 uprobe:/bin/bash:$0 { 1 }
 ~~~~~~~~~~~~~~~~~~~
-stdin:1:1-26: ERROR: No attach points for probe
+stdin:1:1-20: ERROR: No attach points for probe
 uprobe:/bin/bash:$0 { 1 }
-~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 )");
 
   test_parse_failure(bpftrace, R"(uprobe:/bin/bash:$a { 1 })", R"(
 stdin:1:1-20: ERROR: invalid trailing character for positional param: a. Try quoting this entire part if this is intentional e.g. "$a".
 uprobe:/bin/bash:$a { 1 }
 ~~~~~~~~~~~~~~~~~~~
-stdin:1:1-26: ERROR: No attach points for probe
+stdin:1:1-20: ERROR: No attach points for probe
 uprobe:/bin/bash:$a { 1 }
-~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 )");
 
   test_parse_failure(bpftrace,
@@ -380,9 +368,9 @@ uprobe:/bin/bash:$a { 1 }
 stdin:1:1-35: ERROR: positional parameter is not valid: overflow error, maximum value is 18446744073709551615: 999999999999999999999999
 uprobe:f:$999999999999999999999999 { 1 }
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-stdin:1:1-41: ERROR: No attach points for probe
+stdin:1:1-35: ERROR: No attach points for probe
 uprobe:f:$999999999999999999999999 { 1 }
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )");
 }
 
@@ -823,9 +811,10 @@ TEST(Parser, predicate)
   test("kprobe:sys_open / @x / { 1; }",
        "Program\n"
        " kprobe:sys_open\n"
-       "  pred\n"
+       "  if\n"
        "   map: @x\n"
-       "  int: 1 :: [int64]\n");
+       "   then\n"
+       "    int: 1 :: [int64]\n");
 }
 
 TEST(Parser, predicate_containing_division)
@@ -833,11 +822,12 @@ TEST(Parser, predicate_containing_division)
   test("kprobe:sys_open /100/25/ { 1; }",
        "Program\n"
        " kprobe:sys_open\n"
-       "  pred\n"
+       "  if\n"
        "   /\n"
        "    int: 100 :: [int64]\n"
        "    int: 25 :: [int64]\n"
-       "  int: 1 :: [int64]\n");
+       "   then\n"
+       "    int: 1 :: [int64]\n");
 }
 
 TEST(Parser, expressions)
@@ -849,7 +839,7 @@ TEST(Parser, expressions)
        "}",
        "Program\n"
        " kprobe:sys_open\n"
-       "  pred\n"
+       "  if\n"
        "   ||\n"
        "    &&\n"
        "     <=\n"
@@ -868,7 +858,8 @@ TEST(Parser, expressions)
        "    ==\n"
        "     builtin: __builtin_comm\n"
        "     string: string\n"
-       "  int: 1 :: [int64]\n");
+       "   then\n"
+       "    int: 1 :: [int64]\n");
 }
 
 TEST(Parser, variable_post_increment_decrement)
@@ -940,15 +931,16 @@ TEST(Parser, bit_shifting)
   test("kprobe:do_nanosleep / 2 < 1 >> 8 / { $x = 1 }",
        "Program\n"
        " kprobe:do_nanosleep\n"
-       "  pred\n"
+       "  if\n"
        "   <\n"
        "    int: 2 :: [int64]\n"
        "    >>\n"
        "     int: 1 :: [int64]\n"
        "     int: 8 :: [int64]\n"
-       "  =\n"
-       "   variable: $x\n"
-       "   int: 1 :: [int64]\n");
+       "   then\n"
+       "    =\n"
+       "     variable: $x\n"
+       "     int: 1 :: [int64]\n");
 }
 
 TEST(Parser, ternary_int)
@@ -958,12 +950,14 @@ TEST(Parser, ternary_int)
        " kprobe:sys_open\n"
        "  =\n"
        "   map: @x\n"
-       "   ?:\n"
+       "   if\n"
        "    <\n"
        "     builtin: pid\n"
        "     int: 10000 :: [int64]\n"
-       "    int: 1 :: [int64]\n"
-       "    int: 2 :: [int64]\n");
+       "    then\n"
+       "     int: 1 :: [int64]\n"
+       "    else\n"
+       "     int: 2 :: [int64]\n");
 }
 
 TEST(Parser, if_block)
@@ -1169,12 +1163,14 @@ TEST(Parser, ternary_str)
        " kprobe:sys_open\n"
        "  =\n"
        "   map: @x\n"
-       "   ?:\n"
+       "   if\n"
        "    <\n"
        "     builtin: pid\n"
        "     int: 10000 :: [int64]\n"
-       "    string: lo\n"
-       "    string: high\n");
+       "    then\n"
+       "     string: lo\n"
+       "    else\n"
+       "     string: high\n");
 }
 
 TEST(Parser, ternary_nested)
@@ -1184,17 +1180,21 @@ TEST(Parser, ternary_nested)
        " kprobe:sys_open\n"
        "  =\n"
        "   map: @x\n"
-       "   ?:\n"
+       "   if\n"
        "    <\n"
        "     builtin: pid\n"
        "     int: 10000 :: [int64]\n"
-       "    ?:\n"
-       "     <\n"
-       "      builtin: pid\n"
-       "      int: 5000 :: [int64]\n"
-       "     int: 1 :: [int64]\n"
-       "     int: 2 :: [int64]\n"
-       "    int: 3 :: [int64]\n");
+       "    then\n"
+       "     if\n"
+       "      <\n"
+       "       builtin: pid\n"
+       "       int: 5000 :: [int64]\n"
+       "      then\n"
+       "       int: 1 :: [int64]\n"
+       "      else\n"
+       "       int: 2 :: [int64]\n"
+       "    else\n"
+       "     int: 3 :: [int64]\n");
 }
 
 TEST(Parser, call)
@@ -1821,6 +1821,7 @@ TEST(Parser, wildcard_func)
     "args",
     "__builtin_curtask",
     "errorf",
+    "warnf",
     "func",
     "__builtin_gid"
     "__builtin_rand",
@@ -1870,7 +1871,6 @@ TEST(Parser, include)
 {
   test("#include <stdio.h>\nkprobe:sys_read { @x = 1 }",
        "#include <stdio.h>\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  =\n"
@@ -1882,7 +1882,6 @@ TEST(Parser, include_quote)
 {
   test("#include \"stdio.h\"\nkprobe:sys_read { @x = 1 }",
        "#include \"stdio.h\"\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  =\n"
@@ -1897,7 +1896,6 @@ TEST(Parser, include_multiple)
        "#include <stdio.h>\n"
        "#include \"blah\"\n"
        "#include <foo.h>\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  =\n"
@@ -2050,8 +2048,7 @@ TEST(Parser, cast_precedence)
        " kprobe:sys_read\n"
        "  (struct mytype *)\n"
        "   .\n"
-       "    dereference\n"
-       "     builtin: arg0\n"
+       "    builtin: arg0\n"
        "    field\n");
 
   test("kprobe:sys_read { (struct mytype)arg0+123; }",
@@ -2067,7 +2064,6 @@ TEST(Parser, cast_enum)
 {
   test("enum Foo { ONE = 1 } kprobe:sys_read { (enum Foo)1; }",
        "enum Foo { ONE = 1 };\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  (enum Foo)\n"
@@ -2095,7 +2091,6 @@ TEST(Parser, offsetof_type)
 {
   test("struct Foo { int x; } begin { offsetof(struct Foo, x); }",
        "struct Foo { int x; };\n"
-       "\n"
        "Program\n"
        " begin\n"
        "  offsetof: \n"
@@ -2104,7 +2099,6 @@ TEST(Parser, offsetof_type)
   test("struct Foo { struct Bar { int x; } bar; } "
        "begin { offsetof(struct Foo, bar.x); }",
        "struct Foo { struct Bar { int x; } bar; };\n"
-       "\n"
        "Program\n"
        " begin\n"
        "  offsetof: \n"
@@ -2114,9 +2108,9 @@ TEST(Parser, offsetof_type)
   test_parse_failure("struct Foo { struct Bar { int x; } *bar; } "
                      "begin { offsetof(struct Foo, bar->x); }",
                      R"(
-stdin:1:74-79: ERROR: syntax error, unexpected ->, expecting ) or .
+stdin:1:76-78: ERROR: syntax error, unexpected ->, expecting ) or .
 struct Foo { struct Bar { int x; } *bar; } begin { offsetof(struct Foo, bar->x); }
-                                                                         ~~~~~
+                                                                           ~~
 )");
 }
 
@@ -2125,7 +2119,6 @@ TEST(Parser, offsetof_expression)
   test("struct Foo { int x; }; "
        "begin { $foo = (struct Foo *)0; offsetof(*$foo, x); }",
        "struct Foo { int x; };;\n"
-       "\n"
        "Program\n"
        " begin\n"
        "  =\n"
@@ -2142,7 +2135,6 @@ TEST(Parser, offsetof_builtin_type)
 {
   test("struct Foo { timestamp x; } begin { offsetof(struct Foo, timestamp); }",
        "struct Foo { timestamp x; };\n"
-       "\n"
        "Program\n"
        " begin\n"
        "  offsetof: \n"
@@ -2199,8 +2191,7 @@ TEST(Parser, field_access)
        "Program\n"
        " kprobe:sys_read\n"
        "  .\n"
-       "   dereference\n"
-       "    map: @x\n"
+       "   map: @x\n"
        "   myfield\n");
 }
 
@@ -2217,8 +2208,7 @@ TEST(Parser, field_access_builtin)
        "Program\n"
        " kprobe:sys_read\n"
        "  .\n"
-       "   dereference\n"
-       "    map: @x\n"
+       "   map: @x\n"
        "   count\n");
 }
 
@@ -2235,8 +2225,7 @@ TEST(Parser, field_access_builtin_type)
        "Program\n"
        " kprobe:sys_read\n"
        "  .\n"
-       "   dereference\n"
-       "    map: @x\n"
+       "   map: @x\n"
        "   timestamp\n");
 }
 
@@ -2253,8 +2242,7 @@ TEST(Parser, field_access_sized_type)
        "Program\n"
        " kprobe:sys_read\n"
        "  .\n"
-       "   dereference\n"
-       "    map: @x\n"
+       "   map: @x\n"
        "   string\n");
 }
 
@@ -2281,7 +2269,6 @@ TEST(Parser, cstruct)
 {
   test("struct Foo { int x, y; char *str; } kprobe:sys_read { 1; }",
        "struct Foo { int x, y; char *str; };\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  int: 1 :: [int64]\n");
@@ -2291,7 +2278,6 @@ TEST(Parser, cstruct_semicolon)
 {
   test("struct Foo { int x, y; char *str; }; kprobe:sys_read { 1; }",
        "struct Foo { int x, y; char *str; };;\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  int: 1 :: [int64]\n");
@@ -2301,7 +2287,6 @@ TEST(Parser, cstruct_nested)
 {
   test("struct Foo { struct { int x; } bar; } kprobe:sys_read { 1; }",
        "struct Foo { struct { int x; } bar; };\n"
-       "\n"
        "Program\n"
        " kprobe:sys_read\n"
        "  int: 1 :: [int64]\n");
@@ -2348,12 +2333,12 @@ TEST(Parser, unterminated_string)
   ASSERT_FALSE(ast.diagnostics().ok());
   ast.diagnostics().emit(out);
   std::string expected =
-      R"(stdin:1:12-19: ERROR: unterminated string
+      R"(stdin:1:13-19: ERROR: unterminated string
 kprobe:f { "asdf }
-           ~~~~~~~
-stdin:1:12-19: ERROR: syntax error, unexpected end of file
+            ~~~~~~
+stdin:1:13-19: ERROR: syntax error, unexpected end of file
 kprobe:f { "asdf }
-           ~~~~~~~
+            ~~~~~~
 )";
   EXPECT_EQ(out.str(), expected);
 }
@@ -2375,9 +2360,9 @@ TEST(Parser, kprobe_offset)
        " kprobe:fn.abc+16\n");
 
   test_parse_failure("k:asdf+123abc", R"(
-stdin:1:1-14: ERROR: syntax error, unexpected end of file, expecting {
+stdin:1:2-14: ERROR: syntax error, unexpected end of file, expecting {
 k:asdf+123abc
-~~~~~~~~~~~~~
+ ~~~~~~~~~~~~
 )");
 }
 
@@ -2427,33 +2412,33 @@ uretprobe:/bin/sh:f+0x10 { 1 }
 TEST(Parser, invalid_increment_decrement)
 {
   test_parse_failure("i:s:1 { @=5++}", R"(
-stdin:1:9-14: ERROR: syntax error, unexpected ++, expecting ; or }
+stdin:1:12-14: ERROR: syntax error, unexpected ++, expecting ; or }
 i:s:1 { @=5++}
-        ~~~~~
+           ~~
 )");
 
   test_parse_failure("i:s:1 { @=++5}", R"(
-stdin:1:9-14: ERROR: syntax error, unexpected integer
+stdin:1:13-14: ERROR: syntax error, unexpected integer
 i:s:1 { @=++5}
-        ~~~~~
+            ~
 )");
 
   test_parse_failure("i:s:1 { @=5--}", R"(
-stdin:1:9-14: ERROR: syntax error, unexpected --, expecting ; or }
+stdin:1:12-14: ERROR: syntax error, unexpected --, expecting ; or }
 i:s:1 { @=5--}
-        ~~~~~
+           ~~
 )");
 
   test_parse_failure("i:s:1 { @=--5}", R"(
-stdin:1:9-14: ERROR: syntax error, unexpected integer
+stdin:1:13-14: ERROR: syntax error, unexpected integer
 i:s:1 { @=--5}
-        ~~~~~
+            ~
 )");
 
   test_parse_failure("i:s:1 { @=\"a\"++}", R"(
-stdin:1:9-16: ERROR: syntax error, unexpected ++, expecting ; or }
+stdin:1:14-16: ERROR: syntax error, unexpected ++, expecting ; or }
 i:s:1 { @="a"++}
-        ~~~~~~~
+             ~~
 )");
 }
 
@@ -2465,35 +2450,35 @@ TEST(Parser, long_param_overflow)
   EXPECT_NO_THROW(driver.parse_program());
   ASSERT_FALSE(ast.diagnostics().ok());
   ast.diagnostics().emit(out);
-  std::string expected = "stdin:1:11-41: ERROR: param "
+  std::string expected = "stdin:1:13-41: ERROR: param "
                          "$111111111111111111111111111 is out of "
                          "integer range [1, " +
                          std::to_string(std::numeric_limits<long>::max()) +
                          "]\n" +
                          "i:s:100 { @=$111111111111111111111111111 }\n" +
-                         "          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+                         "            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
   EXPECT_EQ(out.str(), expected);
 }
 
 TEST(Parser, empty_arguments)
 {
   test_parse_failure("::k::vfs_open:: { 1 }", R"(
-stdin:1:1-26: ERROR: No attach points for probe
+stdin:1:1-16: ERROR: No attach points for probe
 ::k::vfs_open:: { 1 }
-~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 )");
 
   // Error location is incorrect: #3063
   test_parse_failure("k:vfs_open:: { 1 }", R"(
-stdin:1:1-14: ERROR: kprobe probe type requires 1 or 2 arguments, found 3
+stdin:1:1-13: ERROR: kprobe probe type requires 1 or 2 arguments, found 3
 k:vfs_open:: { 1 }
-~~~~~~~~~~~~~
+~~~~~~~~~~~~
 )");
 
   test_parse_failure(":w:0x10000000:8:rw { 1 }", R"(
-stdin:1:1-25: ERROR: No attach points for probe
+stdin:1:1-19: ERROR: No attach points for probe
 :w:0x10000000:8:rw { 1 }
-~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
 )");
 }
 
@@ -2550,63 +2535,63 @@ TEST(Parser, int_notation)
       "Program\n kprobe:f\n  call: print\n   int: 86400000000000 :: [int64]\n");
 
   test_parse_failure("k:f { print(5e-9); }", R"(
-stdin:1:7-15: ERROR: syntax error, unexpected identifier, expecting ) or ","
+stdin:1:14-15: ERROR: syntax error, unexpected identifier, expecting ) or ","
 k:f { print(5e-9); }
-      ~~~~~~~~
+             ~
 )");
 
   test_parse_failure("k:f { print(1e21); }", R"(
-stdin:1:7-17: ERROR: overflow error, maximum value is 18446744073709551615: 1e21
+stdin:1:13-17: ERROR: overflow error, maximum value is 18446744073709551615: 1e21
 k:f { print(1e21); }
-      ~~~~~~~~~~
+            ~~~~
 )");
 
   test_parse_failure("k:f { print(10000000000m); }", R"(
-stdin:1:7-25: ERROR: overflow error, maximum value is 18446744073709551615: 10000000000m
+stdin:1:13-25: ERROR: overflow error, maximum value is 18446744073709551615: 10000000000m
 k:f { print(10000000000m); }
-      ~~~~~~~~~~~~~~~~~~
+            ~~~~~~~~~~~~
 )");
 
   test_parse_failure("k:f { print(12e4); }", R"(
-stdin:1:7-17: ERROR: coefficient part of scientific literal must be 1-9: 12e4
+stdin:1:13-17: ERROR: coefficient part of scientific literal must be 1-9: 12e4
 k:f { print(12e4); }
-      ~~~~~~~~~~
+            ~~~~
 )");
 
   test_parse_failure("k:f { print(1_1e100); }", R"(
-stdin:1:7-20: ERROR: coefficient part of scientific literal must be 1-9: 1_1e100
+stdin:1:13-20: ERROR: coefficient part of scientific literal must be 1-9: 1_1e100
 k:f { print(1_1e100); }
-      ~~~~~~~~~~~~~
+            ~~~~~~~
 )");
 
   test_parse_failure("k:f { print(1e1_1_); }", R"(
-stdin:1:7-19: ERROR: syntax error, unexpected identifier, expecting ) or ","
+stdin:1:18-19: ERROR: syntax error, unexpected identifier, expecting ) or ","
 k:f { print(1e1_1_); }
-      ~~~~~~~~~~~~
+                 ~
 )");
 
   test_parse_failure("k:f { print(1_1_e100); }", R"(
-stdin:1:7-21: ERROR: syntax error, unexpected identifier, expecting ) or ","
+stdin:1:16-21: ERROR: syntax error, unexpected identifier, expecting ) or ","
 k:f { print(1_1_e100); }
-      ~~~~~~~~~~~~~~
+               ~~~~~
 )");
 
   test_parse_failure("k:f { print(1_1_); }", R"(
-stdin:1:7-17: ERROR: syntax error, unexpected identifier, expecting ) or ","
+stdin:1:16-17: ERROR: syntax error, unexpected identifier, expecting ) or ","
 k:f { print(1_1_); }
-      ~~~~~~~~~~
+               ~
 )");
 
   test_parse_failure("k:f { print(1ulll); }", R"(
-stdin:1:7-18: ERROR: syntax error, unexpected identifier, expecting ) or ","
+stdin:1:17-18: ERROR: syntax error, unexpected identifier, expecting ) or ","
 k:f { print(1ulll); }
-      ~~~~~~~~~~~
+                ~
 )");
 
   test_parse_failure("k:f { print(1lul); }", R"(
-stdin:1:7-17: ERROR: syntax error, unexpected identifier, expecting ) or ","
+stdin:1:15-17: ERROR: syntax error, unexpected identifier, expecting ) or ","
 k:f { print(1lul); }
-      ~~~~~~~~~~
+              ~~
 )");
 }
 
@@ -2628,6 +2613,46 @@ TEST(Parser, while_loop)
 )PROG");
 }
 
+TEST(Parser, tuples)
+{
+  test("k:f { print(()); }", R"PROG(Program
+ kprobe:f
+  call: print
+   tuple:
+)PROG");
+  // Not a tuple.
+  test("k:f { print((1)); }", R"PROG(Program
+ kprobe:f
+  call: print
+   int: 1 :: [int64]
+)PROG");
+  test("k:f{ print((1,)); }", R"PROG(Program
+ kprobe:f
+  call: print
+   tuple:
+    int: 1 :: [int64]
+)PROG");
+  test("k:f { print((1,2)); }", R"PROG(Program
+ kprobe:f
+  call: print
+   tuple:
+    int: 1 :: [int64]
+    int: 2 :: [int64]
+)PROG");
+  test("k:f { print((1,2,)); }", R"PROG(Program
+ kprobe:f
+  call: print
+   tuple:
+    int: 1 :: [int64]
+    int: 2 :: [int64]
+)PROG");
+  test_parse_failure("k:f { print((,)); }", R"(
+stdin:1:14-15: ERROR: syntax error, unexpected ","
+k:f { print((,)); }
+             ~
+)");
+}
+
 TEST(Parser, tuple_assignment_error_message)
 {
   std::stringstream out;
@@ -2647,7 +2672,7 @@ i:s:1 { @x = (1, 2); $x.1 = 1; }
 TEST(Parser, tuple_assignment_error)
 {
   test_parse_failure("i:s:1 { (1, 0) = 0 }", R"(
-stdin:1:16-17: ERROR: syntax error, unexpected =, expecting ; or }
+stdin:1:16-17: ERROR: syntax error, unexpected =
 i:s:1 { (1, 0) = 0 }
                ~
 )");
@@ -2795,9 +2820,9 @@ i:s:1 { exit(); } config = { BPFTRACE_STACK_MODE=perf }
 )");
 
   test_parse_failure("config = { exit(); } i:s:1 { exit(); }", R"(
-stdin:1:12-17: ERROR: syntax error, unexpected (, expecting =
+stdin:1:16-17: ERROR: syntax error, unexpected (, expecting =
 config = { exit(); } i:s:1 { exit(); }
-           ~~~~~
+               ~
 )");
 
   test_parse_failure("config = { @start = nsecs; } i:s:1 { exit(); }", R"(
@@ -2825,9 +2850,9 @@ config = { BPFTRACE_STACK_MODE=perf BPFTRACE_MAX_PROBES=2 } i:s:1 { exit(); }
   test_parse_failure("config = { BPFTRACE_STACK_MODE=perf } i:s:1 { "
                      "BPFTRACE_MAX_PROBES=2; exit(); }",
                      R"(
-stdin:1:47-67: ERROR: syntax error, unexpected =, expecting ; or }
+stdin:1:66-67: ERROR: syntax error, unexpected =
 config = { BPFTRACE_STACK_MODE=perf } i:s:1 { BPFTRACE_MAX_PROBES=2; exit(); }
-                                              ~~~~~~~~~~~~~~~~~~~~
+                                                                 ~
 )");
 
   test_parse_failure("config { BPFTRACE_STACK_MODE=perf } i:s:1 { exit(); }",
@@ -2838,9 +2863,9 @@ config { BPFTRACE_STACK_MODE=perf } i:s:1 { exit(); }
 )");
 
   test_parse_failure("BPFTRACE_STACK_MODE=perf; i:s:1 { exit(); }", R"(
-stdin:1:1-21: ERROR: syntax error, unexpected =, expecting {
+stdin:1:20-21: ERROR: syntax error, unexpected =, expecting {
 BPFTRACE_STACK_MODE=perf; i:s:1 { exit(); }
-~~~~~~~~~~~~~~~~~~~~
+                   ~
 )");
 }
 
@@ -2852,18 +2877,36 @@ TEST(Parser, keywords_as_identifiers)
                                         "unroll",   "while" };
   for (const auto &keyword : keywords) {
     test("begin { $x = (struct Foo*)0; $x->" + keyword + "; }",
-         "Program\n begin\n  =\n   variable: $x\n   (struct Foo *)\n    int: "
-         "0 :: [int64]\n "
-         " .\n   dereference\n    variable: $x\n   " +
+         "Program\n"
+         " begin\n"
+         "  =\n"
+         "   variable: $x\n"
+         "   (struct Foo *)\n"
+         "    int: 0 :: [int64]\n"
+         "  .\n"
+         "   variable: $x\n"
+         "   " +
              keyword + "\n");
     test("begin { $x = (struct Foo)0; $x." + keyword + "; }",
-         "Program\n begin\n  =\n   variable: $x\n   (struct Foo)\n    int: 0 "
-         ":: [int64]\n "
-         " .\n   variable: $x\n   " +
+         "Program\n"
+         " begin\n"
+         "  =\n"
+         "   variable: $x\n"
+         "   (struct Foo)\n"
+         "    int: 0 :: [int64]\n"
+         "  .\n"
+         "   variable: $x\n"
+         "   " +
              keyword + "\n");
     test("begin { $x = offsetof(*__builtin_curtask, " + keyword + "); }",
-         "Program\n begin\n  =\n   variable: $x\n   offsetof: \n    "
-         "dereference\n     builtin: __builtin_curtask\n    " +
+         "Program\n"
+         " begin\n"
+         "  =\n"
+         "   variable: $x\n"
+         "   offsetof: \n"
+         "    dereference\n"
+         "     builtin: __builtin_curtask\n"
+         "    " +
              keyword + "\n");
   }
 }
@@ -2895,9 +2938,9 @@ TEST(Parser, subprog_invalid_return_type)
 {
   // Error location is incorrect: #3063
   test_parse_failure("fn f(): nonexistent {}", R"(
-stdin:1:9-21: ERROR: syntax error, unexpected identifier, expecting struct or integer type or builtin type or sized type
+stdin:1:9-20: ERROR: syntax error, unexpected identifier
 fn f(): nonexistent {}
-        ~~~~~~~~~~~~
+        ~~~~~~~~~~~
 )");
 }
 
@@ -2960,9 +3003,9 @@ TEST(Parser, subprog_invalid_arg)
 {
   // Error location is incorrect: #3063
   test_parse_failure("fn f($x : invalid): void {}", R"(
-stdin:1:11-19: ERROR: syntax error, unexpected identifier, expecting struct or integer type or builtin type or sized type
+stdin:1:11-18: ERROR: syntax error, unexpected identifier
 fn f($x : invalid): void {}
-          ~~~~~~~~
+          ~~~~~~~
 )");
 }
 
@@ -3022,16 +3065,16 @@ Program
   // Error location is incorrect: #3063
   // No body
   test_parse_failure("begin { for ($kv : @map) print($kv); }", R"(
-stdin:1:27-32: ERROR: syntax error, unexpected identifier, expecting {
+stdin:1:26-31: ERROR: syntax error, unexpected identifier, expecting {
 begin { for ($kv : @map) print($kv); }
-                          ~~~~~
+                         ~~~~~
 )");
 
   // Map for decl
   test_parse_failure("begin { for (@kv : @map) { } }", R"(
-stdin:1:13-17: ERROR: syntax error, unexpected map, expecting variable
+stdin:1:14-17: ERROR: syntax error, unexpected map, expecting variable
 begin { for (@kv : @map) { } }
-            ~~~~
+             ~~~
 )");
 }
 
@@ -3054,35 +3097,35 @@ Program
 
   // Binary expressions must be wrapped.
   test_parse_failure("begin { for ($i : 1+1..10) { print($i) } }", R"(
-stdin:1:19-22: ERROR: syntax error, unexpected +, expecting [ or . or ->
+stdin:1:20-21: ERROR: syntax error, unexpected +, expecting [ or . or ->
 begin { for ($i : 1+1..10) { print($i) } }
-                  ~~~
+                   ~
 )");
   test_parse_failure("begin { for ($i : 0..1+1) { print($i) } }", R"(
-stdin:1:19-25: ERROR: syntax error, unexpected +, expecting )
+stdin:1:23-24: ERROR: syntax error, unexpected +, expecting )
 begin { for ($i : 0..1+1) { print($i) } }
-                  ~~~~~~
+                      ~
 )");
 
   // Invalid range operator.
   test_parse_failure("begin { for ($i : 0...10) { print($i) } }", R"(
-stdin:1:19-24: ERROR: syntax error, unexpected .
+stdin:1:22-23: ERROR: syntax error, unexpected .
 begin { for ($i : 0...10) { print($i) } }
-                  ~~~~~
+                     ~
 )");
 
   // Missing end range.
   test_parse_failure("begin { for ($i : 0..) { print($i) } }", R"(
-stdin:1:19-24: ERROR: syntax error, unexpected )
+stdin:1:22-23: ERROR: syntax error, unexpected )
 begin { for ($i : 0..) { print($i) } }
-                  ~~~~~
+                     ~
 )");
 
   // Missing start range.
   test_parse_failure("begin { for ($i : ..10) { print($i) } }", R"(
-stdin:1:19-21: ERROR: syntax error, unexpected .
+stdin:1:19-20: ERROR: syntax error, unexpected .
 begin { for ($i : ..10) { print($i) } }
-                  ~~
+                  ~
 )");
 }
 
@@ -3120,16 +3163,16 @@ Program
 
   // Needs the let keyword
   test_parse_failure("begin { $x: int8; }", R"(
-stdin:1:9-12: ERROR: syntax error, unexpected :, expecting ; or }
+stdin:1:11-12: ERROR: syntax error, unexpected :
 begin { $x: int8; }
-        ~~~
+          ~
 )");
 
   // Needs the let keyword
   test_parse_failure("begin { $x: int8 = 1; }", R"(
-stdin:1:9-12: ERROR: syntax error, unexpected :, expecting ; or }
+stdin:1:11-12: ERROR: syntax error, unexpected :
 begin { $x: int8 = 1; }
-        ~~~
+          ~
 )");
 }
 
@@ -3262,9 +3305,9 @@ stdin:1:1-3: ERROR: syntax error, unexpected map, expecting {
 )");
 
   test_parse_failure("let @a = hash(); begin { $x; }", R"(
-stdin:1:10-16: ERROR: syntax error, unexpected ), expecting integer
+stdin:1:15-16: ERROR: syntax error, unexpected ), expecting integer
 let @a = hash(); begin { $x; }
-         ~~~~~~
+              ~
 )");
 }
 
@@ -3323,9 +3366,9 @@ Program
 )");
 
   test_parse_failure(R"(begin { }; import "foo";)", R"(
-stdin:1:9-11: ERROR: syntax error, unexpected ;, expecting {
+stdin:1:10-11: ERROR: syntax error, unexpected ;, expecting {
 begin { }; import "foo";
-        ~~
+         ~
 )");
 
   test_parse_failure("import 0; begin { }", R"(
@@ -3341,6 +3384,275 @@ import foo; begin { }
 )");
 }
 
+TEST(Parser, order_of_operations)
+{
+  // Test multiplication has higher precedence than addition.
+  test("kprobe:f { @x = 2 + 3 * 4; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   +\n"
+       "    int: 2 :: [int64]\n"
+       "    *\n"
+       "     int: 3 :: [int64]\n"
+       "     int: 4 :: [int64]\n");
+
+  // Test division has higher precedence than subtraction.
+  test("kprobe:f { @x = 10 - 8 / 2; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   -\n"
+       "    int: 10 :: [int64]\n"
+       "    /\n"
+       "     int: 8 :: [int64]\n"
+       "     int: 2 :: [int64]\n");
+
+  // Test modulo has same precedence as multiplication and division.
+  test("kprobe:f { @x = 2 * 3 % 4; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   %\n"
+       "    *\n"
+       "     int: 2 :: [int64]\n"
+       "     int: 3 :: [int64]\n"
+       "    int: 4 :: [int64]\n");
+
+  // Test bit shifts have lower precedence than arithmetic.
+  test("kprobe:f { @x = 1 + 2 << 3; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   <<\n"
+       "    +\n"
+       "     int: 1 :: [int64]\n"
+       "     int: 2 :: [int64]\n"
+       "    int: 3 :: [int64]\n");
+
+  test("kprobe:f { @x = 16 >> 2 + 1; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   >>\n"
+       "    int: 16 :: [int64]\n"
+       "    +\n"
+       "     int: 2 :: [int64]\n"
+       "     int: 1 :: [int64]\n");
+
+  // Test relational operators have lower precedence than bit shifts.
+  test("kprobe:f { @x = 1 << 2 < 8; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   <\n"
+       "    <<\n"
+       "     int: 1 :: [int64]\n"
+       "     int: 2 :: [int64]\n"
+       "    int: 8 :: [int64]\n");
+
+  test("kprobe:f { @x = 8 > 2 << 1; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   >\n"
+       "    int: 8 :: [int64]\n"
+       "    <<\n"
+       "     int: 2 :: [int64]\n"
+       "     int: 1 :: [int64]\n");
+
+  test("kprobe:f { @x = 5 <= 3 + 2; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   <=\n"
+       "    int: 5 :: [int64]\n"
+       "    +\n"
+       "     int: 3 :: [int64]\n"
+       "     int: 2 :: [int64]\n");
+
+  test("kprobe:f { @x = 5 >= 3 - 1; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   >=\n"
+       "    int: 5 :: [int64]\n"
+       "    -\n"
+       "     int: 3 :: [int64]\n"
+       "     int: 1 :: [int64]\n");
+
+  // Test equality operators have lower precedence than relational.
+  test("kprobe:f { @x = 5 > 3 == 1; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   ==\n"
+       "    >\n"
+       "     int: 5 :: [int64]\n"
+       "     int: 3 :: [int64]\n"
+       "    int: 1 :: [int64]\n");
+
+  test("kprobe:f { @x = 2 < 4 != 0; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   !=\n"
+       "    <\n"
+       "     int: 2 :: [int64]\n"
+       "     int: 4 :: [int64]\n"
+       "    int: 0 :: [int64]\n");
+
+  // Test bitwise AND has lower precedence than equality.
+  test("kprobe:f { @x = 5 == 5 & 1; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   &\n"
+       "    ==\n"
+       "     int: 5 :: [int64]\n"
+       "     int: 5 :: [int64]\n"
+       "    int: 1 :: [int64]\n");
+
+  // Test bitwise XOR has lower precedence than bitwise AND.
+  test("kprobe:f { @x = 1 & 3 ^ 2; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   ^\n"
+       "    &\n"
+       "     int: 1 :: [int64]\n"
+       "     int: 3 :: [int64]\n"
+       "    int: 2 :: [int64]\n");
+
+  // Test bitwise OR has lower precedence than bitwise XOR.
+  test("kprobe:f { @x = 1 ^ 2 | 4; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   |\n"
+       "    ^\n"
+       "     int: 1 :: [int64]\n"
+       "     int: 2 :: [int64]\n"
+       "    int: 4 :: [int64]\n");
+
+  // Test logical AND has lower precedence than bitwise OR.
+  test("kprobe:f { @x = 1 | 2 && 4; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   &&\n"
+       "    |\n"
+       "     int: 1 :: [int64]\n"
+       "     int: 2 :: [int64]\n"
+       "    int: 4 :: [int64]\n");
+
+  // Test logical OR has lower precedence than logical AND.
+  test("kprobe:f { @x = 0 && 1 || 2; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   ||\n"
+       "    &&\n"
+       "     int: 0 :: [int64]\n"
+       "     int: 1 :: [int64]\n"
+       "    int: 2 :: [int64]\n");
+
+  // Test ternary has lowest precedence.
+  test("kprobe:f { @x = 1 || 0 ? 5 : 10; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   if\n"
+       "    ||\n"
+       "     int: 1 :: [int64]\n"
+       "     int: 0 :: [int64]\n"
+       "    then\n"
+       "     int: 5 :: [int64]\n"
+       "    else\n"
+       "     int: 10 :: [int64]\n");
+
+  // Test complex expression with multiple precedence levels.
+  test("kprobe:f { @x = 1 + 2 * 3 > 5 && 4 | 8 ? 10 : 20; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   if\n"
+       "    &&\n"
+       "     >\n"
+       "      +\n"
+       "       int: 1 :: [int64]\n"
+       "       *\n"
+       "        int: 2 :: [int64]\n"
+       "        int: 3 :: [int64]\n"
+       "      int: 5 :: [int64]\n"
+       "     |\n"
+       "      int: 4 :: [int64]\n"
+       "      int: 8 :: [int64]\n"
+       "    then\n"
+       "     int: 10 :: [int64]\n"
+       "    else\n"
+       "     int: 20 :: [int64]\n");
+
+  // Test left-associativity for operators of same precedence.
+  test("kprobe:f { @x = 10 - 5 - 2; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   -\n"
+       "    -\n"
+       "     int: 10 :: [int64]\n"
+       "     int: 5 :: [int64]\n"
+       "    int: 2 :: [int64]\n");
+
+  test("kprobe:f { @x = 20 / 4 / 2; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   /\n"
+       "    /\n"
+       "     int: 20 :: [int64]\n"
+       "     int: 4 :: [int64]\n"
+       "    int: 2 :: [int64]\n");
+
+  // Test ternary is right-associative.
+  test("kprobe:f { @x = 1 ? 2 ? 3 : 4 : 5; }",
+       "Program\n"
+       " kprobe:f\n"
+       "  =\n"
+       "   map: @x\n"
+       "   if\n"
+       "    int: 1 :: [int64]\n"
+       "    then\n"
+       "     if\n"
+       "      int: 2 :: [int64]\n"
+       "      then\n"
+       "       int: 3 :: [int64]\n"
+       "      else\n"
+       "       int: 4 :: [int64]\n"
+       "    else\n"
+       "     int: 5 :: [int64]\n");
+}
+
 TEST(Parser, naked_expression)
 {
   std::stringstream out;
@@ -3349,6 +3661,54 @@ TEST(Parser, naked_expression)
   driver.parse_expr();
   ASSERT_TRUE(ast.diagnostics().ok());
   ASSERT_TRUE(std::holds_alternative<ast::Expression>(driver.result));
+}
+
+TEST(Parser, while_loop_unary_condition)
+{
+  test("kprobe:f { $a = 1; while !$a { $a++; } }",
+       R"(Program
+ kprobe:f
+  =
+   variable: $a
+   int: 1 :: [int64]
+  while(
+   !
+    variable: $a
+   )
+    ++ (post)
+     variable: $a
+)");
+}
+
+TEST(Parser, if_block_unary_condition)
+{
+  test(R"(kprobe:f { if !pid { printf("zero pid\n"); } })",
+       "Program\n"
+       " kprobe:f\n"
+       "  if\n"
+       "   !\n"
+       "    builtin: pid\n"
+       "   then\n"
+       "    call: printf\n"
+       "     string: zero pid\\n\n");
+}
+
+TEST(Parser, for_loop_unary_condition)
+{
+  test("kprobe:f { for $i : 0..10 { print($i); } }",
+       R"(Program
+ kprobe:f
+  for
+   decl
+    variable: $i
+    start
+     int: 0 :: [int64]
+    end
+     int: 10 :: [int64]
+   stmts
+    call: print
+     variable: $i
+)");
 }
 
 } // namespace bpftrace::test::parser

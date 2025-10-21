@@ -318,10 +318,15 @@ struct JsonEmitter<Value::TimeSeries> {
     bool first = true;
     out << "[";
     for (const auto &[ts, value] : tseries.values) {
-      if (!first) {
+      if (std::holds_alternative<std::monostate>(value.variant)) {
+        continue;
+      }
+      if (first) {
+        first = false;
+      } else {
         out << ",";
       }
-      out << "{\"interval_start\":" << ts << ",\"value\":" << value << "}";
+      out << R"({"interval_start":")" << ts << R"(","value":)" << value << "}";
     }
     out << "]";
   }
@@ -377,6 +382,12 @@ bool has_type(const Value &value)
 
 void JsonOutput::map(const std::string &name, const Value &value)
 {
+  if (std::holds_alternative<Value::OrderedMap>(value.variant)) {
+    if (std::get<Value::OrderedMap>(value.variant).values.empty()) {
+      return;
+    }
+  }
+
   // If the value is a histogram, or a map of histograms, then we set the type
   // to `hist`. If it is explicitly a `stats` map, then set that type.
   // Otherwise, just set the message type to `map`.
@@ -396,26 +407,34 @@ void JsonOutput::value(const Value &value)
   emit_data(out_, "value", std::nullopt, value);
 }
 
-void JsonOutput::printf(const std::string &str)
+void JsonOutput::printf(const std::string &str,
+                        const SourceInfo &info,
+                        PrintfSeverity severity)
 {
-  emit_data(out_, "printf", std::nullopt, str);
-}
-
-void JsonOutput::errorf(const std::string &str, const SourceInfo &info)
-{
-  out_ << R"({"type": "errorf")";
-  out_ << R"(, "msg": )";
-  std::stringstream ss;
-  ss << str;
-  JsonEmitter<std::string>::emit(out_, ss.str());
-  // Json only prints the top level location
-  out_ << R"(, "filename": )";
-  JsonEmitter<std::string>::emit(out_, info.locations.begin()->filename);
-  out_ << R"(, "line": )";
-  JsonEmitter<uint64_t>::emit(out_, info.locations.begin()->line);
-  out_ << R"(, "col": )";
-  JsonEmitter<uint64_t>::emit(out_, info.locations.begin()->column);
-  out_ << R"(})" << std::endl;
+  switch (severity) {
+    case PrintfSeverity::NONE: {
+      emit_data(out_, "printf", std::nullopt, str);
+      return;
+    }
+    case PrintfSeverity::WARNING:
+    case PrintfSeverity::ERROR: {
+      bool is_error = severity == PrintfSeverity::ERROR;
+      out_ << R"({"type": ")" << (is_error ? "errorf" : "warnf") << "\"";
+      out_ << R"(, "msg": )";
+      std::stringstream ss;
+      ss << str;
+      JsonEmitter<std::string>::emit(out_, ss.str());
+      // Json only prints the top level location
+      out_ << R"(, "filename": )";
+      JsonEmitter<std::string>::emit(out_, info.locations.begin()->filename);
+      out_ << R"(, "line": )";
+      JsonEmitter<uint64_t>::emit(out_, info.locations.begin()->line);
+      out_ << R"(, "col": )";
+      JsonEmitter<uint64_t>::emit(out_, info.locations.begin()->column);
+      out_ << R"(})" << std::endl;
+      return;
+    }
+  }
 }
 
 void JsonOutput::time(const std::string &time)
@@ -440,15 +459,17 @@ void JsonOutput::syscall(const std::string &syscall)
 
 void JsonOutput::lost_events(uint64_t lost)
 {
-  // This is a special case, it does not use the `data` field.
-  out_ << R"({"type":"lost_events", "count":)" << lost << "}" << std::endl;
+  // This is a special case, it emits both a count and the `data` field.
+  out_ << R"({"type": "lost_events", "count": )" << lost
+       << R"(, "data": {"events": )" << lost << "}}" << std::endl;
 }
 
 void JsonOutput::attached_probes(uint64_t num_probes)
 {
-  // As with lost_events, this is a special case.
-  out_ << R"({"type":"attached_probes", "count":)" << num_probes << "}"
-       << std::endl;
+  // As with lost_events, this is a special case, we do a `count` and `data`
+  // field.
+  out_ << R"({"type": "attached_probes", "count": )" << num_probes
+       << R"(, "data": {"probes": )" << num_probes << "}}" << std::endl;
 }
 
 void JsonOutput::runtime_error(int retcode, const RuntimeErrorInfo &info)

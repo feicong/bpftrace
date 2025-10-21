@@ -3,9 +3,13 @@
 
 #include "arch/arch.h"
 #include "ast/ast.h"
-#include "ast/attachpoint_parser.h"
+#include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/args_resolver.h"
+#include "ast/passes/attachpoint_passes.h"
+#include "ast/passes/builtins.h"
 #include "ast/passes/c_macro_expansion.h"
 #include "ast/passes/clang_parser.h"
+#include "ast/passes/control_flow_analyser.h"
 #include "ast/passes/field_analyser.h"
 #include "ast/passes/fold_literals.h"
 #include "ast/passes/import_scripts.h"
@@ -13,7 +17,6 @@
 #include "ast/passes/map_sugar.h"
 #include "ast/passes/named_param.h"
 #include "ast/passes/printer.h"
-#include "ast/passes/probe_expansion.h"
 #include "ast/passes/resolve_imports.h"
 #include "ast/passes/semantic_analyser.h"
 #include "ast/passes/type_system.h"
@@ -141,12 +144,16 @@ public:
                   .put(types->types)
                   .add(CreateParsePass())
                   .add(ast::CreateResolveImportsPass())
+                  .add(ast::CreateControlFlowPass())
                   .add(ast::CreateImportInternalScriptsPass())
                   .add(ast::CreateMacroExpansionPass())
                   .add(ast::CreateParseAttachpointsPass())
-                  .add(ast::CreateProbeExpansionPass())
+                  .add(ast::CreateProbeAndApExpansionPass())
+                  .add(ast::CreateArgsResolverPass())
                   .add(ast::CreateFieldAnalyserPass())
                   .add(ast::CreateClangParsePass())
+                  .add(ast::CreateArgsResolverPass({ ProbeType::tracepoint }))
+                  .add(ast::CreateBuiltinsPass())
                   .add(ast::CreateCMacroExpansionPass())
                   .add(ast::CreateFoldLiteralsPass())
                   .add(ast::CreateMapSugarPass())
@@ -210,7 +217,6 @@ TEST_F(SemanticAnalyserTest, builtin_variables)
   test("kprobe:f { gid }");
   test("kprobe:f { nsecs }");
   test("kprobe:f { elapsed }");
-  test("kprobe:f { numaid }");
   test("kprobe:f { cpu }");
   test("kprobe:f { ncpus }");
   test("kprobe:f { curtask }");
@@ -220,7 +226,6 @@ TEST_F(SemanticAnalyserTest, builtin_variables)
   test("kprobe:f { kstack }");
   test("kprobe:f { ustack }");
   test("kprobe:f { arg0 }");
-  test("kprobe:f { sarg0 }");
   test("kretprobe:f { retval }");
   test("kprobe:f { func }");
   test("uprobe:/bin/sh:f { func }");
@@ -234,7 +239,7 @@ kprobe:f { fake }
            ~~~~
 )" });
 
-  test("k:f { jiffies }", NoFeatures::Enable, Error{});
+  test("fentry:f { func }", NoFeatures::Enable, Error{});
 }
 
 TEST_F(SemanticAnalyserTest, builtin_cpid)
@@ -266,7 +271,8 @@ TEST_F(SemanticAnalyserTest, builtin_functions)
   test("kprobe:f { @x = 1; clear(@x) }");
   test("kprobe:f { @x = 1; zero(@x) }");
   test("kprobe:f { @x[1] = 1; if (has_key(@x, 1)) {} }");
-  test("kprobe:f { @x[1] = 1; @s = len(@x) }");
+  test("kprobe:f { @x = 1; @y[1] = 1; $a = is_scalar(@x); $b = is_scalar(@y); "
+       "}");
   test("kprobe:f { time() }");
   test("kprobe:f { exit() }");
   test("kprobe:f { str(0xffff) }");
@@ -310,14 +316,14 @@ kprobe:f / @mymap1 == 1234 / { 1234; @mymap1 = @mymap2; }
                                                ~~~~~~~
 )" });
   test("kprobe:f { print(@x); }", Error{ R"(
-stdin:1:12-20: ERROR: Undefined map: @x
+stdin:1:18-20: ERROR: Undefined map: @x
 kprobe:f { print(@x); }
-           ~~~~~~~~
+                 ~~
 )" });
   test("kprobe:f { zero(@x); }", Error{ R"(
-stdin:1:12-19: ERROR: Undefined map: @x
+stdin:1:17-19: ERROR: Undefined map: @x
 kprobe:f { zero(@x); }
-           ~~~~~~~
+                ~~
 )" });
 }
 
@@ -346,9 +352,9 @@ TEST_F(SemanticAnalyserTest, consistent_map_keys)
   test("begin { @x[@y[@z]] = 5; @y[2] = 1; @z = @x[0]; }");
 
   test("begin { @x = 0; @x[1]; }", Error{ R"(
-stdin:1:17-19: ERROR: @x used as a map with an explicit key (non-scalar map), previously used without an explicit key (scalar map)
+stdin:1:17-22: ERROR: @x used as a map with an explicit key (non-scalar map), previously used without an explicit key (scalar map)
 begin { @x = 0; @x[1]; }
-                ~~
+                ~~~~~
 )" });
   test("begin { @x[1] = 0; @x; }", Error{ R"(
 stdin:1:20-22: ERROR: @x used as a map without an explicit key (scalar map), previously used with an explicit key (non-scalar map)
@@ -361,9 +367,9 @@ begin { @x[1] = 0; @x; }
   test("begin { @x[1, ((int8)2, ((int16)3, 4))] = 0; @x[5, (6, (7, 8))]; }");
 
   test("begin { @x[1,2] = 0; @x[3]; }", Error{ R"(
-stdin:1:22-26: ERROR: Argument mismatch for @x: trying to access with arguments: 'int64' when map expects arguments: '(int64,int64)'
+stdin:1:25-26: ERROR: Argument mismatch for @x: trying to access with arguments: 'int64' when map expects arguments: '(int64,int64)'
 begin { @x[1,2] = 0; @x[3]; }
-                     ~~~~
+                        ~
 )" });
   test("begin { @x[1] = 0; @x[2,3]; }", Error{ R"(
 stdin:1:20-27: ERROR: Argument mismatch for @x: trying to access with arguments: '(int64,int64)' when map expects arguments: 'int64'
@@ -383,14 +389,19 @@ stdin:3:7-25: ERROR: Argument mismatch for @x: trying to access with arguments: 
       @x["b", 2, kstack];
       ~~~~~~~~~~~~~~~~~~
 )" });
+  test("kprobe:f { @[1] = 5; @[2] = 10; delete(@); }", Error{ R"(
+stdin:1:40-41: ERROR: call to delete() expects a map without explicit keys (scalar map)
+kprobe:f { @[1] = 5; @[2] = 10; delete(@); }
+                                       ~
+)" });
 
   test("begin { @map[1, 2] = 1; for ($kv : @map) { @map[$kv.0] = 2; } }");
 
   test(R"(begin { @map[1, 2] = 1; for ($kv : @map) { @map[$kv.0.0] = 2; } })",
        Error{ R"(
-stdin:1:45-57: ERROR: Argument mismatch for @map: trying to access with arguments: 'int64' when map expects arguments: '(int64,int64)'
+stdin:1:55-56: ERROR: Argument mismatch for @map: trying to access with arguments: 'int64' when map expects arguments: '(int64,int64)'
 begin { @map[1, 2] = 1; for ($kv : @map) { @map[$kv.0.0] = 2; } }
-                                            ~~~~~~~~~~~~
+                                                      ~
 )" });
 
   test(R"(begin { $a = (3, "hi"); @map[1, "by"] = 1; @map[$a] = 2; })");
@@ -424,18 +435,14 @@ TEST_F(SemanticAnalyserTest, predicate_expressions)
 {
   test("kprobe:f / 999 / { 123 }");
   test("kprobe:f / true / { 123 }");
-  test("kprobe:f / \"str\" / { 123 }", Error{ R"(
-stdin:1:10-19: ERROR: Invalid type for predicate: string
-kprobe:f / "str" / { 123 }
-         ~~~~~~~~~
-)" });
+  test("kprobe:f / \"str\" / { 123 }");
   test("kprobe:f / kstack / { 123 }", Error{ R"(
-stdin:1:10-20: ERROR: Invalid type for predicate: kstack
+stdin:1:10-20: ERROR: Invalid condition: kstack
 kprobe:f / kstack / { 123 }
          ~~~~~~~~~~
 )" });
   test("kprobe:f / @mymap / { @mymap = \"str\" }", Error{ R"(
-stdin:1:10-20: ERROR: Invalid type for predicate: string
+stdin:1:10-20: ERROR: Invalid condition: string
 kprobe:f / @mymap / { @mymap = "str" }
          ~~~~~~~~~~
 )" });
@@ -461,7 +468,6 @@ TEST_F(SemanticAnalyserTest, ternary_expressions)
     { "ksym(arg0)", "ksym(arg1)" },
     { "usym(arg0)", "usym(arg1)" },
     { "cgroup_path(1)", "cgroup_path(2)" },
-    { "strerror(1)", "strerror(2)" },
     { "pid(curr_ns)", "pid(init)" },
     { "tid(curr_ns)", "tid(init)" },
   };
@@ -481,60 +487,60 @@ TEST_F(SemanticAnalyserTest, ternary_expressions)
        "(struct "
        "Foo*)arg1 }");
   test(
-      R"(kprobe:f { pid < 10000 ? ("a", "hellolongstr") : ("hellolongstr", "b") })");
-
-  test(
-      R"(kprobe:f { pid < 10000 ? ("a", "hellolongstr") : ("hellolongstr", "b") })",
+      R"(kprobe:f { pid < 10000 ? ("a", "hellolongstr") : ("hellolongstr", "b"); exit() })",
       ExpectedAST{ R"(
 Program
  kprobe:f
-  ?: :: [(string[13],string[13])]
+  if :: [(string[13],string[13])]
    < :: [bool]
     builtin: pid :: [uint32]
     int: 10000 :: [int64]
-   tuple: :: [(string[2],string[13])]
-    string: a
-    string: hellolongstr
-   tuple: :: [(string[13],string[2])]
-    string: hellolongstr
-    string: b
+   then
+    tuple: :: [(string[2],string[13])]
+     string: a
+     string: hellolongstr
+   else
+    tuple: :: [(string[13],string[2])]
+     string: hellolongstr
+     string: b
 )" });
 
   // Error location is incorrect: #3063
-  test("kprobe:f { pid < 10000 ? 3 : cat(\"/proc/uptime\") }", Error{ R"(
-stdin:1:12-50: ERROR: Ternary operator must return the same type: have 'int64' and 'none'
-kprobe:f { pid < 10000 ? 3 : cat("/proc/uptime") }
-           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  test("kprobe:f { $x = pid < 10000 ? 3 : cat(\"/proc/uptime\"); exit(); }",
+       Error{ R"(
+stdin:1:17-54: ERROR: Branches must return the same type: have 'int64' and 'none'
+kprobe:f { $x = pid < 10000 ? 3 : cat("/proc/uptime"); exit(); }
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Error location is incorrect: #3063
   test("kprobe:f { @x = pid < 10000 ? 1 : \"high\" }", Error{ R"(
-stdin:1:17-42: ERROR: Ternary operator must return the same type: have 'int64' and 'string'
+stdin:1:17-41: ERROR: Branches must return the same type: have 'int64' and 'string'
 kprobe:f { @x = pid < 10000 ? 1 : "high" }
-                ~~~~~~~~~~~~~~~~~~~~~~~~~
+                ~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Error location is incorrect: #3063
   test("kprobe:f { @x = pid < 10000 ? \"lo\" : 2 }", Error{ R"(
-stdin:1:17-40: ERROR: Ternary operator must return the same type: have 'string' and 'int64'
+stdin:1:17-39: ERROR: Branches must return the same type: have 'string' and 'int64'
 kprobe:f { @x = pid < 10000 ? "lo" : 2 }
-                ~~~~~~~~~~~~~~~~~~~~~~~
+                ~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Error location is incorrect: #3063
   test("kprobe:f { @x = pid < 10000 ? (1, 2) : (\"a\", 4) }", Error{ R"(
-stdin:1:17-49: ERROR: Ternary operator must return the same type: have '(int64,int64)' and '(string,int64)'
+stdin:1:17-48: ERROR: Branches must return the same type: have '(int64,int64)' and '(string,int64)'
 kprobe:f { @x = pid < 10000 ? (1, 2) : ("a", 4) }
-                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Error location is incorrect: #3063
   test("kprobe:f { @x = pid < 10000 ? ustack(1) : ustack(2) }", Error{ R"(
-stdin:1:17-53: ERROR: Ternary operator must have the same stack type on the right and left sides.
+stdin:1:17-52: ERROR: Branches must have the same stack type on the right and left sides.
 kprobe:f { @x = pid < 10000 ? ustack(1) : ustack(2) }
-                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Error location is incorrect: #3063
   test("kprobe:f { @x = pid < 10000 ? kstack(raw) : kstack(perf) }", Error{ R"(
-stdin:1:17-58: ERROR: Ternary operator must have the same stack type on the right and left sides.
+stdin:1:17-57: ERROR: Branches must have the same stack type on the right and left sides.
 kprobe:f { @x = pid < 10000 ? kstack(raw) : kstack(perf) }
-                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
 }
 
@@ -700,14 +706,14 @@ kprobe:f { $x = hist(1); }
                 ~~~~~~~
 )" });
   test("kprobe:f { @x[hist(1)] = 1; }", Error{ R"(
-stdin:1:12-22: ERROR: hist() must be assigned directly to a map
+stdin:1:15-22: ERROR: hist() must be assigned directly to a map
 kprobe:f { @x[hist(1)] = 1; }
-           ~~~~~~~~~~
+              ~~~~~~~
 )" });
   test("kprobe:f { if(hist()) { 123 } }", Error{ R"(
-stdin:1:12-21: ERROR: hist() must be assigned directly to a map
+stdin:1:15-21: ERROR: hist() must be assigned directly to a map
 kprobe:f { if(hist()) { 123 } }
-           ~~~~~~~~~
+              ~~~~~~
 )" });
   test("kprobe:f { hist() ? 0 : 1; }", Error{ R"(
 stdin:1:12-18: ERROR: hist() must be assigned directly to a map
@@ -761,14 +767,14 @@ kprobe:f { $x = lhist(); }
                 ~~~~~~~
 )" });
   test("kprobe:f { @[lhist()] = 1; }", Error{ R"(
-stdin:1:12-21: ERROR: lhist() must be assigned directly to a map
+stdin:1:14-21: ERROR: lhist() must be assigned directly to a map
 kprobe:f { @[lhist()] = 1; }
-           ~~~~~~~~~
+             ~~~~~~~
 )" });
   test("kprobe:f { if(lhist()) { 123 } }", Error{ R"(
-stdin:1:12-22: ERROR: lhist() must be assigned directly to a map
+stdin:1:15-22: ERROR: lhist() must be assigned directly to a map
 kprobe:f { if(lhist()) { 123 } }
-           ~~~~~~~~~~
+              ~~~~~~~
 )" });
   test("kprobe:f { lhist() ? 0 : 1; }", Error{ R"(
 stdin:1:12-19: ERROR: lhist() must be assigned directly to a map
@@ -823,14 +829,14 @@ kprobe:f { $x = tseries(); }
                 ~~~~~~~~~
 )" });
   test("kprobe:f { @[tseries()] = 1; }", Error{ R"(
-stdin:1:12-23: ERROR: tseries() must be assigned directly to a map
+stdin:1:14-23: ERROR: tseries() must be assigned directly to a map
 kprobe:f { @[tseries()] = 1; }
-           ~~~~~~~~~~~
+             ~~~~~~~~~
 )" });
   test("kprobe:f { if(tseries()) { 123 } }", Error{ R"(
-stdin:1:12-24: ERROR: tseries() must be assigned directly to a map
+stdin:1:15-24: ERROR: tseries() must be assigned directly to a map
 kprobe:f { if(tseries()) { 123 } }
-           ~~~~~~~~~~~~
+              ~~~~~~~~~
 )" });
   test("kprobe:f { tseries() ? 0 : 1; }", Error{ R"(
 stdin:1:12-21: ERROR: tseries() must be assigned directly to a map
@@ -996,15 +1002,15 @@ TEST_F(SemanticAnalyserTest, call_delete)
        "((int8)5, (int64)4)); }");
 
   test("kprobe:f { delete(1); }", Error{ R"(
-stdin:1:12-20: ERROR: delete() expects a map argument
+stdin:1:19-20: ERROR: delete() expects a map argument
 kprobe:f { delete(1); }
-           ~~~~~~~~
+                  ~
 )" });
 
   test("kprobe:f { delete(1, 1); }", Error{ R"(
-stdin:1:12-20: ERROR: delete() expects a map argument
+stdin:1:19-20: ERROR: delete() expects a map argument
 kprobe:f { delete(1, 1); }
-           ~~~~~~~~
+                  ~
 )" });
 
   test("kprobe:f { @y[(3, 4, 5)] = "
@@ -1016,9 +1022,9 @@ kprobe:f { @y[(3, 4, 5)] = 5; delete(@y, (1, 2)); }
 )" });
 
   test("kprobe:f { @y[1] = 2; delete(@y); }", Error{ R"(
-stdin:1:23-32: ERROR: call to delete() expects a map without explicit keys (scalar map)
+stdin:1:30-32: ERROR: call to delete() expects a map without explicit keys (scalar map)
 kprobe:f { @y[1] = 2; delete(@y); }
-                      ~~~~~~~~~
+                             ~~
 )" });
 
   test("kprobe:f { @a[1] = 1; "
@@ -1039,15 +1045,15 @@ kprobe:f { @a[1] = 1; delete(@a, @a); }
   test("kprobe:f { @x = 1; @y = 5; "
        "delete(@x, @y); }",
        Error{ R"(
-stdin:1:28-37: ERROR: call to delete() expects a map with explicit keys (non-scalar map)
+stdin:1:35-37: ERROR: call to delete() expects a map with explicit keys (non-scalar map)
 kprobe:f { @x = 1; @y = 5; delete(@x, @y); }
-                           ~~~~~~~~~
+                                  ~~
 )" });
 
   test(R"(kprobe:f { @x[1, "hi"] = 1; delete(@x["hi", 1]); })", Error{ R"(
-stdin:1:29-47: ERROR: Argument mismatch for @x: trying to access with arguments: '(string,int64)' when map expects arguments: '(int64,string)'
+stdin:1:36-47: ERROR: Argument mismatch for @x: trying to access with arguments: '(string,int64)' when map expects arguments: '(int64,string)'
 kprobe:f { @x[1, "hi"] = 1; delete(@x["hi", 1]); }
-                            ~~~~~~~~~~~~~~~~~~
+                                   ~~~~~~~~~~~
 )" });
 
   test("kprobe:f { @x[0] = 1; @y[5] = 5; "
@@ -1067,9 +1073,9 @@ kprobe:f { @x = 1; @y[5] = 5; delete(@x, @y[5], @y[6]); }
 )" });
 
   test("kprobe:f { @x = 1; delete(@x[1]); }", Error{ R"(
-stdin:1:20-29: ERROR: call to delete() expects a map with explicit keys (non-scalar map)
+stdin:1:27-29: ERROR: call to delete() expects a map with explicit keys (non-scalar map)
 kprobe:f { @x = 1; delete(@x[1]); }
-                   ~~~~~~~~~
+                          ~~
 )" });
 }
 
@@ -1129,14 +1135,14 @@ TEST_F(SemanticAnalyserTest, call_print_map_item)
   test(R"_(begin { @x[1,2] = "asdf"; print((1, 2, @x[1,2])); })_");
 
   test("begin { @x[1] = 1; print(@x[\"asdf\"]); }", Error{ R"(
-stdin:1:20-35: ERROR: Argument mismatch for @x: trying to access with arguments: 'string' when map expects arguments: 'int64'
+stdin:1:34-35: ERROR: Argument mismatch for @x: trying to access with arguments: 'string' when map expects arguments: 'int64'
 begin { @x[1] = 1; print(@x["asdf"]); }
-                   ~~~~~~~~~~~~~~~
+                                 ~
 )" });
   test("begin { print(@x[2]); }", Error{ R"(
-stdin:1:9-20: ERROR: Undefined map: @x
+stdin:1:15-20: ERROR: Undefined map: @x
 begin { print(@x[2]); }
-        ~~~~~~~~~~~
+              ~~~~~
 )" });
   test("begin { @x[1] = 1; print(@x[1], 3, 5); }", Error{ R"(
 stdin:1:20-38: ERROR: Non-map print() only takes 1 argument, 3 found
@@ -1203,29 +1209,6 @@ TEST_F(SemanticAnalyserTest, call_zero)
   test("kprobe:f { @x = count(); zero(@x) ? 0 : 1; }", Error{});
 }
 
-TEST_F(SemanticAnalyserTest, call_len)
-{
-  test("kprobe:f { @x[0] = 0; len(@x); }");
-  test("kprobe:f { @x[0] = 0; len(); }", Error{});
-  test("kprobe:f { @x[0] = 0; len(@x, 1); }", Error{});
-  test("kprobe:f { @x[0] = 0; len(@x[2]); }", Error{});
-  test("kprobe:f { $x = 0; len($x); }", Error{});
-  test("kprobe:f { len(ustack) }");
-  test("kprobe:f { len(kstack) }");
-
-  test("kprobe:f { len(0) }", Error{ R"(
-stdin:1:12-18: ERROR: len() expects a map or stack to be provided
-kprobe:f { len(0) }
-           ~~~~~~
-)" });
-
-  test("kprobe:f { @x = 1; @s = len(@x) }", Error{ R"(
-stdin:1:25-31: ERROR: call to len() expects a map with explicit keys (non-scalar map)
-kprobe:f { @x = 1; @s = len(@x) }
-                        ~~~~~~
-)" });
-}
-
 TEST_F(SemanticAnalyserTest, call_has_key)
 {
   test("kprobe:f { @x[1] = 0; if "
@@ -1254,21 +1237,21 @@ TEST_F(SemanticAnalyserTest, call_has_key)
        "@a[has_key(@x, 1)] = 1; }");
 
   test("kprobe:f { @x[1] = 1;  if (has_key(@x)) {} }", Error{ R"(
-stdin:1:27-39: ERROR: has_key() requires 2 arguments (1 provided)
+stdin:1:28-39: ERROR: has_key() requires 2 arguments (1 provided)
 kprobe:f { @x[1] = 1;  if (has_key(@x)) {} }
-                          ~~~~~~~~~~~~
+                           ~~~~~~~~~~~
 )" });
 
   test("kprobe:f { @x[1] = 1;  if (has_key(@x[1], 1)) {} }", Error{ R"(
-stdin:1:27-41: ERROR: has_key() expects a map argument
+stdin:1:36-41: ERROR: has_key() expects a map argument
 kprobe:f { @x[1] = 1;  if (has_key(@x[1], 1)) {} }
-                          ~~~~~~~~~~~~~~
+                                   ~~~~~
 )" });
 
   test("kprobe:f { @x = 1;  if (has_key(@x, 1)) {} }", Error{ R"(
-stdin:1:24-35: ERROR: call to has_key() expects a map with explicit keys (non-scalar map)
+stdin:1:33-35: ERROR: call to has_key() expects a map with explicit keys (non-scalar map)
 kprobe:f { @x = 1;  if (has_key(@x, 1)) {} }
-                       ~~~~~~~~~~~
+                                ~~
 )" });
 
   test("kprobe:f { @x[1, 2] = 1;  if (has_key(@x, 1)) {} }", Error{ R"(
@@ -1285,9 +1268,9 @@ kprobe:f { @x[1, "hi"] = 0; if (has_key(@x, (2, 1))) {} }
 )" });
 
   test("kprobe:f { @x[1] = 1; $a = 1; if (has_key($a, 1)) {} }", Error{ R"(
-stdin:1:34-45: ERROR: has_key() expects a map argument
+stdin:1:43-45: ERROR: has_key() expects a map argument
 kprobe:f { @x[1] = 1; $a = 1; if (has_key($a, 1)) {} }
-                                 ~~~~~~~~~~~
+                                          ~~
 )" });
 
   test("kprobe:f { @a[1] = 1; has_key(@a, @a); }", Error{ R"(
@@ -1733,20 +1716,6 @@ TEST_F(SemanticAnalyserTest, call_cgroup_path)
   test("kprobe:f { printf(\"%d\", cgroup_path(1)) }", Error{});
 }
 
-TEST_F(SemanticAnalyserTest, call_strerror)
-{
-  test("kprobe:f { strerror(1) }");
-
-  test("kprobe:f { strerror(1, 2) }", Error{});
-  test("kprobe:f { strerror(\"1\") }", Error{});
-
-  test("kprobe:f { printf(\"%s\", strerror(1)) }");
-  test("kprobe:f { printf(\"%s %s\", strerror(1), strerror(2)) }");
-  test("kprobe:f { $var = strerror(0); printf(\"%s %s\", $var, $var) }");
-
-  test("kprobe:f { printf(\"%d\", strerror(1)) }", Error{});
-}
-
 TEST_F(SemanticAnalyserTest, map_reassignment)
 {
   test("kprobe:f { @x = 1; @x = 2; }");
@@ -1900,9 +1869,9 @@ TEST_F(SemanticAnalyserTest, array_as_map_key)
       @x[((struct MyStruct *)0)->y] = 1;
     })",
        Error{ R"(
-stdin:4:7-36: ERROR: Argument mismatch for @x: trying to access with arguments: 'int32[4]' when map expects arguments: 'int32[2]'
+stdin:4:32-34: ERROR: Argument mismatch for @x: trying to access with arguments: 'int32[4]' when map expects arguments: 'int32[2]'
       @x[((struct MyStruct *)0)->y] = 1;
-      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                               ~~
 )" });
 }
 
@@ -2000,12 +1969,64 @@ TEST_F(SemanticAnalyserTest, binop_integer_no_promotion)
   EXPECT_EQ(CreateInt8(), var_assignment->var()->var_type);
 }
 
+TEST_F(SemanticAnalyserTest, binop_tuple)
+{
+  // These are all variables so they don't get folded
+  test(
+      R"(kprobe:f { $a = (2, (int8[2])(int16)1); $b = (2, (int8[2])(int16)2); $a == $b })");
+  test(R"(kprobe:f { $a = ((int16)1, 3); $b = ((int64)2, 4); $a == $b })");
+  test(
+      R"(kprobe:f { $a = (1, "reallyreallyreallylongstr", true); $b = (2, "bye", false); $a == $b })");
+  test(
+      R"(kprobe:f { $a = (1, "reallyreallyreallylongstr", ((int8)1, "bye")); $b = (2, "bye", (2, "reallyreallyreallylongstr")); $a == $b })");
+  test(
+      R"(kprobe:f { $a = ((int16)1, (int16)3); $b = ((int64)2, 4); $a == $b })");
+
+  test(R"(kprobe:f { $a = (1, true); $b = (2, false, 3); $a == $b })", Error{});
+  test(
+      R"(kprobe:f { $a = (1, true, "bye"); $b = (2, "bye", false); $a == $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (2, (int8[2])(int16)1); $b = (2, (int8[8])1); $a == $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (2, (1, (int8[2])(int16)1)); $b = (2, (1, (int16[2])(int32)1)); $a == $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (1, "hello", true); $b = (2, "bye", false); $a < $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (1, "hello", true); $b = (2, "bye", false); $a > $b })",
+      Error{});
+}
+
+TEST_F(SemanticAnalyserTest, binop_array)
+{
+  // These are variables so they don't get folded
+  test(
+      R"(kprobe:f { $a = (int8[2])(int16)1; $b = (int8[2])(int16)2; $a == $b })");
+
+  test(
+      R"(kprobe:f { $a = (int8[4])(int32)1; $b = (int8[2])(int16)2; $a == $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (int8[4])(int32)1; $b = (int16[2])(int32)2; $a == $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (int8[2])(int16)1; $b = (int8[2])(int16)2; $a < $b })",
+      Error{});
+  test(
+      R"(kprobe:f { $a = (int8[2])(int16)1; $b = (int8[2])(int16)2; $a > $b })",
+      Error{});
+}
+
 TEST_F(SemanticAnalyserTest, unop_dereference)
 {
   test("kprobe:f { *0; }");
   test("struct X { int n; } kprobe:f { $x = (struct X*)0; *$x; }");
   test("struct X { int n; } kprobe:f { $x = *(struct X*)0; *$x; }", Error{});
   test("kprobe:f { *\"0\"; }", Error{});
+  test("kprobe:f { *true; }", Error{});
 }
 
 TEST_F(SemanticAnalyserTest, unop_not)
@@ -2015,6 +2036,7 @@ TEST_F(SemanticAnalyserTest, unop_not)
   test(structs + "kprobe:f { $x = *(struct X*)0; ~$x; }", Error{});
   test(structs + "kprobe:f { $x = (struct X*)0; ~$x; }", Error{});
   test("kprobe:f { ~\"0\"; }", Error{});
+  test("kprobe:f { ~true; }", Error{});
 }
 
 TEST_F(SemanticAnalyserTest, unop_lnot)
@@ -2042,11 +2064,13 @@ TEST_F(SemanticAnalyserTest, unop_increment_decrement)
   test("kprobe:f { $x++; }", Error{});
   test("kprobe:f { @x = \"a\"; @x++; }", Error{});
   test("kprobe:f { $x = \"a\"; $x++; }", Error{});
+  test("kprobe:f { ++true; }", Error{});
+  test("kprobe:f { --true; }", Error{});
 }
 
-TEST_F(SemanticAnalyserTest, printf_and_errorf)
+TEST_F(SemanticAnalyserTest, printf_errorf_warnf)
 {
-  std::vector<std::string> funcs = { "printf", "errorf" };
+  std::vector<std::string> funcs = { "printf", "errorf", "warnf" };
   for (const auto &func : funcs) {
     test("kprobe:f { " + func + "(\"hi\") }");
     test("kprobe:f { " + func + "(1234) }", Error{});
@@ -2264,181 +2288,6 @@ TEST_F(SemanticAnalyserTest, join_delimiter)
   test("kprobe:f { join(arg0, 3) }", Error{});
 }
 
-TEST_F(SemanticAnalyserTest, kprobe)
-{
-  test("kprobe:f { 1 }");
-  test("kretprobe:f { 1 }");
-}
-
-TEST_F(SemanticAnalyserTest, uprobe)
-{
-  test("uprobe:/bin/sh:f { 1 }");
-  test("u:/bin/sh:f { 1 }");
-  test("uprobe:/bin/sh:0x10 { 1 }");
-  test("u:/bin/sh:0x10 { 1 }");
-  test("uprobe:/bin/sh:f+0x10 { 1 }");
-  test("u:/bin/sh:f+0x10 { 1 }");
-  test("uprobe:sh:f { 1 }");
-  test("uprobe:/bin/sh:cpp:f { 1 }");
-  test("uprobe:/notexistfile:f { 1 }", Error{});
-  test("uprobe:notexistfile:f { 1 }", Error{});
-  test("uprobe:/bin/sh:nolang:f { 1 }", Error{});
-
-  test("uretprobe:/bin/sh:f { 1 }");
-  test("ur:/bin/sh:f { 1 }");
-  test("uretprobe:sh:f { 1 }");
-  test("ur:sh:f { 1 }");
-  test("uretprobe:/bin/sh:0x10 { 1 }");
-  test("ur:/bin/sh:0x10 { 1 }");
-  test("uretprobe:/bin/sh:cpp:f { 1 }");
-  test("uretprobe:/notexistfile:f { 1 }", Error{});
-  test("uretprobe:notexistfile:f { 1 }", Error{});
-  test("uretprobe:/bin/sh:nolang:f { 1 }", Error{});
-}
-
-TEST_F(SemanticAnalyserTest, usdt)
-{
-  test("usdt:/bin/sh:probe { 1 }");
-  test("usdt:sh:probe { 1 }");
-  test("usdt:/bin/sh:namespace:probe { 1 }");
-  test("usdt:/notexistfile:namespace:probe { 1 }", Error{});
-  test("usdt:notexistfile:namespace:probe { 1 }", Error{});
-}
-
-TEST_F(SemanticAnalyserTest, begin_end_probes)
-{
-  test("begin { 1 }");
-  test("begin { 1 } begin { 2 }", Error{});
-
-  test("end { 1 }");
-  test("end { 1 } end { 2 }", Error{});
-}
-
-TEST_F(SemanticAnalyserTest, bench_probes)
-{
-  test("bench:a { 1 } bench:b { 2 }");
-  test("bench: { 1 }", Error{ R"(
-stdin:1:1-7: ERROR: bench probes must have a name
-bench: { 1 }
-~~~~~~
-)" });
-  test("BENCH:a { 1 } BENCH:a { 2 }", Error{ R"(
-stdin:1:14-22: ERROR: "a" was used as the name for more than one BENCH probe
-BENCH:a { 1 } BENCH:a { 2 }
-             ~~~~~~~~
-stdin:1:1-8: ERROR: this is the other instance
-BENCH:a { 1 } BENCH:a { 2 }
-~~~~~~~
-)" });
-}
-
-TEST_F(SemanticAnalyserTest, self_probe)
-{
-  test("self:signal:SIGUSR1 { 1 }");
-
-  test("self:signal:sighup { 1 }", Error{ R"(
-stdin:1:1-19: ERROR: sighup is not a supported signal
-self:signal:sighup { 1 }
-~~~~~~~~~~~~~~~~~~
-)" });
-  test("self:keypress:space { 1 }", Error{ R"(
-stdin:1:1-20: ERROR: keypress is not a supported trigger
-self:keypress:space { 1 }
-~~~~~~~~~~~~~~~~~~~
-)" });
-}
-
-TEST_F(SemanticAnalyserTest, tracepoint)
-{
-  test("tracepoint:category:event { 1 }");
-}
-
-TEST_F(SemanticAnalyserTest, rawtracepoint)
-{
-  test("rawtracepoint:event { 1 }");
-  test("rawtracepoint:event { arg0 }");
-  test("rawtracepoint:mod:event { arg0 }");
-}
-
-TEST_F(SemanticAnalyserTest, watchpoint_invalid_modes)
-{
-  if (arch::Host::Machine != arch::ARM64 &&
-      arch::Host::Machine != arch::X86_64) {
-    GTEST_SKIP() << "Watchpoint tests are only supported on ARM64 and X86_64";
-  }
-
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->procmon_ = std::make_unique<MockProcMon>(123);
-
-  if (arch::Host::Machine == arch::ARM64) {
-    test("watchpoint:0x1234:8:r { 1 }", Mock{ *bpftrace });
-  } else {
-    test("watchpoint:0x1234:8:r { 1 }", Mock{ *bpftrace }, Error{});
-  }
-  test("watchpoint:0x1234:8:rx { 1 }", Mock{ *bpftrace }, Error{});
-  test("watchpoint:0x1234:8:wx { 1 }", Mock{ *bpftrace }, Error{});
-  test("watchpoint:0x1234:8:xw { 1 }", Mock{ *bpftrace }, Error{});
-  test("watchpoint:0x1234:8:rwx { 1 }", Mock{ *bpftrace }, Error{});
-  test("watchpoint:0x1234:8:xx { 1 }", Mock{ *bpftrace }, Error{});
-  test("watchpoint:0x1234:8:b { 1 }", Mock{ *bpftrace }, Error{});
-}
-
-TEST_F(SemanticAnalyserTest, watchpoint_absolute)
-{
-  if (arch::Host::Machine != arch::ARM64 &&
-      arch::Host::Machine != arch::X86_64) {
-    GTEST_SKIP() << "Watchpoint tests are only supported on ARM64 and X86_64";
-  }
-
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->procmon_ = std::make_unique<MockProcMon>(123);
-
-  test("watchpoint:0x1234:8:rw { 1 }", Mock{ *bpftrace });
-  test("watchpoint:0x1234:9:rw { 1 }", Mock{ *bpftrace }, Error{});
-  test("watchpoint:0x0:8:rw { 1 }", Mock{ *bpftrace }, Error{});
-}
-
-TEST_F(SemanticAnalyserTest, watchpoint_function)
-{
-  if (arch::Host::Machine != arch::ARM64 &&
-      arch::Host::Machine != arch::X86_64) {
-    GTEST_SKIP() << "Watchpoint tests are only supported on ARM64 and X86_64";
-  }
-
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->procmon_ = std::make_unique<MockProcMon>(123);
-
-  test("watchpoint:func1+arg2:8:rw { 1 }", Mock{ *bpftrace });
-  test("w:func1+arg2:8:rw { 1 }", Mock{ *bpftrace });
-  test("w:func1.one_two+arg2:8:rw { 1 }", Mock{ *bpftrace });
-  test("watchpoint:func1+arg99999:8:rw { 1 }", Mock{ *bpftrace }, Error{});
-
-  bpftrace->procmon_ = nullptr;
-  test("watchpoint:func1+arg2:8:rw { 1 }", Mock{ *bpftrace }, Error{});
-}
-
-TEST_F(SemanticAnalyserTest, asyncwatchpoint)
-{
-  if (arch::Host::Machine != arch::ARM64 &&
-      arch::Host::Machine != arch::X86_64) {
-    GTEST_SKIP() << "Watchpoint tests are only supported on ARM64 and X86_64";
-  }
-
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->procmon_ = std::make_unique<MockProcMon>(123);
-
-  test("asyncwatchpoint:func1+arg2:8:rw { 1 }", Mock{ *bpftrace });
-  test("aw:func1+arg2:8:rw { 1 }", Mock{ *bpftrace });
-  test("aw:func1.one_two+arg2:8:rw { 1 }", Mock{ *bpftrace });
-  test("asyncwatchpoint:func1+arg99999:8:rw { 1 }", Mock{ *bpftrace }, Error{});
-
-  // asyncwatchpoint's may not use absolute addresses
-  test("asyncwatchpoint:0x1234:8:rw { 1 }", Mock{ *bpftrace }, Error{});
-
-  bpftrace->procmon_ = nullptr;
-  test("watchpoint:func1+arg2:8:rw { 1 }", Mock{ *bpftrace }, Error{});
-}
-
 TEST_F(SemanticAnalyserTest, args_builtin_wrong_use)
 {
   test("begin { args.foo }", Error{});
@@ -2452,24 +2301,6 @@ TEST_F(SemanticAnalyserTest, args_builtin_wrong_use)
   test("hardware:cache-references:1000000 { args.foo }", Error{});
   test("software:faults:1000 { args.foo }", Error{});
   test("interval:s:1 { args.foo }", Error{});
-}
-
-TEST_F(SemanticAnalyserTest, profile)
-{
-  test("profile:hz:997 { 1 }");
-  test("profile:s:10 { 1 }");
-  test("profile:ms:100 { 1 }");
-  test("profile:us:100 { 1 }");
-  test("profile:unit:100 { 1 }", Error{});
-}
-
-TEST_F(SemanticAnalyserTest, interval)
-{
-  test("interval:hz:997 { 1 }");
-  test("interval:s:10 { 1 }");
-  test("interval:ms:100 { 1 }");
-  test("interval:us:100 { 1 }");
-  test("interval:unit:100 { 1 }", Error{});
 }
 
 TEST_F(SemanticAnalyserTest, variable_cast_types)
@@ -2611,9 +2442,9 @@ kprobe:f { @x = 1; @y = stats(5); @x = @y; }
 stdin:1:31-32: ERROR: Type mismatch for '>': comparing hist_t with int64
 kprobe:f { @ = hist(5); if (@ > 0) { print((1)); } }
                               ~
-stdin:1:28-30: ERROR: left (hist_t)
+stdin:1:29-30: ERROR: left (hist_t)
 kprobe:f { @ = hist(5); if (@ > 0) { print((1)); } }
-                           ~~
+                            ~
 stdin:1:33-34: ERROR: right (int64)
 kprobe:f { @ = hist(5); if (@ > 0) { print((1)); } }
                                 ~
@@ -2660,14 +2491,14 @@ TEST_F(SemanticAnalyserTest, map_casts_are_global)
 TEST_F(SemanticAnalyserTest, cast_unknown_type)
 {
   test("begin { (struct faketype *)cpu }", Error{ R"(
-stdin:1:9-29: ERROR: Cannot resolve unknown type "struct faketype"
+stdin:1:10-27: ERROR: Cannot resolve unknown type "struct faketype"
 begin { (struct faketype *)cpu }
-        ~~~~~~~~~~~~~~~~~~~~
+         ~~~~~~~~~~~~~~~~~
 )" });
   test("begin { (faketype)cpu }", Error{ R"(
-stdin:1:9-19: ERROR: Cannot resolve unknown type "faketype"
+stdin:1:10-18: ERROR: Cannot resolve unknown type "faketype"
 begin { (faketype)cpu }
-        ~~~~~~~~~~
+         ~~~~~~~~
 stdin:1:9-19: ERROR: Cannot cast to "faketype"
 begin { (faketype)cpu }
         ~~~~~~~~~~
@@ -2678,36 +2509,36 @@ TEST_F(SemanticAnalyserTest, cast_c_integers)
 {
   // Casting to a C integer type gives a hint with the correct name
   test("begin { (char)cpu }", Error{ R"(
-stdin:1:9-15: ERROR: Cannot resolve unknown type "char"
+stdin:1:10-14: ERROR: Cannot resolve unknown type "char"
 begin { (char)cpu }
-        ~~~~~~
+         ~~~~
 stdin:1:9-15: ERROR: Cannot cast to "char"
 begin { (char)cpu }
         ~~~~~~
 HINT: Did you mean "int8"?
 )" });
   test("begin { (short)cpu }", Error{ R"(
-stdin:1:9-16: ERROR: Cannot resolve unknown type "short"
+stdin:1:10-15: ERROR: Cannot resolve unknown type "short"
 begin { (short)cpu }
-        ~~~~~~~
+         ~~~~~
 stdin:1:9-16: ERROR: Cannot cast to "short"
 begin { (short)cpu }
         ~~~~~~~
 HINT: Did you mean "int16"?
 )" });
   test("begin { (int)cpu }", Error{ R"(
-stdin:1:9-14: ERROR: Cannot resolve unknown type "int"
+stdin:1:10-13: ERROR: Cannot resolve unknown type "int"
 begin { (int)cpu }
-        ~~~~~
+         ~~~
 stdin:1:9-14: ERROR: Cannot cast to "int"
 begin { (int)cpu }
         ~~~~~
 HINT: Did you mean "int32"?
 )" });
   test("begin { (long)cpu }", Error{ R"(
-stdin:1:9-15: ERROR: Cannot resolve unknown type "long"
+stdin:1:10-14: ERROR: Cannot resolve unknown type "long"
 begin { (long)cpu }
-        ~~~~~~
+         ~~~~
 stdin:1:9-15: ERROR: Cannot cast to "long"
 begin { (long)cpu }
         ~~~~~~
@@ -2721,19 +2552,19 @@ TEST_F(SemanticAnalyserTest, cast_struct)
   test("struct mytype { int field; }\n"
        "begin { $s = (struct mytype *)cpu; (uint32)*$s; }",
        Error{ R"(
-stdin:2:37-45: ERROR: Cannot cast from struct type "struct mytype"
+stdin:2:36-44: ERROR: Cannot cast from struct type "struct mytype"
 begin { $s = (struct mytype *)cpu; (uint32)*$s; }
-                                    ~~~~~~~~
-stdin:2:37-45: ERROR: Cannot cast from "struct mytype" to "uint32"
+                                   ~~~~~~~~
+stdin:2:36-44: ERROR: Cannot cast from "struct mytype" to "uint32"
 begin { $s = (struct mytype *)cpu; (uint32)*$s; }
-                                    ~~~~~~~~
+                                   ~~~~~~~~
 )" });
   test("struct mytype { int field; } "
        "begin { (struct mytype)cpu }",
        Error{ R"(
-stdin:1:38-54: ERROR: Cannot cast to "struct mytype"
+stdin:1:38-53: ERROR: Cannot cast to "struct mytype"
 struct mytype { int field; } begin { (struct mytype)cpu }
-                                     ~~~~~~~~~~~~~~~~
+                                     ~~~~~~~~~~~~~~~
 )" });
 }
 
@@ -2803,7 +2634,7 @@ TEST_F(SemanticAnalyserTest, field_access_pointer)
 {
   std::string structs = "struct type1 { int field; }";
   test(structs + "kprobe:f { ((struct type1*)0)->field }");
-  test(structs + "kprobe:f { ((struct type1*)0).field }", Error{});
+  test(structs + "kprobe:f { ((struct type1*)0).field }");
   test(structs + "kprobe:f { *((struct type1*)0) }");
 }
 
@@ -2864,9 +2695,9 @@ TEST_F(SemanticAnalyserTest, struct_as_map_key)
         @x[*((struct B *)0)] = 1;
     })",
        Error{ R"(
-stdin:4:9-13: ERROR: Argument mismatch for @x: trying to access with arguments: 'struct B' when map expects arguments: 'struct A'
+stdin:4:12-13: ERROR: Argument mismatch for @x: trying to access with arguments: 'struct B' when map expects arguments: 'struct A'
         @x[*((struct B *)0)] = 1;
-        ~~~~
+           ~
 )" });
 }
 
@@ -2879,27 +2710,27 @@ TEST_F(SemanticAnalyserTest, per_cpu_map_as_map_key)
   test("begin { @x = avg(1); @y[@x] = 1; }");
 
   test("begin { @x = hist(10); @y[@x] = 1; }", Error{ R"(
-stdin:1:24-29: ERROR: hist_t cannot be used as a map key
+stdin:1:27-29: ERROR: hist_t cannot be used as a map key
 begin { @x = hist(10); @y[@x] = 1; }
-                       ~~~~~
+                          ~~
 )" });
 
   test("begin { @x = lhist(10, 0, 10, 1); @y[@x] = 1; }", Error{ R"(
-stdin:1:35-40: ERROR: lhist_t cannot be used as a map key
+stdin:1:38-40: ERROR: lhist_t cannot be used as a map key
 begin { @x = lhist(10, 0, 10, 1); @y[@x] = 1; }
-                                  ~~~~~
+                                     ~~
 )" });
 
   test("begin { @x = tseries(10, 1s, 10); @y[@x] = 1; }", Error{ R"(
-stdin:1:35-40: ERROR: tseries_t cannot be used as a map key
+stdin:1:38-40: ERROR: tseries_t cannot be used as a map key
 begin { @x = tseries(10, 1s, 10); @y[@x] = 1; }
-                                  ~~~~~
+                                     ~~
 )" });
 
   test("begin { @x = stats(10); @y[@x] = 1; }", Error{ R"(
-stdin:1:25-30: ERROR: stats_t cannot be used as a map key
+stdin:1:28-30: ERROR: stats_t cannot be used as a map key
 begin { @x = stats(10); @y[@x] = 1; }
-                        ~~~~~
+                           ~~
 )" });
 }
 
@@ -2950,12 +2781,6 @@ TEST_F(SemanticAnalyserTest, positional_parameters)
   // Parameters can be used as string literals
   test("kprobe:f { printf(\"%d\", cgroupid(str($2))); }", Mock{ *bpftrace });
 
-  auto ast = test("k:f { $1 }");
-  auto *stmt =
-      ast.root->probes.at(0)->block->stmts.at(0).as<ast::ExprStatement>();
-  auto *pp = stmt->expr.as<ast::PositionalParameter>();
-  EXPECT_EQ(CreateNone(), pp->type());
-
   bpftrace->add_param("0999");
   test("kprobe:f { printf(\"%d\", $4); }", Mock{ *bpftrace }, Error{});
 }
@@ -2989,23 +2814,23 @@ TEST_F(SemanticAnalyserTest, enum_casts)
   test("enum named { a = 1, b } kprobe:f { $x = 3; print((enum named)$x); }");
 
   test("enum named { a = 1, b } kprobe:f { print((enum named)3); }", Error{ R"(
-stdin:1:36-55: ERROR: Enum: named doesn't contain a variant value of 3
+stdin:1:42-54: ERROR: Enum: named doesn't contain a variant value of 3
 enum named { a = 1, b } kprobe:f { print((enum named)3); }
-                                   ~~~~~~~~~~~~~~~~~~~
+                                         ~~~~~~~~~~~~
 )" });
 
   test("enum Foo { a = 1, b } kprobe:f { print((enum Bar)1); }", Error{ R"(
-stdin:1:34-51: ERROR: Unknown enum: Bar
+stdin:1:40-50: ERROR: Unknown enum: Bar
 enum Foo { a = 1, b } kprobe:f { print((enum Bar)1); }
-                                 ~~~~~~~~~~~~~~~~~
+                                       ~~~~~~~~~~
 )" });
 
   test("enum named { a = 1, b } kprobe:f { $a = \"str\"; print((enum "
        "named)$a); }",
        Error{ R"(
-stdin:1:48-67: ERROR: Cannot cast from "string" to "enum named"
+stdin:1:54-66: ERROR: Cannot cast from "string" to "enum named"
 enum named { a = 1, b } kprobe:f { $a = "str"; print((enum named)$a); }
-                                               ~~~~~~~~~~~~~~~~~~~
+                                                     ~~~~~~~~~~~~
 )" });
 }
 
@@ -3048,6 +2873,21 @@ TEST_F(SemanticAnalyserTest, string_comparison)
   test("struct MyStruct {char y[4]; } "
        "kprobe:f { $s = (struct MyStruct*)arg0; \"long string\" != $s->y}",
        NoWarning{ msg });
+}
+
+TEST_F(SemanticAnalyserTest, string_index)
+{
+  // String indexing produces an 8-bit signed integer.
+  test("kprobe:f { $x = \"foo\"; $x[0] == 102; }");
+
+  // Able to index to the null, but not past it.
+  test(R"(kprobe:f { $x = "foo"; printf("%c is the fourth letter", $x[3]); })");
+  test(R"(kprobe:f { $x = "foo"; printf("%c is the fifth letter", $x[4]); })",
+       Error{ R"(
+stdin:1:59-62: ERROR: the index 4 is out of bounds for array of size 4
+kprobe:f { $x = "foo"; printf("%c is the fifth letter", $x[4]); }
+                                                          ~~~
+)" });
 }
 
 TEST_F(SemanticAnalyserTest, signed_int_arithmetic_warnings)
@@ -3481,14 +3321,14 @@ TEST_F(SemanticAnalyserTest, mixed_int_map_access)
   test("kprobe:f { @x[1] = 1; @x[-9223372036854775808] }");
 
   test("kprobe:f { @x[1] = 1; @x[10223372036854775807] }", Error{ R"(
-stdin:1:23-46: ERROR: Argument mismatch for @x: trying to access with argument '10223372036854775807' which does not fit into the map of key type 'int64'
+stdin:1:26-46: ERROR: Argument mismatch for @x: trying to access with argument '10223372036854775807' which does not fit into the map of key type 'int64'
 kprobe:f { @x[1] = 1; @x[10223372036854775807] }
-                      ~~~~~~~~~~~~~~~~~~~~~~~
+                         ~~~~~~~~~~~~~~~~~~~~
 )" });
   test("kprobe:f { @x[(uint64)1] = 1; @x[-1] }", Error{ R"(
-stdin:1:31-35: ERROR: Argument mismatch for @x: trying to access with arguments: 'int64' when map expects arguments: 'uint64'
+stdin:1:34-35: ERROR: Argument mismatch for @x: trying to access with arguments: 'int64' when map expects arguments: 'uint64'
 kprobe:f { @x[(uint64)1] = 1; @x[-1] }
-                              ~~~~
+                                 ~
 )" });
   test("kretprobe:f { @x[1] = 1; @x[(uint64)1] }", Error{ R"(
 ERROR: Argument mismatch for @x: trying to access with arguments: 'uint64' when map expects arguments: 'int64'
@@ -3497,48 +3337,114 @@ ERROR: Argument mismatch for @x: trying to access with arguments: 'uint64' when 
 
 TEST_F(SemanticAnalyserTest, signal)
 {
-  // int literals
-  test("k:f { signal(1); }", UnsafeMode::Enable);
-  test("kr:f { signal(1); }", UnsafeMode::Enable);
-  test("u:/bin/sh:f { signal(11); }", UnsafeMode::Enable);
-  test("ur:/bin/sh:f { signal(11); }", UnsafeMode::Enable);
-  test("p:hz:1 { signal(1); }", UnsafeMode::Enable);
+  ast::TypeMetadata types;
 
-  // vars
-  test("k:f { @=1; signal(@); }", UnsafeMode::Enable);
-  test("k:f { @=1; signal((int32)arg0); }", UnsafeMode::Enable);
+  auto uint32 = types.global.add<btf::Integer>("uint32", 4, 0);
+  ASSERT_TRUE(bool(uint32));
+  auto int32 = types.global.add<btf::Integer>("int32", 4, 1);
+  ASSERT_TRUE(bool(int32));
 
-  // String
-  test("k:f { signal(\"KILL\"); }", UnsafeMode::Enable);
-  test("k:f { signal(\"SIGKILL\"); }", UnsafeMode::Enable);
+  std::vector<std::pair<std::string, btf::ValueType>> args = {
+    { "sig", btf::ValueType(*uint32) }
+  };
+  auto signal_proto = types.global.add<btf::FunctionProto>(
+      btf::ValueType(*int32), args);
+  ASSERT_TRUE(bool(signal_proto));
 
-  // Not allowed for:
-  test("hardware:pcm:1000 { signal(1); }", UnsafeMode::Enable, Error{});
-  test("software:pcm:1000 { signal(1); }", UnsafeMode::Enable, Error{});
-  test("begin { signal(1); }", UnsafeMode::Enable, Error{});
-  test("end { signal(1); }", UnsafeMode::Enable, Error{});
-  test("i:s:1 { signal(1); }", UnsafeMode::Enable, Error{});
+  auto signal_process_func = types.global.add<btf::Function>(
+      "__signal_process", btf::Function::Linkage::Global, *signal_proto);
+  ASSERT_TRUE(bool(signal_process_func));
 
-  // invalid signals
-  test("k:f { signal(0); }", UnsafeMode::Enable, Error{});
-  test("k:f { signal(-100); }", UnsafeMode::Enable, Error{});
-  test("k:f { signal(100); }", UnsafeMode::Enable, Error{});
-  test("k:f { signal(\"SIGABC\"); }", UnsafeMode::Enable, Error{});
-  test("k:f { signal(\"ABC\"); }", UnsafeMode::Enable, Error{});
+  auto signal_thread_func = types.global.add<btf::Function>(
+      "__signal_thread", btf::Function::Linkage::Global, *signal_proto);
+  ASSERT_TRUE(bool(signal_process_func));
 
-  // Missing kernel support
-  test("k:f { signal(1) }", UnsafeMode::Enable, NoFeatures::Enable, Error{});
-  test("k:f { signal(\"KILL\"); }",
-       UnsafeMode::Enable,
-       NoFeatures::Enable,
-       Error{});
+  for (const auto &signal :
+       std::vector<std::string>{ "signal", "signal_thread" }) {
+    // int literals
+    test("k:f {" + signal + "(1); }", UnsafeMode::Enable, Types{ types });
+    test("k:f {" + signal + "(1); }", UnsafeMode::Enable, Types{ types });
+    test("kr:f {" + signal + "(1); }", UnsafeMode::Enable, Types{ types });
+    test("u:/bin/sh:f {" + signal + "(11); }",
+         UnsafeMode::Enable,
+         Types{ types });
+    test("ur:/bin/sh:f {" + signal + "(11); }",
+         UnsafeMode::Enable,
+         Types{ types });
+    test("p:hz:1 {" + signal + "(1); }", UnsafeMode::Enable, Types{ types });
 
-  // Positional parameter
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->add_param("1");
-  bpftrace->add_param("hello");
-  test("k:f { signal($1) }", UnsafeMode::Enable, Mock{ *bpftrace });
-  test("k:f { signal($2) }", UnsafeMode::Enable, Mock{ *bpftrace }, Error{});
+    // vars
+    test("k:f { @=1;" + signal + "(@); }", UnsafeMode::Enable, Types{ types });
+    test("k:f { @=1;" + signal + "((int32)arg0); }",
+         UnsafeMode::Enable,
+         Types{ types });
+
+    // String
+    test("k:f {" + signal + "(\"KILL\"); }",
+         UnsafeMode::Enable,
+         Types{ types });
+    test("k:f {" + signal + "(\"SIGKILL\"); }",
+         UnsafeMode::Enable,
+         Types{ types });
+
+    // Not allowed for:
+    test("hardware:pcm:1000 {" + signal + "(1); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("software:pcm:1000 {" + signal + "(1); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("begin {" + signal + "(1); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("end {" + signal + "(1); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("i:s:1 {" + signal + "(1); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+
+    // invalid signals
+    test("k:f {" + signal + "(0); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("k:f {" + signal + "(-100); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("k:f {" + signal + "(100); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("k:f {" + signal + "(\"SIGABC\"); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+    test("k:f {" + signal + "(\"ABC\"); }",
+         UnsafeMode::Enable,
+         Types{ types },
+         Error{});
+
+    // // Positional parameter
+    auto bpftrace = get_mock_bpftrace();
+    bpftrace->add_param("1");
+    bpftrace->add_param("hello");
+    test("k:f {" + signal + "($1) }",
+         UnsafeMode::Enable,
+         Mock{ *bpftrace },
+         Types{ types });
+    test("k:f {" + signal + "($2) }",
+         UnsafeMode::Enable,
+         Mock{ *bpftrace },
+         Types{ types },
+         Error{});
+  }
 }
 
 TEST_F(SemanticAnalyserTest, strncmp)
@@ -3562,56 +3468,46 @@ TEST_F(SemanticAnalyserTest, strncmp_posparam)
   test(R"(i:s:1 { strncmp("foo", "bar", $2) })", Mock{ *bpftrace }, Error{});
 }
 
-TEST_F(SemanticAnalyserTest, strcontains)
-{
-  // Test strcontains builtin
-  test(R"(i:s:1 { $a = "bar"; strcontains("foo", $a) })");
-  test(R"(i:s:1 { strcontains("foo", "bar") })");
-  test("i:s:1 { strcontains(1) }", Error{});
-  test("i:s:1 { strcontains(1,1) }", Error{});
-  test("i:s:1 { strcontains(\"a\",1) }", Error{});
-}
-
-TEST_F(SemanticAnalyserTest, strcontains_large_warnings)
-{
-  test("k:f { $s1 = str(arg0); $s2 = str(arg1); $x = strcontains($s1, $s2) }",
-       Warning{ "both string sizes is larger" });
-
-  test("k:f { $s1 = str(arg0, 64); $s2 = str(arg1, 16); $x = strcontains($s1, "
-       "$s2) }",
-       NoWarning{ "both string sizes is larger" });
-
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->config_->max_strlen = 16;
-
-  test("k:f { $s1 = str(arg0); $s2 = str(arg1); $x = strcontains($s1, $s2) }",
-       Mock{ *bpftrace },
-       NoWarning{ "both string sizes is larger" });
-}
-
-TEST_F(SemanticAnalyserTest, strcontains_posparam)
-{
-  auto bpftrace = get_mock_bpftrace();
-  bpftrace->add_param("hello");
-  test("i:s:1 { strcontains(\"foo\", str($1)) }", Mock{ *bpftrace });
-}
-
 TEST_F(SemanticAnalyserTest, override)
 {
+  ast::TypeMetadata types;
+
+  auto vd_ty = types.global.lookup<btf::Void>("void");
+  ASSERT_TRUE(bool(vd_ty));
+  auto vd_ptr = types.global.add<btf::Pointer>(*vd_ty);
+  ASSERT_TRUE(bool(vd_ptr));
+  auto uint64 = types.global.add<btf::Integer>("uint64", 8, 0);
+  ASSERT_TRUE(bool(uint64));
+
+  std::vector<std::pair<std::string, btf::ValueType>> args = {
+    { "ctx", btf::ValueType(*vd_ptr) }, { "rc", btf::ValueType(*uint64) }
+  };
+  auto override_proto = types.global.add<btf::FunctionProto>(
+      btf::ValueType(*vd_ty), args);
+  ASSERT_TRUE(bool(override_proto));
+
+  auto override_func = types.global.add<btf::Function>(
+      "__override", btf::Function::Linkage::Global, *override_proto);
+  ASSERT_TRUE(bool(override_func));
+
   // literals
-  test("k:f { override(-1); }", UnsafeMode::Enable);
+  test("k:f { override(-1); }", UnsafeMode::Enable, Types{ types });
 
   // variables
-  test("k:f { override(arg0); }", UnsafeMode::Enable);
+  test("k:f { override(arg0); }", UnsafeMode::Enable, Types{ types });
 
   // Probe types
-  test("kr:f { override(-1); }", UnsafeMode::Enable, Error{});
-  test("u:/bin/sh:f { override(-1); }", UnsafeMode::Enable, Error{});
+  test("kr:f { override(-1); }", UnsafeMode::Enable, Error{}, Types{ types });
+  test("u:/bin/sh:f { override(-1); }",
+       UnsafeMode::Enable,
+       Error{},
+       Types{ types });
   test("t:syscalls:sys_enter_openat { override(-1); }",
        UnsafeMode::Enable,
-       Error{});
-  test("i:s:1 { override(-1); }", UnsafeMode::Enable, Error{});
-  test("p:hz:1 { override(-1); }", UnsafeMode::Enable, Error{});
+       Error{},
+       Types{ types });
+  test("i:s:1 { override(-1); }", UnsafeMode::Enable, Error{}, Types{ types });
+  test("p:hz:1 { override(-1); }", UnsafeMode::Enable, Error{}, Types{ types });
 }
 
 TEST_F(SemanticAnalyserTest, unwatch)
@@ -3657,7 +3553,6 @@ TEST_F(SemanticAnalyserTest, while_loop)
   test("i:s:1 { $a = 1; while (1) { if($a > 50) { break } $a++ }}");
   test("i:s:1 { $a = 1; while ($a < 10) { $a++ }}");
   test("i:s:1 { $a = 1; while (1) { if($a > 50) { break } $a++ }}");
-  test("i:s:1 { $a = 1; while (1) { if($a > 50) { return } $a++ }}");
   test(R"(
 i:s:1 {
   $a = 1;
@@ -3668,15 +3563,17 @@ i:s:1 {
     }
   }
 })");
+  test("i:s:1 { $a = 1; while (1) { if($a > 50) { return } $a++ }}");
 
   test("i:s:1 { $a = 1; while ($a < 10) { break; $a++ }}",
-       Warning{ "code after a 'break'" });
+       Warning{ "Unreachable" });
   test("i:s:1 { $a = 1; while ($a < 10) { continue; $a++ }}",
-       Warning{ "code after a 'continue'" });
-  test("i:s:1 { $a = 1; while ($a < 10) { return; $a++ }}",
-       Warning{ "code after a 'return'" });
+       Warning{ "Unreachable" });
   test("i:s:1 { $a = 1; while ($a < 10) { @=$a++; print(@); }}",
        Warning{ "'print()' in a loop" });
+
+  test("i:s:1 { $a = 1; while ($a < 10) { return; $a++ }}",
+       Warning{ "Unreachable" });
 }
 
 TEST_F(SemanticAnalyserTest, builtin_args)
@@ -3761,7 +3658,6 @@ TEST_F(SemanticAnalyserTest, type_ctx)
   EXPECT_TRUE(var->var_type.IsPtrTy());
 
   test("k:f, kr:f { @ = (uint64)ctx; }");
-  test("k:f, i:s:1 { @ = (uint64)ctx; }", Error{});
   test("t:sched:sched_one { @ = (uint64)ctx; }", Error{});
 }
 
@@ -4116,24 +4012,24 @@ TEST_F(SemanticAnalyserTest, call_offsetof)
   test("struct Foo { struct Bar { int a; } *bar; } \
               begin { @x = offsetof(struct Foo, bar.a); }",
        Error{ R"(
-stdin:1:71-99: ERROR: 'struct Bar *' is not a record type.
+stdin:1:71-98: ERROR: 'struct Bar *' is not a record type.
 struct Foo { struct Bar { int a; } *bar; }               begin { @x = offsetof(struct Foo, bar.a); }
-                                                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                                                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Not exist (sub)field
   test("struct Foo { int x; long l; char c; } \
               begin { @x = offsetof(struct Foo, __notexistfield__); }",
        Error{ R"(
-stdin:1:66-106: ERROR: 'struct Foo' has no field named '__notexistfield__'
+stdin:1:66-105: ERROR: 'struct Foo' has no field named '__notexistfield__'
 struct Foo { int x; long l; char c; }               begin { @x = offsetof(struct Foo, __notexistfield__); }
-                                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   test("struct Foo { struct Bar { int a; } bar; } \
               begin { @x = offsetof(struct Foo, bar.__notexist_subfield__); }",
        Error{ R"(
-stdin:1:70-118: ERROR: 'struct Bar' has no field named '__notexist_subfield__'
+stdin:1:70-117: ERROR: 'struct Bar' has no field named '__notexist_subfield__'
 struct Foo { struct Bar { int a; } bar; }               begin { @x = offsetof(struct Foo, bar.__notexist_subfield__); }
-                                                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                                                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
   // Not exist record
   test("begin { @x = offsetof(__passident__, x); }", Error{});
@@ -4204,9 +4100,9 @@ TEST_F(SemanticAnalyserTest, call_nsecs)
   test("begin { $ns = nsecs(tai); }");
   test("begin { $ns = nsecs(sw_tai); }");
   test("begin { $ns = nsecs(xxx); }", Error{ R"(
-stdin:1:15-24: ERROR: Invalid timestamp mode: xxx
+stdin:1:21-24: ERROR: Invalid timestamp mode: xxx
 begin { $ns = nsecs(xxx); }
-              ~~~~~~~~~
+                    ~~~
 )" });
 }
 
@@ -4219,23 +4115,15 @@ TEST_F(SemanticAnalyserTest, call_pid_tid)
   test("begin { $i = tid(init); }");
   test("begin { $i = pid(init); }");
   test("begin { $i = tid(xxx); }", Error{ R"(
-stdin:1:14-21: ERROR: Invalid PID namespace mode: xxx (expects: curr_ns or init)
+stdin:1:18-21: ERROR: Invalid PID namespace mode: xxx (expects: curr_ns or init)
 begin { $i = tid(xxx); }
-             ~~~~~~~
+                 ~~~
 )" });
   test("begin { $i = tid(1); }", Error{ R"(
 stdin:1:14-20: ERROR: tid() only supports curr_ns and init as the argument (int provided)
 begin { $i = tid(1); }
              ~~~~~~
 )" });
-}
-
-TEST_F(SemanticAnalyserTest, config)
-{
-  test("config = { BPFTRACE_MAX_AST_NODES=1 } "
-       "begin { $ns = nsecs(); }");
-  test("config = { BPFTRACE_MAX_AST_NODES=1; stack_mode=raw } "
-       "begin { $ns = nsecs(); }");
 }
 
 TEST_F(SemanticAnalyserTest, subprog_return)
@@ -4245,15 +4133,15 @@ TEST_F(SemanticAnalyserTest, subprog_return)
 
   // Error location is incorrect: #3063
   test("fn f(): void { return 1; }", Error{ R"(
-stdin:1:17-25: ERROR: Function f is of type void, cannot return int64
+stdin:1:16-24: ERROR: Function f is of type void, cannot return int64
 fn f(): void { return 1; }
-                ~~~~~~~~
+               ~~~~~~~~
 )" });
   // Error location is incorrect: #3063
   test("fn f(): int64 { return; }", Error{ R"(
-stdin:1:18-24: ERROR: Function f is of type int64, cannot return void
+stdin:1:17-23: ERROR: Function f is of type int64, cannot return void
 fn f(): int64 { return; }
-                 ~~~~~~
+                ~~~~~~
 )" });
 }
 
@@ -4262,9 +4150,9 @@ TEST_F(SemanticAnalyserTest, subprog_arguments)
   test("fn f($a : int64): int64 { return $a; }");
   // Error location is incorrect: #3063
   test("fn f($a : int64): string { return $a; }", Error{ R"(
-stdin:1:30-39: ERROR: Function f is of type string, cannot return int64
+stdin:1:28-37: ERROR: Function f is of type string, cannot return int64
 fn f($a : int64): string { return $a; }
-                             ~~~~~~~~~
+                           ~~~~~~~~~
 )" });
 }
 
@@ -4304,9 +4192,9 @@ TEST_F(SemanticAnalyserBTFTest, fentry)
   test("fentry:*:func_1 { 1 }");
 
   test("fexit:func_1 { $x = args.foo; }", Error{ R"(
-stdin:1:21-26: ERROR: Can't find function parameter foo
+stdin:1:25-26: ERROR: Can't find function parameter foo
 fexit:func_1 { $x = args.foo; }
-                    ~~~~~
+                        ~
 )" });
   test("fexit:func_1 { $x = args; }");
   test("fentry:func_1 { @ = args; }");
@@ -4421,9 +4309,9 @@ fentry:func_1 { $ret = socket_cookie(args.foo1); }
 )" });
   test("kprobe:tcp_shutdown { $ret = socket_cookie((struct sock *)arg0); }",
        Error{ R"(
-stdin:1:30-65: ERROR: socket_cookie can not be used with "kprobe" probes
+stdin:1:30-64: ERROR: socket_cookie can not be used with "kprobe" probes
 kprobe:tcp_shutdown { $ret = socket_cookie((struct sock *)arg0); }
-                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 )" });
 }
 
@@ -4439,21 +4327,6 @@ stdin:1:18-22: ERROR: The args builtin can only be used with tracepoint/fentry/u
 iter:task { $x = args.foo; }
                  ~~~~
 )" });
-  test("iter:task,iter:task_file { 1 }", Error{ R"(
-stdin:1:1-10: ERROR: Only single iter attach point is allowed.
-iter:task,iter:task_file { 1 }
-~~~~~~~~~
-)" });
-  test("iter:task,f:func_1 { 1 }", Error{ R"(
-stdin:1:1-10: ERROR: Only single iter attach point is allowed.
-iter:task,f:func_1 { 1 }
-~~~~~~~~~
-)" });
-  test("iter:task* { }", Error{ R"(
-stdin:1:1-11: ERROR: iter probe type does not support wildcards
-iter:task* { }
-~~~~~~~~~~
-)" });
 }
 
 TEST_F(SemanticAnalyserBTFTest, rawtracepoint)
@@ -4461,9 +4334,9 @@ TEST_F(SemanticAnalyserBTFTest, rawtracepoint)
   test("rawtracepoint:event_rt { args.first_real_arg }");
 
   test("rawtracepoint:event_rt { args.bad_arg }", Error{ R"(
-stdin:1:26-31: ERROR: Can't find function parameter bad_arg
+stdin:1:30-31: ERROR: Can't find function parameter bad_arg
 rawtracepoint:event_rt { args.bad_arg }
-                         ~~~~~
+                             ~
 )" });
 }
 
@@ -4479,9 +4352,9 @@ TEST_F(SemanticAnalyserBTFTest, kfunc)
   test("kfunc:func_1 { @[func] = 1; }");
 
   test("kretfunc:func_1 { $x = args.foo; }", Error{ R"(
-stdin:1:24-29: ERROR: Can't find function parameter foo
+stdin:1:28-29: ERROR: Can't find function parameter foo
 kretfunc:func_1 { $x = args.foo; }
-                       ~~~~~
+                           ~
 )" });
   test("kretfunc:func_1 { $x = args; }");
   test("kfunc:func_1 { @ = args; }");
@@ -4507,9 +4380,9 @@ TEST_F(SemanticAnalyserTest, btf_type_tags)
 {
   test("t:btf:tag { args.parent }");
   test("t:btf:tag { args.real_parent }", Error{ R"(
-stdin:1:13-18: ERROR: Attempting to access pointer field 'real_parent' with unsupported tag attribute: percpu
+stdin:1:17-18: ERROR: Attempting to access pointer field 'real_parent' with unsupported tag attribute: percpu
 t:btf:tag { args.real_parent }
-            ~~~~~
+                ~
 )" });
 }
 
@@ -4575,9 +4448,9 @@ TEST_F(SemanticAnalyserTest, for_loop_map_no_key)
 {
   // Error location is incorrect: #3063
   test("begin { @map = 1; for ($kv : @map) { } }", Error{ R"(
-stdin:1:30-35: ERROR: @map has no explicit keys (scalar map), and cannot be used for iteration
+stdin:1:30-34: ERROR: @map has no explicit keys (scalar map), and cannot be used for iteration
 begin { @map = 1; for ($kv : @map) { } }
-                             ~~~~~
+                             ~~~~
 )" });
 }
 
@@ -4585,9 +4458,9 @@ TEST_F(SemanticAnalyserTest, for_loop_map_undefined)
 {
   // Error location is incorrect: #3063
   test("begin { for ($kv : @map) { } }", Error{ R"(
-stdin:1:20-25: ERROR: Undefined map: @map
+stdin:1:20-24: ERROR: Undefined map: @map
 begin { for ($kv : @map) { } }
-                   ~~~~~
+                   ~~~~
 )" });
 }
 
@@ -4595,35 +4468,35 @@ TEST_F(SemanticAnalyserTest, for_loop_map_undefined2)
 {
   // Error location is incorrect: #3063
   test("begin { @map[0] = 1; for ($kv : @undef) { @map[$kv.0]; } }", Error{ R"(
-stdin:1:33-40: ERROR: Undefined map: @undef
+stdin:1:33-39: ERROR: Undefined map: @undef
 begin { @map[0] = 1; for ($kv : @undef) { @map[$kv.0]; } }
-                                ~~~~~~~
+                                ~~~~~~
 )" });
 }
 
 TEST_F(SemanticAnalyserTest, for_loop_map_restricted_types)
 {
   test("begin { @map[0] = hist(10); for ($kv : @map) { } }", Error{ R"(
-stdin:1:40-45: ERROR: Loop expression does not support type: hist_t
+stdin:1:40-44: ERROR: Loop expression does not support type: hist_t
 begin { @map[0] = hist(10); for ($kv : @map) { } }
-                                       ~~~~~
+                                       ~~~~
 )" });
   test("begin { @map[0] = lhist(10, 0, 10, 1); for ($kv : @map) { } }",
        Error{ R"(
-stdin:1:51-56: ERROR: Loop expression does not support type: lhist_t
+stdin:1:51-55: ERROR: Loop expression does not support type: lhist_t
 begin { @map[0] = lhist(10, 0, 10, 1); for ($kv : @map) { } }
-                                                  ~~~~~
+                                                  ~~~~
 )" });
   test("begin { @map[0] = tseries(10, 10s, 10); for ($kv : @map) { } }",
        Error{ R"(
-stdin:1:52-57: ERROR: Loop expression does not support type: tseries_t
+stdin:1:52-56: ERROR: Loop expression does not support type: tseries_t
 begin { @map[0] = tseries(10, 10s, 10); for ($kv : @map) { } }
-                                                   ~~~~~
+                                                   ~~~~
 )" });
   test("begin { @map[0] = stats(10); for ($kv : @map) { } }", Error{ R"(
-stdin:1:41-46: ERROR: Loop expression does not support type: stats_t
+stdin:1:41-45: ERROR: Loop expression does not support type: stats_t
 begin { @map[0] = stats(10); for ($kv : @map) { } }
-                                        ~~~~~
+                                        ~~~~
 )" });
 }
 
@@ -4636,9 +4509,9 @@ TEST_F(SemanticAnalyserTest, for_loop_shadowed_decl)
       for ($kv : @map) { }
     })",
        Error{ R"(
-stdin:4:11-15: ERROR: Loop declaration shadows existing variable: $kv
+stdin:4:12-15: ERROR: Loop declaration shadows existing variable: $kv
       for ($kv : @map) { }
-          ~~~~
+           ~~~
 )" });
 }
 
@@ -4730,9 +4603,9 @@ TEST_F(SemanticAnalyserTest, for_loop_variables_created_in_loop_used_after)
       print($var);
     })",
        Error{ R"(
-stdin:6:7-17: ERROR: Undefined or undeclared variable: $var
+stdin:6:13-17: ERROR: Undefined or undeclared variable: $var
       print($var);
-      ~~~~~~~~~~
+            ~~~~
 )" });
 
   test(R"(
@@ -4744,9 +4617,9 @@ stdin:6:7-17: ERROR: Undefined or undeclared variable: $var
       print($kv);
     })",
        Error{ R"(
-stdin:6:7-16: ERROR: Undefined or undeclared variable: $kv
+stdin:6:13-16: ERROR: Undefined or undeclared variable: $kv
       print($kv);
-      ~~~~~~~~~
+            ~~~
 )" });
 }
 
@@ -4754,19 +4627,19 @@ TEST_F(SemanticAnalyserTest, for_loop_invalid_expr)
 {
   // Error location is incorrect: #3063
   test("begin { for ($x : $var) { } }", Error{ R"(
-stdin:1:19-25: ERROR: syntax error, unexpected ), expecting [ or . or ->
+stdin:1:23-24: ERROR: syntax error, unexpected ), expecting [ or . or ->
 begin { for ($x : $var) { } }
-                  ~~~~~~
+                      ~
 )" });
   test("begin { for ($x : 1+2) { } }", Error{ R"(
-stdin:1:19-22: ERROR: syntax error, unexpected +, expecting [ or . or ->
+stdin:1:20-21: ERROR: syntax error, unexpected +, expecting [ or . or ->
 begin { for ($x : 1+2) { } }
-                  ~~~
+                   ~
 )" });
   test("begin { for ($x : \"abc\") { } }", Error{ R"(
-stdin:1:19-26: ERROR: syntax error, unexpected ), expecting [ or . or ->
+stdin:1:24-25: ERROR: syntax error, unexpected ), expecting [ or . or ->
 begin { for ($x : "abc") { } }
-                  ~~~~~~~
+                       ~
 )" });
 }
 
@@ -4780,9 +4653,9 @@ TEST_F(SemanticAnalyserTest, for_loop_multiple_errors)
       for ($kv : @map) { }
     })",
        Error{ R"(
-stdin:4:11-15: ERROR: Loop declaration shadows existing variable: $kv
+stdin:4:12-15: ERROR: Loop declaration shadows existing variable: $kv
       for ($kv : @map) { }
-          ~~~~
+           ~~~
 )" });
 }
 
@@ -4793,31 +4666,9 @@ TEST_F(SemanticAnalyserTest, for_loop_control_flow)
 
   // Error location is incorrect: #3063
   test("begin { @map[0] = 1; for ($kv : @map) { return; } }", Error{ R"(
-stdin:1:42-48: ERROR: 'return' statement is not allowed in a for-loop
+stdin:1:41-47: ERROR: 'return' statement is not allowed in a for-loop
 begin { @map[0] = 1; for ($kv : @map) { return; } }
-                                         ~~~~~~
-)" });
-}
-
-TEST_F(SemanticAnalyserTest, for_loop_missing_feature)
-{
-  test("begin { @map[0] = 1; for ($kv : @map) { print($kv); } }",
-       NoFeatures::Enable,
-       Error{ R"(
-stdin:1:22-25: ERROR: Missing required kernel feature: for_each_map_elem
-begin { @map[0] = 1; for ($kv : @map) { print($kv); } }
-                     ~~~
-)" });
-}
-
-TEST_F(SemanticAnalyserTest, for_loop_castable_map_missing_feature)
-{
-  test("begin { @map[0] = count(); for ($kv : @map) { print($kv); } }",
-       NoFeatures::Enable,
-       Error{ R"(
-stdin:1:28-31: ERROR: Missing required kernel feature: for_each_map_elem
-begin { @map[0] = count(); for ($kv : @map) { print($kv); } }
-                           ~~~
+                                        ~~~~~~
 )" });
 }
 
@@ -4857,33 +4708,33 @@ TEST_F(SemanticAnalyserTest, for_range_variable_use)
 TEST_F(SemanticAnalyserTest, for_range_shadowing)
 {
   test(R"(begin { $i = 10; for ($i : 0..5) { printf("%d", $i); } })", Error{ R"(
-stdin:1:22-25: ERROR: Loop declaration shadows existing variable: $i
+stdin:1:23-25: ERROR: Loop declaration shadows existing variable: $i
 begin { $i = 10; for ($i : 0..5) { printf("%d", $i); } }
-                     ~~~
+                      ~~
 )" });
 }
 
 TEST_F(SemanticAnalyserTest, for_range_invalid_types)
 {
   test(R"(begin { for ($i : "str"..5) { printf("%d", $i); } })", Error{ R"(
-stdin:1:19-28: ERROR: Loop range requires an integer for the start value
+stdin:1:23-27: ERROR: Loop range requires an integer for the start value
 begin { for ($i : "str"..5) { printf("%d", $i); } }
-                  ~~~~~~~~~
+                      ~~~~
 )" });
 
   test(R"(begin { for ($i : 0.."str") { printf("%d", $i); } })", Error{ R"(
-stdin:1:19-28: ERROR: Loop range requires an integer for the end value
+stdin:1:19-27: ERROR: Loop range requires an integer for the end value
 begin { for ($i : 0.."str") { printf("%d", $i); } }
-                  ~~~~~~~~~
+                  ~~~~~~~~
 )" });
 
   test(R"(begin { for ($i : 0.0..5) { printf("%d", $i); } })", Error{ R"(
-stdin:1:19-23: ERROR: Can not access index '0' on expression of type 'int64'
+stdin:1:21-22: ERROR: Can not access index '0' on expression of type 'int64'
 begin { for ($i : 0.0..5) { printf("%d", $i); } }
-                  ~~~~
-stdin:1:19-26: ERROR: Loop range requires an integer for the start value
+                    ~
+stdin:1:19-25: ERROR: Loop range requires an integer for the start value
 begin { for ($i : 0.0..5) { printf("%d", $i); } }
-                  ~~~~~~~
+                  ~~~~~~
 )" });
 }
 
@@ -4893,9 +4744,9 @@ TEST_F(SemanticAnalyserTest, for_range_control_flow)
   test("begin { for ($i : 0..5) { continue; } }");
 
   test("begin { for ($i : 0..5) { return; } }", Error{ R"(
-stdin:1:28-34: ERROR: 'return' statement is not allowed in a for-loop
+stdin:1:27-33: ERROR: 'return' statement is not allowed in a for-loop
 begin { for ($i : 0..5) { return; } }
-                           ~~~~~~
+                          ~~~~~~
 )" });
 }
 
@@ -4903,18 +4754,18 @@ TEST_F(SemanticAnalyserTest, for_range_out_of_scope)
 {
   test(R"(begin { for ($i : 0..5) { printf("%d", $i); } printf("%d", $i); })",
        Error{ R"(
-stdin:1:61-63: ERROR: Undefined or undeclared variable: $i
+stdin:1:60-62: ERROR: Undefined or undeclared variable: $i
 begin { for ($i : 0..5) { printf("%d", $i); } printf("%d", $i); }
-                                                            ~~
+                                                           ~~
 )" });
 }
 
 TEST_F(SemanticAnalyserTest, for_range_context_access)
 {
   test("kprobe:f { for ($i : 0..5) { arg0 } }", Error{ R"(
-stdin:1:31-35: ERROR: 'arg0' builtin is not allowed in a for-loop
+stdin:1:30-34: ERROR: 'arg0' builtin is not allowed in a for-loop
 kprobe:f { for ($i : 0..5) { arg0 } }
-                              ~~~~
+                             ~~~~
 )" });
 }
 
@@ -4934,30 +4785,24 @@ TEST_F(SemanticAnalyserTest, castable_map_missing_feature)
   test("k:f {  @a[1] = count(); delete(@a, 1) }", NoFeatures::Enable);
   test("k:f { @a[1] = count(); has_key(@a, 1) }", NoFeatures::Enable);
 
-  test("k:f {  @a = count(); len(@a) }", NoFeatures::Enable, Error{ R"(
-stdin:1:22-28: ERROR: call to len() expects a map with explicit keys (non-scalar map)
-k:f {  @a = count(); len(@a) }
-                     ~~~~~~
-)" });
-
   test("begin { @a = count(); print((uint64)@a) }",
        NoFeatures::Enable,
        Error{ R"(
-stdin:1:23-39: ERROR: Missing required kernel feature: map_lookup_percpu_elem
+stdin:1:37-39: ERROR: Missing required kernel feature: map_lookup_percpu_elem
 begin { @a = count(); print((uint64)@a) }
-                      ~~~~~~~~~~~~~~~~
+                                    ~~
 )" });
 
   test("begin { @a = count(); print((@a, 1)) }", NoFeatures::Enable, Error{ R"(
-stdin:1:23-32: ERROR: Missing required kernel feature: map_lookup_percpu_elem
+stdin:1:30-32: ERROR: Missing required kernel feature: map_lookup_percpu_elem
 begin { @a = count(); print((@a, 1)) }
-                      ~~~~~~~~~
+                             ~~
 )" });
 
   test("begin { @a[1] = count(); print(@a[1]) }", NoFeatures::Enable, Error{ R"(
-stdin:1:26-37: ERROR: Missing required kernel feature: map_lookup_percpu_elem
+stdin:1:32-37: ERROR: Missing required kernel feature: map_lookup_percpu_elem
 begin { @a[1] = count(); print(@a[1]) }
-                         ~~~~~~~~~~~
+                               ~~~~~
 )" });
 
   test("begin { @a = count(); $b = @a; }", NoFeatures::Enable, Error{ R"(
@@ -4978,19 +4823,15 @@ begin { @a = count(); @b = 1; @b = @a; }
 TEST_F(SemanticAnalyserTest, for_loop_no_ctx_access)
 {
   test("kprobe:f { @map[0] = 1; for ($kv : @map) { arg0 } }", Error{ R"(
-stdin:1:45-49: ERROR: 'arg0' builtin is not allowed in a for-loop
+stdin:1:44-48: ERROR: 'arg0' builtin is not allowed in a for-loop
 kprobe:f { @map[0] = 1; for ($kv : @map) { arg0 } }
-                                            ~~~~
+                                           ~~~~
 )" });
 }
 
 TEST_F(SemanticAnalyserBTFTest, args_builtin_mixed_probes)
 {
-  test("fentry:func_1,tracepoint:sched:sched_one { args }", Error{ R"(
-stdin:1:44-48: ERROR: The args builtin can only be used within the context of a single probe type, e.g. "probe1 {args}" is valid while "probe1,probe2 {args}" is not.
-fentry:func_1,tracepoint:sched:sched_one { args }
-                                           ~~~~
-)" });
+  test("fentry:func_1,tracepoint:sched:sched_one { args }");
 }
 
 TEST_F(SemanticAnalyserBTFTest, binop_late_ptr_resolution)
@@ -5032,12 +4873,12 @@ TEST_F(SemanticAnalyserTest, variable_declarations)
   test("begin { let $a: int16 = 1; $a = (int8)2; }");
 
   // Test more types
-  test("begin { let $a: struct x; }");
-  test("begin { let $a: struct x *; }");
+  test("struct x { int a; }; begin { let $a: struct x; }");
+  test("struct x { int a; }; begin { let $a: struct x *; }");
   test("begin { let $a: struct task_struct *; $a = curtask; }");
-  test("begin { let $a: struct Foo[10]; }");
-  test("begin { if (1) { let $x; } $x = 2; }");
-  test("begin { if (1) { let $x; } else { let $x; } let $x; }");
+  test("struct x { int a; } begin { let $a: struct x[10]; }");
+  test("begin { if (pid) { let $x; } $x = 2; }");
+  test("begin { if (pid) { let $x; } else { let $x; } let $x; }");
 
   // https://github.com/bpftrace/bpftrace/pull/3668#issuecomment-2596432923
   test("begin { let $a; print($a); $a = 1; }",
@@ -5056,21 +4897,21 @@ begin { let $a; let $a; }
 )" });
 
   test("begin { let $a: uint16; $a = -1; }", Error{ R"(
-stdin:1:26-33: ERROR: Type mismatch for $a: trying to assign value of type 'int64' when variable already has a type 'uint16'
+stdin:1:25-32: ERROR: Type mismatch for $a: trying to assign value of type 'int64' when variable already has a type 'uint16'
 begin { let $a: uint16; $a = -1; }
-                         ~~~~~~~
+                        ~~~~~~~
 )" });
 
   test("begin { let $a: uint8 = 1; $a = 10000; }", Error{ R"(
-stdin:1:29-39: ERROR: Type mismatch for $a: trying to assign value '10000' which does not fit into the variable of type 'uint8'
+stdin:1:28-38: ERROR: Type mismatch for $a: trying to assign value '10000' which does not fit into the variable of type 'uint8'
 begin { let $a: uint8 = 1; $a = 10000; }
-                            ~~~~~~~~~~
+                           ~~~~~~~~~~
 )" });
 
   test("begin { let $a: int8 = 1; $a = -10000; }", Error{ R"(
-stdin:1:28-39: ERROR: Type mismatch for $a: trying to assign value '-10000' which does not fit into the variable of type 'int8'
+stdin:1:27-38: ERROR: Type mismatch for $a: trying to assign value '-10000' which does not fit into the variable of type 'int8'
 begin { let $a: int8 = 1; $a = -10000; }
-                           ~~~~~~~~~~~
+                          ~~~~~~~~~~~
 )" });
 
   test("begin { let $a; $a = (uint8)1; $a = -1; }", Error{ R"(
@@ -5080,9 +4921,9 @@ begin { let $a; $a = (uint8)1; $a = -1; }
 )" });
 
   test("begin { let $a: int8; $a = 10000; }", Error{ R"(
-stdin:1:24-34: ERROR: Type mismatch for $a: trying to assign value '10000' which does not fit into the variable of type 'int8'
+stdin:1:23-33: ERROR: Type mismatch for $a: trying to assign value '10000' which does not fit into the variable of type 'int8'
 begin { let $a: int8; $a = 10000; }
-                       ~~~~~~~~~~
+                      ~~~~~~~~~~
 )" });
 
   test("begin { $a = -1; let $a; }", Error{ R"(
@@ -5092,15 +4933,15 @@ begin { $a = -1; let $a; }
 )" });
 
   test("begin { let $a: uint16 = -1; }", Error{ R"(
-stdin:1:9-29: ERROR: Type mismatch for $a: trying to assign value of type 'int64' when variable already has a type 'uint16'
+stdin:1:9-28: ERROR: Type mismatch for $a: trying to assign value of type 'int64' when variable already has a type 'uint16'
 begin { let $a: uint16 = -1; }
-        ~~~~~~~~~~~~~~~~~~~~
+        ~~~~~~~~~~~~~~~~~~~
 )" });
 
   test(R"(begin { let $a: sum_t; })", Error{ R"(
-stdin:1:9-23: ERROR: Invalid variable declaration type: sum_t
+stdin:1:9-22: ERROR: Invalid variable declaration type: sum_t
 begin { let $a: sum_t; }
-        ~~~~~~~~~~~~~~
+        ~~~~~~~~~~~~~
 )" });
 
   test(R"(begin { let $a: struct bad_task; $a = *curtask; })", Error{ R"(
@@ -5109,10 +4950,10 @@ begin { let $a: struct bad_task; $a = *curtask; }
                                  ~~~~~~~~~~~~~
 )" });
 
-  test(R"(begin { $x = 2; if (1) { let $x; } })", Error{ R"(
-stdin:1:26-32: ERROR: Variable declarations need to occur before variable usage or assignment. Variable: $x
-begin { $x = 2; if (1) { let $x; } }
-                         ~~~~~~
+  test(R"(begin { $x = 2; if (pid) { let $x; } })", Error{ R"(
+stdin:1:28-34: ERROR: Variable declarations need to occur before variable usage or assignment. Variable: $x
+begin { $x = 2; if (pid) { let $x; } }
+                           ~~~~~~
 )" });
 }
 
@@ -5128,9 +4969,9 @@ TEST_F(SemanticAnalyserTest, variable_address)
   ASSERT_TRUE(assignment->var()->var_type.GetPointeeTy()->IsIntTy());
 
   test("begin { $a = 1; $b = &$c; }", Error{ R"(
-stdin:1:22-25: ERROR: Undefined or undeclared variable: $c
+stdin:1:23-25: ERROR: Undefined or undeclared variable: $c
 begin { $a = 1; $b = &$c; }
-                     ~~~
+                      ~~
 )" });
 
   test("begin { let $a; $b = &$a; }", Error{ R"(
@@ -5154,15 +4995,15 @@ begin { $x = &@a; }
 TEST_F(SemanticAnalyserTest, block_scoping)
 {
   // if/else
-  test("begin { $a = 1; if (1) { $b = 2; "
+  test("begin { $a = 1; if (pid) { $b = 2; "
        "print(($a, $b)); } }");
   test(R"(
       begin {
         $a = 1;
-        if (1) {
+        if (pid) {
           print(($a));
           $b = 2;
-          if (1) {
+          if (pid) {
             print(($a, $b));
           } else {
             print(($a, $b));
@@ -5233,7 +5074,7 @@ TEST_F(SemanticAnalyserTest, block_scoping)
     begin {
       $a = 1;
       @x[0] = 1;
-      if (1) {
+      if (pid) {
         $b = 2;
         for ($kv : @x) {
           $c = 3;
@@ -5249,43 +5090,44 @@ TEST_F(SemanticAnalyserTest, block_scoping)
     })");
 
   // if/else
-  test("begin { if (1) { $a = 1; } print(($a)); }", Error{ R"(
-stdin:1:28-37: ERROR: Undefined or undeclared variable: $a
-begin { if (1) { $a = 1; } print(($a)); }
-                           ~~~~~~~~~
+  test("begin { if (pid) { $a = 1; } print(($a)); }", Error{ R"(
+stdin:1:37-39: ERROR: Undefined or undeclared variable: $a
+begin { if (pid) { $a = 1; } print(($a)); }
+                                    ~~
 )" });
-  test("begin { if (1) { $a = 1; } else { print(($a)); } }", Error{ R"(
-stdin:1:35-44: ERROR: Undefined or undeclared variable: $a
-begin { if (1) { $a = 1; } else { print(($a)); } }
-                                  ~~~~~~~~~
+  test("begin { if (pid) { $a = 1; } else { print(($a)); } }", Error{ R"(
+stdin:1:44-46: ERROR: Undefined or undeclared variable: $a
+begin { if (pid) { $a = 1; } else { print(($a)); } }
+                                           ~~
 )" });
-  test("begin { if (1) { $b = 1; } else { $b = 2; } print(($b)); }", Error{ R"(
-stdin:1:45-54: ERROR: Undefined or undeclared variable: $b
-begin { if (1) { $b = 1; } else { $b = 2; } print(($b)); }
-                                            ~~~~~~~~~
+  test("begin { if (pid) { $b = 1; } else { $b = 2; } print(($b)); }",
+       Error{ R"(
+stdin:1:54-56: ERROR: Undefined or undeclared variable: $b
+begin { if (pid) { $b = 1; } else { $b = 2; } print(($b)); }
+                                                     ~~
 )" });
 
   // for loops
   test("kprobe:f { @map[0] = 1; for ($kv : @map) { $a = 1; } "
        "print(($a)); }",
        Error{ R"(
-stdin:1:55-64: ERROR: Undefined or undeclared variable: $a
+stdin:1:61-63: ERROR: Undefined or undeclared variable: $a
 kprobe:f { @map[0] = 1; for ($kv : @map) { $a = 1; } print(($a)); }
-                                                      ~~~~~~~~~
+                                                            ~~
 )" });
 
   // while loops
   test("begin { while (1) { $a = 1; } print(($a)); }", Error{ R"(
-stdin:1:31-40: ERROR: Undefined or undeclared variable: $a
+stdin:1:38-40: ERROR: Undefined or undeclared variable: $a
 begin { while (1) { $a = 1; } print(($a)); }
-                              ~~~~~~~~~
+                                     ~~
 )" });
 
   // unroll
   test("begin { unroll(1) { $a = 1; } print(($a)); }", Error{ R"(
-stdin:1:31-40: ERROR: Undefined or undeclared variable: $a
+stdin:1:38-40: ERROR: Undefined or undeclared variable: $a
 begin { unroll(1) { $a = 1; } print(($a)); }
-                              ~~~~~~~~~
+                                     ~~
 )" });
 }
 
@@ -5497,12 +5339,12 @@ macro add2($x) { $x + 1 } macro add1($x) { add2($x) } begin { $a = "string"; add
 stdin:1:23-24: ERROR: right (int64)
 macro add2($x) { $x + 1 } macro add1($x) { add2($x) } begin { $a = "string"; add1($a); }
                       ~
-stdin:1:78-86: ERROR: expanded from
-macro add2($x) { $x + 1 } macro add1($x) { add2($x) } begin { $a = "string"; add1($a); }
-                                                                             ~~~~~~~~
 stdin:1:44-52: ERROR: expanded from
 macro add2($x) { $x + 1 } macro add1($x) { add2($x) } begin { $a = "string"; add1($a); }
                                            ~~~~~~~~
+stdin:1:78-86: ERROR: expanded from
+macro add2($x) { $x + 1 } macro add1($x) { add2($x) } begin { $a = "string"; add1($a); }
+                                                                             ~~~~~~~~
 )" });
 }
 
@@ -5524,17 +5366,14 @@ TEST_F(SemanticAnalyserTest, warning_for_discared_return_value)
   test("k:f { cgroup_path(1); }",
        Warning{ "Return value discarded for "
                 "cgroup_path. It should be used" });
-  test("k:f { @x[1] = 0; has_key(@x, 1); }",
-       Warning{ "Return value discarded for has_key. "
-                "It should be used" });
-  test("k:f { @x[1] = 1; len(@x); }",
-       Warning{ "Return value discarded for len. It "
-                "should be used" });
   test("k:f { uptr((int8*) arg0); }",
        Warning{ "Return value discarded for uptr. It "
                 "should be used" });
   test("k:f { ustack(raw); }",
        Warning{ "Return value discarded for ustack. "
+                "It should be used" });
+  test("k:f { @x[1] = 0; has_key(@x, 1); }",
+       Warning{ "Return value discarded for has_key. "
                 "It should be used" });
 }
 
@@ -5572,9 +5411,9 @@ kprobe:f { foo((int32)1); }
 
   // Test that calling with the wrong types fails.
   test("kprobe:f { foo((int64)1, (int64)2); }", Types{ types }, Error{ R"(
-stdin:1:12-23: ERROR: Expected int32 for argument `a` got int64
+stdin:1:16-23: ERROR: Expected int32 for argument `a` got int64
 kprobe:f { foo((int64)1, (int64)2); }
-           ~~~~~~~~~~~
+               ~~~~~~~
 stdin:1:12-35: ERROR: Function `foo` requires arguments (int32, int64)
 kprobe:f { foo((int64)1, (int64)2); }
            ~~~~~~~~~~~~~~~~~~~~~~~
@@ -5598,6 +5437,133 @@ TEST_F(SemanticAnalyserTest, printf_str_conversion)
   test("kprobe:f { $x = (uint8*)0; printf(\"%s\", $x) }");
   test("kprobe:f { $x = (1, 1); printf(\"%s\", $x) }");
   test(R"(kprobe:f { $x = "foo"; printf("%s", $x) })");
+}
+
+TEST_F(SemanticAnalyserTest, fail)
+{
+  test(R"(kprobe:f { fail("always fail"); })", Error{ R"(
+stdin:1:12-31: ERROR: always fail
+kprobe:f { fail("always fail"); }
+           ~~~~~~~~~~~~~~~~~~~
+)" });
+  test(R"(kprobe:f { fail("always fail %s %d %d %d", "now", 1, -1, false); })",
+       Error{ R"(
+stdin:1:12-64: ERROR: always fail now 1 -1 0
+kprobe:f { fail("always fail %s %d %d %d", "now", 1, -1, false); }
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+)" });
+  test(R"(kprobe:f { if comptime (false) { fail("always false"); } })");
+
+  // Check that non-comptime expressions are not folder.
+  test(R"(kprobe:f { if (false) { fail("always false"); } })", Error{ R"(
+stdin:1:25-45: ERROR: always false
+kprobe:f { if (false) { fail("always false"); } }
+                        ~~~~~~~~~~~~~~~~~~~~
+)" });
+}
+
+TEST_F(SemanticAnalyserTest, typeof_decls)
+{
+  test("kprobe:f { $x = (uint8)1; let $y : typeof($x); $y = 2; }");
+  test(R"(kprobe:f { $x = "foo"; let $y : typeof($x); $y = "bar"; })");
+
+  // These types should be enforced.
+  test(R"(kprobe:f { $x = (uint8)1; let $y : typeof($x); $y = "foo"; })",
+       Error{ R"(
+stdin:1:48-58: ERROR: Type mismatch for $y: trying to assign value of type 'string' when variable already has a type 'uint8'
+kprobe:f { $x = (uint8)1; let $y : typeof($x); $y = "foo"; }
+                                               ~~~~~~~~~~
+)" });
+  test(R"(kprobe:f { $x = "foo"; let $y : typeof($x); $y = 2; })", Error{ R"(
+stdin:1:45-51: ERROR: Type mismatch for $y: trying to assign value of type 'int64' when variable already has a type 'string'
+kprobe:f { $x = "foo"; let $y : typeof($x); $y = 2; }
+                                            ~~~~~~
+)" });
+  test(R"(kprobe:f { $x = "foo"; let $y : typeof($x); $y = "bazz"; })",
+       Error{ R"(
+stdin:1:45-56: ERROR: Type mismatch for $y: trying to assign value of type 'string' when variable already has a type 'string'
+kprobe:f { $x = "foo"; let $y : typeof($x); $y = "bazz"; }
+                                            ~~~~~~~~~~~
+)" });
+
+  // But ordering should not matter, as long as the scope is the same.
+  test("kprobe:f { let $x; let $y : typeof($x); $y = 2; $x = (uint8)1; }");
+  test(R"(kprobe:f { let $x; let $y : typeof($x); $y = "bar"; $x = "foo"; })");
+}
+
+TEST_F(SemanticAnalyserTest, typeof_subprog)
+{
+  // Basic subprogram arguments can be defined relatively.
+  test("fn foo($x : int64, $y : typeof($x)) : int64 { return 0; }");
+  test("fn foo($x : typeof($y), $y : int64) : int64 { return 0; }");
+  test("fn foo($x : typeof($y), $y : int64) : typeof($x) { return 0; }");
+  test("fn foo($x : typeof($y), $y : int64) : typeof($y) { return 0; }");
+
+  // But we can't define using non-existent variables.
+  test("fn foo($x : int64, $y : typeof($z)) : int64 { return 0; }", Error{ R"(
+stdin:1:32-34: ERROR: Undefined or undeclared variable: $z
+fn foo($x : int64, $y : typeof($z)) : int64 { return 0; }
+                               ~~
+)" });
+  test("fn foo($x : int64, $y : int64) : typeof($z) { return 0; }", Error{ R"(
+stdin:1:41-43: ERROR: Undefined or undeclared variable: $z
+fn foo($x : int64, $y : int64) : typeof($z) { return 0; }
+                                        ~~
+)" });
+}
+
+TEST_F(SemanticAnalyserTest, typeof_casts)
+{
+  // Legal casts are still legal.
+  test(R"(kprobe:f { $x = (uint8)1; $y = (typeof($x))10; })");
+  test(R"(kprobe:f { $x = (void*)0; $y = (typeof($x))1; })");
+
+  // Overflow & signed warnings still apply.
+  test(R"(kprobe:f { $x = (uint8)1; $y = (typeof($x))256; })");
+  test(R"(kprobe:f { $x = (uint8)1; $y = (typeof($x))-1; })");
+
+  // Illegal casts are still illegal.
+  test(
+      R"(struct foo { int x; } kprobe:f { $x = (struct foo*)0; $y = (typeof(*$x))0; })",
+      Error{ R"(
+stdin:1:60-73: ERROR: Cannot cast to "struct foo"
+struct foo { int x; } kprobe:f { $x = (struct foo*)0; $y = (typeof(*$x))0; }
+                                                           ~~~~~~~~~~~~~
+)" });
+}
+
+TEST_F(SemanticAnalyserTest, if_comptime)
+{
+  test(R"(kprobe:f { @a = 1; if (comptime false) { @a[1] = 1; } })");
+  test(R"(kprobe:f { @a[1] = 1; if (comptime false) { @a = 1; } })");
+  test(R"(kprobe:f { @a[1] = 1; if (comptime is_scalar(@a)) { @a = 1; } })");
+  test(R"(kprobe:f { @a = 1; if (comptime !is_scalar(@a)) { @a[1] = 1; } })");
+  test(R"(kprobe:f { @a = 1; if (comptime false) { for ($kv : @a) { } } })");
+  test(R"(kprobe:f { @a[1] = 1; if (comptime true) { @a = 1; } })", Error{ R"(
+stdin:1:44-46: ERROR: @a used as a map without an explicit key (scalar map), previously used with an explicit key (non-scalar map)
+kprobe:f { @a[1] = 1; if (comptime true) { @a = 1; } }
+                                           ~~
+)" });
+}
+
+TEST_F(SemanticAnalyserTest, typeinfo_if_comptime)
+{
+  // We should be able to selectively analyze specific branches. Only the
+  // correct type branch will be chosen, and we will not encounted a type error
+  // for the other branch.
+  test(
+      R"(kprobe:f { $x = 1; if comptime (typeinfo($x) == typeinfo("abc")) { $x = "foo"; } else { $x = 2; } })");
+  test(
+      R"(kprobe:f { $x = "xyz"; if comptime (typeinfo($x) == typeinfo("abc")) { $x = "foo"; } else { $x = 2; } })");
+  test(
+      R"(kprobe:f { $x = 1; if comptime (typeinfo($x) != typeinfo(1)) { fail("only integers"); } })");
+  test(
+      R"(kprobe:f { $x = 1; if comptime (typeinfo($x) == typeinfo(1)) { fail("no integers"); } })",
+      Error{ R"(
+stdin:1:64-83: ERROR: no integers
+kprobe:f { $x = 1; if comptime (typeinfo($x) == typeinfo(1)) { fail("no integers"); } }
+                                                               ~~~~~~~~~~~~~~~~~~~
+)" });
 }
 
 } // namespace bpftrace::test::semantic_analyser

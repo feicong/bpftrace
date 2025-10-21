@@ -37,51 +37,22 @@
           pkgs = import nixpkgs { inherit system; };
 
           # The default LLVM version is the latest supported release
-          defaultLlvmVersion = 20;
-
-          # Override to specify the libbpf build we want. Note that we need to
-          # capture a specific fix for linking which is not yet present in a
-          # release. Once this fix is present in a release, then this should be
-          # updated to the relevant version and we need to update the version
-          # constraint in `CMakeLists.txt`.
-          libbpfVersion = "5e3306e89a44cab09693ce4bfe50bfc0cb595941";
-          libbpf = pkgs.libbpf.overrideAttrs {
-            version = libbpfVersion;
-            src = pkgs.fetchFromGitHub {
-              owner = "libbpf";
-              repo = "libbpf";
-              rev = "${libbpfVersion}";
-              # Nix uses the hash to do lookups in its cache as well as check that the
-              # download from the internet hasn't changed. Therefore, it's necessary to
-              # update the hash every time you update the source. Failure to update the
-              # hash in a cached environment (warm development host and CI) will cause
-              # nix to use the old source and then fail at some point in the future when
-              # the stale cached content is evicted.
-              #
-              # If you don't know the hash, set:
-              #   sha256 = "";
-              # then nix will fail the build with such an error message:
-              #   hash mismatch in fixed-output derivation '/nix/store/m1ga09c0z1a6n7rj8ky3s31dpgalsn0n-source':
-              #   specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-              # got:    sha256-173gxk0ymiw94glyjzjizp8bv8g72gwkjhacigd1an09jshdrjb4
-              sha256 = "sha256-giMF2DaBDk3/MKQkCzYcn5ZkcuCyrPXXoe9jI5E3QI0=";
-            };
-          };
+          defaultLlvmVersion = 21;
 
           # Override to specify the bcc build we want.
-          # First overrides with the above libbpf and then overrides the rev.
-          bccVersion = "0.33.0";
+          # We need a specific patch in BCC which resolves a build failure with
+          # LLVM 21 and is not a part of any official release, yet.
+          bccVersion = "8c5c96ad3beeed2fa827017f451a952306826974";
           bcc = (pkgs.bcc.override {
-            libbpf = libbpf;
             llvmPackages = pkgs."llvmPackages_${toString defaultLlvmVersion}";
           }).overridePythonAttrs {
             version = bccVersion;
             src = pkgs.fetchFromGitHub {
               owner = "iovisor";
               repo = "bcc";
-              rev = "v${bccVersion}";
+              rev = "${bccVersion}";
               # See above
-              sha256 = "sha256-6dT3seLuEVQNKWiYGLK1ajXzW7pb62S/GQ0Lp4JdGjc=";
+              sha256 = "sha256-XcTqcsbyUBe83vsjUC70GoffCXaxk32QddBKFEP6LD8=";
             };
           };
 
@@ -162,7 +133,6 @@
                 buildInputs = [
                   bcc
                   blazesym_c
-                  libbpf
                   pkgs.asciidoctor
                   pkgs.cereal
                   pkgs.elfutils
@@ -173,7 +143,6 @@
                   pkgs.libopcodes
                   pkgs.libpcap
                   pkgs.systemdLibs
-                  pkgs.libsystemtap
                   pkgs."llvmPackages_${toString llvmVersion}".libclang
                   pkgs."llvmPackages_${toString llvmVersion}".llvm
                   pkgs.pahole
@@ -269,11 +238,11 @@
             default = self.packages.${system}."bpftrace-llvm${toString defaultLlvmVersion}";
 
             # Support matrix of llvm versions
+            bpftrace-llvm21 = mkBpftrace 21;
             bpftrace-llvm20 = mkBpftrace 20;
             bpftrace-llvm19 = mkBpftrace 19;
             bpftrace-llvm18 = mkBpftrace 18;
             bpftrace-llvm17 = mkBpftrace 17;
-            bpftrace-llvm16 = mkBpftrace 16;
 
             # Self-contained static binary with all dependencies
             appimage = nix-appimage.mkappimage.${system} {
@@ -319,11 +288,11 @@
           devShells = rec {
             default = self.devShells.${system}."bpftrace-llvm${toString defaultLlvmVersion}";
 
+            bpftrace-llvm21 = mkBpftraceDevShell 21;
             bpftrace-llvm20 = mkBpftraceDevShell 20;
             bpftrace-llvm19 = mkBpftraceDevShell 19;
             bpftrace-llvm18 = mkBpftraceDevShell 18;
             bpftrace-llvm17 = mkBpftraceDevShell 17;
-            bpftrace-llvm16 = mkBpftraceDevShell 16;
 
             # Note that we depend on LLVM 18 explicitly for the fuzz shell, and
             # this is managed separately. The version of LLVM used to build the

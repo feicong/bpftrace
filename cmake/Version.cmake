@@ -10,21 +10,26 @@
 #     bpftrace_VERSION_MINOR
 #     bpftrace_VERSION_PATCH
 
-# Try and get a version string from Git tags
+# Check if we're in a git repo
 execute_process(
-  COMMAND git describe --abbrev=4 --dirty --tags
+  COMMAND git rev-parse --short HEAD
   WORKING_DIRECTORY ${bpftrace_SOURCE_DIR}
-  OUTPUT_VARIABLE BPFTRACE_VERSION
-  ERROR_VARIABLE GIT_DESCRIBE_ERROR
+  OUTPUT_VARIABLE GIT_SHORT_HASH
   OUTPUT_STRIP_TRAILING_WHITESPACE
   RESULT_VARIABLE retcode
 )
 
-# If the build is not done from a git repo, get the version information from
-# the version variables in main CMakeLists.txt
-if(NOT ${retcode} EQUAL 0)
-  set(BPFTRACE_VERSION "v${bpftrace_VERSION_MAJOR}.${bpftrace_VERSION_MINOR}.${bpftrace_VERSION_PATCH}")
-  message(STATUS "Could not obtain version string from Git. Falling back to CMake version string.")
+set(BPFTRACE_BASE_VERSION "v${bpftrace_VERSION_MAJOR}.${bpftrace_VERSION_MINOR}.${bpftrace_VERSION_PATCH}")
+
+# Append git hash if we're in a git repository
+if(retcode EQUAL 0)
+  set(BPFTRACE_VERSION "${BPFTRACE_BASE_VERSION}-${GIT_SHORT_HASH}")
+else()
+  set(BPFTRACE_VERSION "${BPFTRACE_BASE_VERSION}")
 endif()
+
+set(MIN_KERNEL_VERSION_MAJOR 5)
+set(MIN_KERNEL_VERSION_MINOR 15)
+set(MIN_KERNEL_VERSION_PATCH 0)
 
 configure_file(${VERSION_H_IN} ${VERSION_H} @ONLY)

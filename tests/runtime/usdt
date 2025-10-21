@@ -125,22 +125,10 @@ RUN {{BPFTRACE}} -e 'usdt:::*probe2 { printf("here\n" ); exit(); }' -p {{BEFORE_
 EXPECT Attached 2 probes
 BEFORE ./testprogs/usdt_test
 
-
-# When uprobe_multi is supported, a single ebpf program can be attached to multiple
-# identical usdt probes, so we only need to attach to 3 different usdt probes.
-# For systems without uprobe_multi support, we need to manually attach an ebpf
-# program to each probe location, resulting in 6 probes being attached.
-NAME usdt probes - attach to multiple probes with different number of locations by wildcard (with uprobe_multi)
+NAME usdt probes - attach to multiple probes with different number of locations by wildcard
 PROG usdt:./testprogs/usdt_multiple_locations:tracetest:testprobe* { printf("here\n" ); exit(); }
-REQUIRES_FEATURE uprobe_multi
 BEFORE ./testprogs/usdt_multiple_locations
 EXPECT_REGEX Attached 3 probes
-
-NAME usdt probes - attach to multiple probes with different number of locations by wildcard (without uprobe_multi)
-PROG usdt:./testprogs/usdt_multiple_locations:tracetest:testprobe* { printf("here\n" ); exit(); }
-REQUIRES_FEATURE !uprobe_multi
-BEFORE ./testprogs/usdt_multiple_locations
-EXPECT_REGEX Attached 6 probes
 
 NAME usdt probes - attach to probe with args by file
 PROG usdt:./testprogs/usdt_test:* { $a = str(arg1); print($a); @c[$a] = 1; if (len(@c) == 3) { exit(); } }
@@ -171,13 +159,13 @@ EXPECT_REGEX ^\d+ usdt:.*/testprogs/usdt_test:tracetest.?:testprobe.?$
 BEFORE ./testprogs/usdt_test
 
 NAME usdt probes - attach to probe with semaphore
-RUN {{BPFTRACE}} -e 'usdt::tracetest:testprobe { printf("%s\n", str(arg1) ); exit(); }' -p {{BEFORE_PID}}
-EXPECT tracetest_testprobe_semaphore: 1
+RUN {{BPFTRACE}} -e 'usdt:*:tracetest:testprobe { printf("%s\n", str(arg1) ); exit(); }' -p {{BEFORE_PID}}
+EXPECT USDT semaphore: 1
 BEFORE ./testprogs/usdt_semaphore_test
 
 NAME usdt probes - file based semaphore activation
 RUN {{BPFTRACE}} -e 'usdt:./testprogs/usdt_semaphore_test:tracetest:testprobe { printf("%s\n", str(arg1) ); exit(); }' --usdt-file-activation
-EXPECT tracetest_testprobe_semaphore: 1
+EXPECT USDT semaphore: 1
 BEFORE ./testprogs/usdt_semaphore_test
 
 NAME usdt probes - file based semaphore activation no process, kernel usdt semaphore
@@ -186,7 +174,7 @@ EXPECT Attached 1 probe
 
 NAME usdt probes - file based semaphore activation
 PROG usdt:./testprogs/usdt_semaphore_test:tracetest:testprobe { printf("%s\n", str(arg1) ); exit(); }
-EXPECT tracetest_testprobe_semaphore: 1
+EXPECT USDT semaphore: 1
 BEFORE ./testprogs/usdt_semaphore_test
 
 NAME usdt probes - file based semaphore activation multi process

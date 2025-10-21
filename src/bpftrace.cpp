@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -23,6 +24,7 @@
 #include <sys/epoll.h>
 #include <sys/personality.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -82,6 +84,34 @@ static void log_probe_attach_failure(const std::string &err_msg,
   }
 }
 
+static void set_rlimit_nofile(size_t num_probes, size_t num_maps)
+{
+  // 3 fds per probe + maps + buffer for things like scratch maps
+  size_t needed_fd_count = (num_probes * 3) + num_maps + 50;
+
+  rlimit current_limit;
+  if (getrlimit(RLIMIT_NOFILE, &current_limit) != 0) {
+    LOG(V1) << "Could not get current RLIMIT_NOFILE";
+    return;
+  }
+
+  if (current_limit.rlim_cur >= needed_fd_count) {
+    return;
+  }
+
+  struct rlimit rl = {};
+  int err;
+
+  rl.rlim_max = needed_fd_count;
+  rl.rlim_cur = needed_fd_count;
+  err = setrlimit(RLIMIT_NOFILE, &rl);
+  if (err)
+    LOG(WARNING)
+        << std::strerror(err) << ": couldn't set RLIMIT_NOFILE for "
+        << "bpftrace. If your program is not loading, you can try increasing"
+        << "\"ulimit -n\" to fix the problem";
+}
+
 BPFtrace::~BPFtrace()
 {
   close_pcaps();
@@ -97,7 +127,7 @@ Probe BPFtrace::generateWatchpointSetupProbe(const ast::AttachPoint &ap,
   setup_probe.attach_point = ap.func;
   setup_probe.orig_name = util::get_watchpoint_setup_probe_name(
       probe.orig_name);
-  setup_probe.index = ap.index() > 0 ? ap.index() : probe.index();
+  setup_probe.index = probe.index();
 
   return setup_probe;
 }
@@ -105,8 +135,7 @@ Probe BPFtrace::generateWatchpointSetupProbe(const ast::AttachPoint &ap,
 Probe BPFtrace::generate_probe(const ast::AttachPoint &ap,
                                const ast::Probe &p,
                                ast::ExpansionType expansion,
-                               std::set<std::string> expanded_funcs,
-                               int usdt_location_idx)
+                               std::set<std::string> expanded_funcs)
 {
   Probe probe;
   probe.path = ap.target;
@@ -120,8 +149,7 @@ Probe BPFtrace::generate_probe(const ast::AttachPoint &ap,
   probe.address = ap.address;
   probe.func_offset = ap.func_offset;
   probe.loc = 0;
-  probe.usdt_location_idx = usdt_location_idx;
-  probe.index = ap.index() ?: p.index();
+  probe.index = p.index();
   probe.len = ap.len;
   probe.mode = ap.mode;
   probe.async = ap.async;
@@ -135,12 +163,10 @@ Probe BPFtrace::generate_probe(const ast::AttachPoint &ap,
 int BPFtrace::add_probe(const ast::AttachPoint &ap,
                         const ast::Probe &p,
                         ast::ExpansionType expansion,
-                        std::set<std::string> expanded_funcs,
-                        int usdt_location_idx)
+                        std::set<std::string> expanded_funcs)
 {
   auto type = probetype(ap.provider);
-  auto probe = generate_probe(
-      ap, p, expansion, std::move(expanded_funcs), usdt_location_idx);
+  auto probe = generate_probe(ap, p, expansion, std::move(expanded_funcs));
 
   // Add the new probe(s) to resources
   if (ap.provider == "begin" || ap.provider == "end") {
@@ -200,7 +226,7 @@ struct PerfEventContext {
   output::Output &output;
 };
 
-void perf_event_printer(void *cb_cookie, void *raw_data, int size)
+void event_printer(void *cb_cookie, void *raw_data, int size)
 {
   auto *ctx = static_cast<PerfEventContext *>(cb_cookie);
 
@@ -211,7 +237,7 @@ void perf_event_printer(void *cb_cookie, void *raw_data, int size)
     memcpy(data, raw_data, size);
   });
 
-  // Ignore the remaining events if perf_event_printer is called during
+  // Ignore the remaining events if event_printer is called during
   // finalization stage (exit() builtin has been called)
   if (ctx->bpftrace.finalize_)
     return;
@@ -275,8 +301,22 @@ void perf_event_printer(void *cb_cookie, void *raw_data, int size)
 
 int ringbuf_printer(void *cb_cookie, void *data, size_t size)
 {
-  perf_event_printer(cb_cookie, data, size);
+  event_printer(cb_cookie, data, size);
   return 0;
+}
+
+void skb_output_printer(void *ctx,
+                        [[maybe_unused]] int cpu,
+                        void *data,
+                        __u32 size)
+{
+  event_printer(ctx, data, size);
+}
+
+void skb_output_lost(void *ctx, [[maybe_unused]] int cpu, __u64 cnt)
+{
+  auto *perf_ctx = static_cast<PerfEventContext *>(ctx);
+  perf_ctx->output.lost_events(cnt);
 }
 
 void BPFtrace::add_param(const std::string &param)
@@ -295,12 +335,6 @@ std::string BPFtrace::get_param(size_t i) const
 size_t BPFtrace::num_params() const
 {
   return params_.size();
-}
-
-void perf_event_lost(void *cb_cookie, uint64_t lost)
-{
-  auto *ctx = static_cast<PerfEventContext *>(cb_cookie);
-  ctx->output.lost_events(lost);
 }
 
 Result<std::unique_ptr<AttachedProbe>> BPFtrace::attach_probe(
@@ -434,6 +468,8 @@ int BPFtrace::run(output::Output &out,
   bytecode_ = std::move(bytecode);
   bytecode_.set_map_ids(resources);
 
+  set_rlimit_nofile(resources.num_probes(), resources.maps_info.size());
+
   try {
     bytecode_.load_progs(resources, *btf_, *feature_, *config_);
   } catch (const HelperVerifierError &e) {
@@ -529,8 +565,7 @@ int BPFtrace::run(output::Output &out,
       // https://github.com/torvalds/linux/commit/6b3d638ca897e099fa99bd6d02189d3176f80a47
       constexpr size_t ETH_HLEN = 14;
       char data_in[ETH_HLEN];
-      struct ::bpf_test_run_opts opts = {};
-      opts.sz = sizeof(struct ::bpf_test_run_opts);
+      DECLARE_LIBBPF_OPTS(bpf_test_run_opts, opts);
       opts.data_in = data_in;
       opts.data_size_in = ETH_HLEN;
       opts.repeat = 1'000'000;
@@ -666,7 +701,7 @@ int BPFtrace::run(output::Output &out,
 
   attached_probes_.clear();
   // finalize_ and exitsig_recv should be false from now on otherwise
-  // perf_event_printer() can ignore the `end` events.
+  // event_printer() can ignore the `end` events.
   finalize_ = false;
   exitsig_recv = false;
 
@@ -705,46 +740,26 @@ int BPFtrace::setup_output(void *ctx)
 
 int BPFtrace::setup_skboutput_perf_buffer(void *ctx)
 {
-  epollfd_ = epoll_create1(EPOLL_CLOEXEC);
-  if (epollfd_ == -1) {
-    LOG(ERROR) << "Failed to create epollfd";
+  auto map = bytecode_.getMap(MapType::PerfEvent);
+
+  auto num_pages = get_buffer_pages_per_cpu();
+  if (!num_pages) {
+    LOG(ERROR) << num_pages.takeError();
     return -1;
   }
 
-  std::vector<int> cpus = util::get_online_cpus();
-  online_cpus_ = cpus.size();
-  for (int cpu : cpus) {
-    void *reader = bpf_open_perf_buffer(&perf_event_printer,
-                                        &perf_event_lost,
-                                        ctx,
-                                        -1,
-                                        cpu,
-                                        config_->perf_rb_pages);
-    if (reader == nullptr) {
-      LOG(ERROR) << "Failed to open perf buffer";
-      return -1;
-    }
-    // Store the perf buffer pointers in a vector of unique_ptrs.
-    // When open_perf_buffers_ is cleared or destroyed,
-    // perf_reader_free is automatically called.
-    open_perf_buffers_.emplace_back(reader, perf_reader_free);
+  skb_perfbuf_ = perf_buffer__new(map.fd(),
+                                  *num_pages,
+                                  &skb_output_printer,
+                                  &skb_output_lost,
+                                  ctx,
+                                  nullptr);
 
-    struct epoll_event ev = {};
-    ev.events = EPOLLIN;
-    ev.data.ptr = reader;
-    int reader_fd = perf_reader_fd(static_cast<perf_reader *>(reader));
-
-    auto map = bytecode_.getMap(MapType::PerfEvent);
-    auto ok = map.update_elem(&cpu, &reader_fd);
-    if (!ok) {
-      LOG(ERROR) << "Failed to update perf event map: " << ok.takeError();
-      return -1;
-    }
-    if (epoll_ctl(epollfd_, EPOLL_CTL_ADD, reader_fd, &ev) == -1) {
-      LOG(ERROR) << "Failed to add perf reader to epoll";
-      return -1;
-    }
+  if (skb_perfbuf_ == nullptr) {
+    LOG(ERROR) << "Failed to open perf buffer";
+    return -1;
   }
+
   return 0;
 }
 
@@ -759,8 +774,7 @@ void BPFtrace::teardown_output()
   ring_buffer__free(ringbuf_);
 
   if (resources.using_skboutput)
-    // Calls perf_reader_free() on all open perf buffers.
-    open_perf_buffers_.clear();
+    perf_buffer__free(skb_perfbuf_);
 }
 
 void BPFtrace::poll_output(output::Output &out, bool drain)
@@ -785,14 +799,9 @@ void BPFtrace::poll_output(output::Output &out, bool drain)
            (ready == 0 && (drain || finalize_));
   };
 
-  if (poll_skboutput && epollfd_ < 0) {
-    LOG(ERROR) << "Invalid epollfd " << epollfd_;
-    return;
-  }
-
   while (true) {
     if (poll_skboutput) {
-      ready = poll_skboutput_events();
+      ready = perf_buffer__poll(skb_perfbuf_, timeout_ms);
       if (should_retry(ready)) {
         if (!do_poll_ringbuf)
           continue;
@@ -837,19 +846,6 @@ void BPFtrace::poll_output(output::Output &out, bool drain)
       }
     }
   }
-}
-
-int BPFtrace::poll_skboutput_events()
-{
-  auto events = std::vector<struct epoll_event>(online_cpus_);
-  int ready = epoll_wait(epollfd_, events.data(), online_cpus_, timeout_ms);
-  if (ready <= 0) {
-    return ready;
-  }
-  for (int i = 0; i < ready; i++) {
-    perf_reader_event_read(static_cast<perf_reader *>(events[i].data.ptr));
-  }
-  return ready;
 }
 
 void BPFtrace::poll_event_loss(output::Output &out)
@@ -990,11 +986,13 @@ std::chrono::time_point<std::chrono::system_clock> BPFtrace::resolve_timestamp(
           << "Cannot resolve timestamp due to failed boot time calculation";
     } else {
       t += std::chrono::seconds(boottime_->tv_sec);
-      t += std::chrono::nanoseconds(boottime_->tv_nsec);
+      t += std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::nanoseconds(boottime_->tv_nsec));
     }
   }
 
-  t += std::chrono::nanoseconds(nsecs);
+  t += std::chrono::duration_cast<std::chrono::system_clock::duration>(
+      std::chrono::nanoseconds(nsecs));
   return t;
 }
 
@@ -1308,6 +1306,55 @@ const std::optional<struct stat> &BPFtrace::get_pidns_self_stat() const
   }();
 
   return pidns;
+}
+
+uint64_t find_closest_power_of_2(uint64_t n)
+{
+  double log_val = log2(n);
+  auto low_end = static_cast<uint64_t>(pow(2, floor(log_val)));
+  auto high_end = static_cast<uint64_t>(pow(2, ceil(log_val)));
+
+  if (n - low_end <= high_end - n) {
+    return low_end;
+  } else {
+    return high_end;
+  }
+}
+
+Result<uint64_t> BPFtrace::get_buffer_pages(bool per_cpu) const
+{
+  if (config_->perf_rb_pages) {
+    auto pages = config_->perf_rb_pages;
+    if (!per_cpu) {
+      // We want at least one page per cpu
+      if (pages < static_cast<uint64_t>(ncpus_)) {
+        return ncpus_;
+      }
+      return pages;
+    }
+
+    double res = static_cast<double>(pages) / ncpus_;
+    pages = static_cast<uint64_t>(std::ceil(res));
+    return find_closest_power_of_2(pages);
+  }
+  auto available_mem_kb = util::get_available_mem_kb();
+  if (!available_mem_kb) {
+    return available_mem_kb;
+  }
+
+  static uint64_t ceiling = 16544;
+  static uint64_t floor = 256;
+  uint64_t max = std::min(*available_mem_kb, ceiling);
+  uint64_t amount_bytes = std::max(max, floor) * 1024;
+  if (per_cpu) {
+    amount_bytes /= ncpus_;
+  }
+  return find_closest_power_of_2(amount_bytes / sysconf(_SC_PAGE_SIZE));
+}
+
+Result<uint64_t> BPFtrace::get_buffer_pages_per_cpu() const
+{
+  return get_buffer_pages(true);
 }
 
 Dwarf *BPFtrace::get_dwarf(const std::string &filename)

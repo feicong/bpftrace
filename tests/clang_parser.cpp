@@ -1,9 +1,10 @@
 #include <llvm/Config/llvm-config.h>
 
-#include "ast/attachpoint_parser.h"
+#include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/args_resolver.h"
+#include "ast/passes/attachpoint_passes.h"
 #include "ast/passes/clang_parser.h"
 #include "ast/passes/field_analyser.h"
-#include "ast/passes/probe_expansion.h"
 #include "bpftrace.h"
 #include "btf_common.h"
 #include "driver.h"
@@ -27,7 +28,8 @@ static ast::CDefinitions parse(
                 .put(bpftrace)
                 .add(CreateParsePass())
                 .add(ast::CreateParseAttachpointsPass())
-                .add(ast::CreateProbeExpansionPass())
+                .add(ast::CreateProbeAndApExpansionPass())
+                .add(ast::CreateArgsResolverPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreateClangParsePass())
                 .run();
@@ -708,6 +710,14 @@ TEST_F(clang_parser_btf, btf)
   EXPECT_TRUE(foo2_field.type.IsPtrTy());
   EXPECT_EQ(foo2_field.type.GetPointeeTy()->GetName(), "struct Foo2");
   EXPECT_EQ(foo2_field.offset, 8);
+}
+
+TEST_F(clang_parser_btf, struct_enum_fields)
+{
+  auto bpftrace = get_mock_bpftrace();
+  auto defs = parse("struct Foo { enum FooEnum e; }", *bpftrace);
+
+  ASSERT_TRUE(defs.enum_defs.contains("FooEnum"));
 }
 
 // Disabled because BTF flattens multi-dimensional arrays #3082.

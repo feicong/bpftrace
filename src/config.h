@@ -20,11 +20,22 @@ enum class ConfigUnstable {
   error,
 };
 
+// Taken from here: https://elixir.bootlin.com/linux/v5.16/source/include/linux/license.h
+enum CompatibleBPFLicense {
+  GPL,
+  GPL_V2,
+  GPL_AR,
+  DUAL_BSD_GPL,
+  DUAL_MIT_GPL,
+  DUAL_MPL_GPL
+};
+
 static const auto UNSTABLE_IMPORT = "unstable_import";
 static const auto UNSTABLE_MACRO = "unstable_macro";
 static const auto UNSTABLE_MAP_DECL = "unstable_map_decl";
 static const auto UNSTABLE_TSERIES = "unstable_tseries";
 static const auto UNSTABLE_ADDR = "unstable_addr";
+static const auto UNSTABLE_TYPEINFO = "unstable_typeinfo";
 
 class Config {
 public:
@@ -40,6 +51,8 @@ public:
   bool is_unstable(const std::string &key);
   Result<OK> load_environment();
 
+  static std::string get_license_str(CompatibleBPFLicense license);
+
   // All configuration options.
   bool cpp_demangle = true;
   bool lazy_symbolication = true;
@@ -49,6 +62,7 @@ public:
   ConfigUnstable unstable_import = ConfigUnstable::warn;
   ConfigUnstable unstable_tseries = ConfigUnstable::warn;
   ConfigUnstable unstable_addr = ConfigUnstable::warn;
+  ConfigUnstable unstable_typeinfo = ConfigUnstable::error;
 #ifdef HAVE_BLAZESYM
   bool use_blazesym = true;
   bool show_debug_info = true;
@@ -63,8 +77,8 @@ public:
   uint64_t max_probes = 1024;
   uint64_t max_strlen = 1024;
   uint64_t on_stack_limit = 32;
-  uint64_t perf_rb_pages = 64;
-  std::string license = "GPL";
+  uint64_t perf_rb_pages = 0; // See get_buffer_pages
+  CompatibleBPFLicense license = CompatibleBPFLicense::GPL;
   std::string str_trunc_trailer = "..";
   ConfigMissingProbes missing_probes = ConfigMissingProbes::error;
   StackMode stack_mode = StackMode::bpftrace;
@@ -91,6 +105,21 @@ public:
 
 private:
   std::string name_;
+};
+
+class LicenseError : public ErrorInfo<LicenseError> {
+public:
+  static char ID;
+  LicenseError(std::string license) : license_(std::move(license)) {};
+  void log(llvm::raw_ostream &OS) const override;
+
+  const std::string &license() const
+  {
+    return license_;
+  }
+
+private:
+  std::string license_;
 };
 
 } // namespace bpftrace

@@ -336,8 +336,10 @@ bool ClangParser::ClangParserHandler::check_diagnostics(bool bail_on_error)
        i++) {
     CXDiagnostic diag = clang_getDiagnostic(get_translation_unit(), i);
     CXDiagnosticSeverity severity = clang_getDiagnosticSeverity(diag);
-    std::string msg = clang_getCString(clang_getDiagnosticSpelling(diag));
-    error_msgs.push_back(msg);
+
+    CXString msg_str = clang_getDiagnosticSpelling(diag);
+    auto &msg = error_msgs.emplace_back(clang_getCString(msg_str));
+    clang_disposeString(msg_str);
 
     if ((bail_on_error && severity == CXDiagnostic_Error) ||
         severity == CXDiagnostic_Fatal) {
@@ -575,7 +577,8 @@ std::unordered_set<std::string> ClangParser::get_incomplete_types()
       // We need layouts of pointee types because users could dereference
       if (cursor_type.kind == CXType_Pointer)
         cursor_type = clang_getPointeeType(cursor_type);
-      if (cursor_type.kind == CXType_Record) {
+      if (cursor_type.kind == CXType_Record ||
+          cursor_type.kind == CXType_Enum) {
         auto type_name = get_unqualified_type_name(cursor_type);
         if (!type_data.complete_types.contains(type_name))
           type_data.incomplete_types.emplace(std::move(type_name));
@@ -641,9 +644,13 @@ bool ClangParser::parse(ast::Program *program,
                         BPFtrace &bpftrace,
                         std::vector<std::string> extra_flags)
 {
-  input = "#include </bpftrace/include/__btf_generated_header.h>\n" +
-          program->c_definitions;
+  std::stringstream ss;
+  ss << "#include </bpftrace/include/__btf_generated_header.h>\n";
+  for (const auto &stmt : program->c_statements) {
+    ss << stmt->data << "\n";
+  }
 
+  input = ss.str();
   input_files = getTranslationUnitFiles(CXUnsavedFile{
       .Filename = "definitions.h",
       .Contents = input.c_str(),

@@ -45,6 +45,10 @@ public:
   {
     return default_value();
   }
+  R visit([[maybe_unused]] None &none)
+  {
+    return default_value();
+  }
   R visit([[maybe_unused]] Builtin &builtin)
   {
     return default_value();
@@ -61,8 +65,10 @@ public:
   {
     return visitImpl(var_addr.var);
   }
-  R visit([[maybe_unused]] SubprogArg &subprog_arg)
+  R visit(SubprogArg &subprog_arg)
   {
+    visitImpl(subprog_arg.var);
+    visitImpl(subprog_arg.typeof);
     return default_value();
   }
   R visit([[maybe_unused]] AttachPoint &ap)
@@ -77,9 +83,21 @@ public:
   {
     return visitImpl(szof.record);
   }
-  R visit([[maybe_unused]] Offsetof &ofof)
+  R visit(Offsetof &ofof)
   {
     return visitImpl(ofof.record);
+  }
+  R visit(Typeof &typeof)
+  {
+    return visitImpl(typeof.record);
+  }
+  R visit(Typeinfo &typeinfo)
+  {
+    return visitImpl(typeinfo.typeof);
+  }
+  R visit(Comptime &comptime)
+  {
+    return visitImpl(comptime.expr);
   }
   R visit([[maybe_unused]] MapDeclStatement &decl)
   {
@@ -103,11 +121,11 @@ public:
   {
     return visitImpl(unop.expr);
   }
-  R visit(Ternary &ternary)
+  R visit(IfExpr &if_expr)
   {
-    visitImpl(ternary.cond);
-    visitImpl(ternary.left);
-    visitImpl(ternary.right);
+    visitImpl(if_expr.cond);
+    visitImpl(if_expr.left);
+    visitImpl(if_expr.right);
     return default_value();
   }
   R visit(FieldAccess &acc)
@@ -116,9 +134,8 @@ public:
   }
   R visit(ArrayAccess &arr)
   {
-    visitImpl(arr.expr);
     visitImpl(arr.indexpr);
-    return default_value();
+    return visitImpl(arr.expr);
   }
   R visit(TupleAccess &acc)
   {
@@ -127,11 +144,11 @@ public:
   R visit(MapAccess &acc)
   {
     visitImpl(acc.map);
-    visitImpl(acc.key);
-    return default_value();
+    return visitImpl(acc.key);
   }
   R visit(Cast &cast)
   {
+    visitImpl(cast.typeof);
     return visitImpl(cast.expr);
   }
   R visit(Tuple &tuple)
@@ -145,21 +162,18 @@ public:
   R visit(AssignScalarMapStatement &assignment)
   {
     visitImpl(assignment.map);
-    visitImpl(assignment.expr);
-    return default_value();
+    return visitImpl(assignment.expr);
   }
   R visit(AssignMapStatement &assignment)
   {
     visitImpl(assignment.map);
     visitImpl(assignment.key);
-    visitImpl(assignment.expr);
-    return default_value();
+    return visitImpl(assignment.expr);
   }
   R visit(AssignVarStatement &assignment)
   {
     visitImpl(assignment.var_decl);
-    visitImpl(assignment.expr);
-    return default_value();
+    return visitImpl(assignment.expr);
   }
   R visit([[maybe_unused]] AssignConfigVarStatement &assignment)
   {
@@ -167,13 +181,8 @@ public:
   }
   R visit(VarDeclStatement &decl)
   {
-    return visitImpl(decl.var);
-  }
-  R visit(If &if_node)
-  {
-    visitImpl(if_node.cond);
-    visitImpl(if_node.if_block);
-    visitImpl(if_node.else_block);
+    visitImpl(decl.var);
+    visitImpl(decl.typeof);
     return default_value();
   }
   R visit(Jump &jump)
@@ -202,35 +211,23 @@ public:
   {
     visitImpl(for_loop.decl);
     visitImpl(for_loop.iterable);
-    visitImpl(for_loop.stmts);
+    visitImpl(for_loop.block);
     return default_value();
-  }
-  R visit(Predicate &pred)
-  {
-    return visitImpl(pred.expr);
   }
   R visit(Probe &probe)
   {
     visitImpl(probe.attach_points);
-    visitImpl(probe.pred);
-    visitImpl(probe.block);
-    return default_value();
+    return visitImpl(probe.block);
   }
   R visit(Config &config)
   {
     visitImpl(config.stmts);
     return default_value();
   }
-  R visit(Block &block)
+  R visit(BlockExpr &block)
   {
     visitImpl(block.stmts);
-    return default_value();
-  }
-  R visit(BlockExpr &block_expr)
-  {
-    visitImpl(block_expr.stmts);
-    visitImpl(block_expr.expr);
-    return default_value();
+    return visitImpl(block.expr);
   }
   R visit([[maybe_unused]] Macro &macro)
   {
@@ -242,8 +239,8 @@ public:
   R visit(Subprog &subprog)
   {
     visitImpl(subprog.args);
-    visitImpl(subprog.stmts);
-    return default_value();
+    visitImpl(subprog.return_type);
+    return visitImpl(subprog.block);
   }
   R visit([[maybe_unused]] Import &imp)
   {

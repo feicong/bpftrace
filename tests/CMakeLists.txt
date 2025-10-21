@@ -28,6 +28,8 @@ endif()
 add_executable(bpftrace_test
   arch.cpp
   async_action.cpp
+  ast.cpp
+  attachpoint_passes.cpp
   bpfbytecode.cpp
   bpftrace.cpp
   btf.cpp
@@ -36,6 +38,7 @@ add_executable(bpftrace_test
   named_param.cpp
   config.cpp
   collect_nodes.cpp
+  control_flow_analyser.cpp
   deprecated.cpp
   field_analyser.cpp
   fold_literals.cpp
@@ -52,7 +55,7 @@ add_executable(bpftrace_test
   output.cpp
   parser.cpp
   portability_analyser.cpp
-  probe_expansion.cpp
+  ap_probe_expansion.cpp
   procmon.cpp
   probe.cpp
   config_analyser.cpp
@@ -62,7 +65,6 @@ add_executable(bpftrace_test
   resource_analyser.cpp
   result.cpp
   required_resources.cpp
-  return_path_analyser.cpp
   scopeguard.cpp
   semantic_analyser.cpp
   temp.cpp
@@ -75,6 +77,7 @@ add_executable(bpftrace_test
   ${CODEGEN_SRC}
 )
 add_test(NAME bpftrace_test COMMAND bpftrace_test)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/near_self_file "near_self_file")
 
 add_subdirectory(data)
 add_dependencies(bpftrace_test data_source_dwarf data_source_btf data_source_funcs parser)
@@ -90,6 +93,11 @@ target_compile_definitions(bpftrace_test PRIVATE ${BPFTRACE_FLAGS})
 if(BUILD_ASAN)
   target_compile_options(bpftrace_test PUBLIC "-fsanitize=address")
   target_link_options(bpftrace_test PUBLIC "-fsanitize=address")
+endif()
+
+if(BUILD_UBSAN)
+  target_compile_options(bpftrace_test PUBLIC "-fsanitize=undefined")
+  target_link_options(bpftrace_test PUBLIC "-fsanitize=undefined")
 endif()
 
 # bpftrace tests require (at minimum) version 1.11.
@@ -110,16 +118,7 @@ add_subdirectory(testlibs)
 #
 # Runtime Tests
 #
-configure_file(runtime-tests.sh runtime-tests.sh @ONLY)
-add_custom_target(
-  runtime_tests
-  COMMAND ./runtime-tests.sh
-  DEPENDS
-    testprogs
-    testlibs
-    ${CMAKE_BINARY_DIR}/src/bpftrace
-)
-add_test(NAME runtime_tests COMMAND ./runtime-tests.sh)
+configure_file(runtime-tests.sh runtime-tests.sh COPYONLY)
 
 file(GLOB_RECURSE runtime_test_src_files
   RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -145,7 +144,6 @@ foreach(runtime_test_file ${runtime_test_src_files})
   )
 endforeach()
 add_custom_target(runtime_test_files ALL DEPENDS ${runtime_test_files})
-add_dependencies(runtime_tests runtime_test_files)
 
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/runtime/engine)
 configure_file(runtime/engine/cmake_vars.py ${CMAKE_CURRENT_BINARY_DIR}/runtime/engine/ @ONLY)
@@ -154,14 +152,12 @@ configure_file(runtime/engine/cmake_vars.py ${CMAKE_CURRENT_BINARY_DIR}/runtime/
 
 configure_file(tools-parsing-test.sh tools-parsing-test.sh COPYONLY)
 add_custom_target(tools-parsing-test COMMAND ./tools-parsing-test.sh)
-add_test(NAME tools-parsing-test COMMAND ./tools-parsing-test.sh)
 
 if(ENABLE_TEST_VALIDATE_CODEGEN)
   if(${LLVM_VERSION_MAJOR} VERSION_EQUAL 18)
     message(STATUS "Adding codegen-validator test")
     configure_file(codegen-validator.sh codegen-validator.sh COPYONLY)
     add_custom_target(codegen-validator COMMAND ./codegen-validator.sh)
-    add_test(NAME codegen-validator COMMAND ./codegen-validator.sh ${CMAKE_SOURCE_DIR})
   else()
     message(STATUS "Not building with LLVM 18, skipping codegen-validator test")
   endif()

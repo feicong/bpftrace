@@ -1,3 +1,4 @@
+#include <bpf/bpf.h>
 #include <iomanip>
 #include <string>
 
@@ -523,26 +524,46 @@ void TextOutput::primitive(const Primitive &p)
   TextEmitter<Primitive>::emit(out_, p);
 }
 
-void TextOutput::printf(const std::string &str)
+void TextOutput::printf(const std::string &str,
+                        const SourceInfo &info,
+                        PrintfSeverity severity)
 {
-  out_ << str;
-}
-
-void TextOutput::errorf(const std::string &str, const SourceInfo &info)
-{
-  bool first = true;
-  for (const auto &loc : info.locations) {
-    if (first) {
-      // No need to print the source context as that's just the `errorf`
-      // call
-      LOG(ERROR, std::string(loc.source_location), out_) << str;
-      first = false;
-    } else {
-      LOG(ERROR,
-          std::string(loc.source_location),
-          std::vector(loc.source_context),
-          out_)
-          << "expanded from";
+  switch (severity) {
+    case PrintfSeverity::NONE: {
+      out_ << str;
+      return;
+    }
+    case PrintfSeverity::WARNING:
+    case PrintfSeverity::ERROR: {
+      bool is_error = severity == PrintfSeverity::ERROR;
+      bool first = true;
+      for (const auto &loc : info.locations) {
+        if (first) {
+          // No need to print the source context as that's just the `errorf` or
+          // `warnf` call
+          if (is_error) {
+            LOG(ERROR, std::string(loc.source_location), err_) << str;
+          } else {
+            LOG(WARNING, std::string(loc.source_location), err_) << str;
+          }
+          first = false;
+        } else {
+          if (is_error) {
+            LOG(ERROR,
+                std::string(loc.source_location),
+                std::vector(loc.source_context),
+                err_)
+                << "expanded from";
+          } else {
+            LOG(WARNING,
+                std::string(loc.source_location),
+                std::vector(loc.source_context),
+                err_)
+                << "expanded from";
+          }
+        }
+      }
+      return;
     }
   }
 }
@@ -569,15 +590,15 @@ void TextOutput::syscall(const std::string &syscall)
 
 void TextOutput::lost_events(uint64_t lost)
 {
-  out_ << "Lost " << lost << " events" << std::endl;
+  err_ << "Lost " << lost << " events" << std::endl;
 }
 
 void TextOutput::attached_probes(uint64_t num_probes)
 {
   if (num_probes == 1)
-    out_ << "Attached " << num_probes << " probe" << std::endl;
+    err_ << "Attached " << num_probes << " probe" << std::endl;
   else
-    out_ << "Attached " << num_probes << " probes" << std::endl;
+    err_ << "Attached " << num_probes << " probes" << std::endl;
 }
 
 void TextOutput::runtime_error(int retcode, const RuntimeErrorInfo &info)
@@ -585,20 +606,19 @@ void TextOutput::runtime_error(int retcode, const RuntimeErrorInfo &info)
   switch (info.error_id) {
     case RuntimeErrorId::HELPER_ERROR: {
       std::string msg;
-      if (info.func_id == libbpf::BPF_FUNC_map_update_elem &&
-          retcode == -E2BIG) {
+      if (info.func_id == BPF_FUNC_map_update_elem && retcode == -E2BIG) {
         msg = "Map full; can't update element. Try increasing max_map_keys "
               "config "
               "or manually setting the max entries in a map declaration e.g. "
               "`let "
               "@a = hash(5000)`";
-      } else if (info.func_id == libbpf::BPF_FUNC_map_delete_elem &&
+      } else if (info.func_id == BPF_FUNC_map_delete_elem &&
                  retcode == -ENOENT) {
         msg = "Can't delete map element because it does not exist.";
       }
       // bpftrace sets the return code to 0 for map_lookup_elem failures
       // which is why we're not also checking the retcode
-      else if (info.func_id == libbpf::BPF_FUNC_map_lookup_elem) {
+      else if (info.func_id == BPF_FUNC_map_lookup_elem) {
         msg = "Can't lookup map element because it does not exist.";
       } else {
         msg = strerror(-retcode);
@@ -607,7 +627,7 @@ void TextOutput::runtime_error(int retcode, const RuntimeErrorInfo &info)
       LOG(WARNING,
           std::string(info.locations.begin()->source_location),
           std::vector(info.locations.begin()->source_context),
-          out_)
+          err_)
           << msg << "\nAdditional Info - helper: " << info.func_id
           << ", retcode: " << retcode;
       break;
@@ -616,7 +636,7 @@ void TextOutput::runtime_error(int retcode, const RuntimeErrorInfo &info)
       LOG(WARNING,
           std::string(info.locations.begin()->source_location),
           std::vector(info.locations.begin()->source_context),
-          out_)
+          err_)
           << info;
       break;
     }
@@ -627,7 +647,7 @@ void TextOutput::runtime_error(int retcode, const RuntimeErrorInfo &info)
     LOG(WARNING,
         std::string(info.locations[i].source_location),
         std::vector(info.locations[i].source_context),
-        out_)
+        err_)
         << "expanded from";
   }
 }

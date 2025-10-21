@@ -1,8 +1,8 @@
 #include "ast/passes/pid_filter_pass.h"
-#include "ast/attachpoint_parser.h"
+#include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/attachpoint_passes.h"
 #include "ast/passes/field_analyser.h"
 #include "ast/passes/printer.h"
-#include "ast/passes/probe_expansion.h"
 #include "driver.h"
 #include "mocks.h"
 #include "gtest/gtest.h"
@@ -30,7 +30,7 @@ void test(const std::string& input, bool has_pid, bool has_filter)
                 .put(bpftrace)
                 .add(CreateParsePass())
                 .add(ast::CreateParseAttachpointsPass())
-                .add(ast::CreateProbeExpansionPass())
+                .add(ast::CreateProbeAndApExpansionPass())
                 .add(ast::CreateFieldAnalyserPass())
                 .add(ast::CreatePidFilterPass())
                 .run();
@@ -42,7 +42,7 @@ void test(const std::string& input, bool has_pid, bool has_filter)
     builtin: pid
     int: 1 :: [int64]
    then
-    return
+   else
 )";
 
   std::ostringstream out;

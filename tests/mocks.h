@@ -43,7 +43,7 @@ public:
 
 class MockBpfMap : public BpfMap {
 public:
-  MockBpfMap(libbpf::bpf_map_type type = libbpf::BPF_MAP_TYPE_HASH,
+  MockBpfMap(bpf_map_type type = BPF_MAP_TYPE_HASH,
              std::string name = "mock_map",
              uint32_t key_size = sizeof(uint64_t),
              uint32_t value_size = sizeof(uint64_t),
@@ -105,6 +105,11 @@ public:
     return true;
   }
 
+  Result<uint64_t> get_buffer_pages(bool __attribute__((unused)) /*per_cpu*/) const override
+  {
+    return 64;
+  }
+
   std::unordered_set<std::string> get_func_modules(
       const std::string &__attribute__((unused)) /*func_name*/) const override
   {
@@ -149,46 +154,17 @@ class MockBPFfeature : public BPFfeature {
 public:
   MockBPFfeature(bool has_features = true) : BPFfeature(bpf_nofeature, btf_obj)
   {
-    has_send_signal_ = std::make_optional<bool>(has_features);
-    has_get_current_cgroup_id_ = std::make_optional<bool>(has_features);
-    has_override_return_ = std::make_optional<bool>(has_features);
     has_prog_fentry_ = std::make_optional<bool>(has_features);
-    has_probe_read_kernel_ = std::make_optional<bool>(has_features);
     has_features_ = has_features;
     has_d_path_ = std::make_optional<bool>(has_features);
-    has_ktime_get_boot_ns_ = std::make_optional<bool>(has_features);
     has_kprobe_multi_ = std::make_optional<bool>(has_features);
     has_kprobe_session_ = std::make_optional<bool>(has_features);
     has_uprobe_multi_ = std::make_optional<bool>(has_features);
-    has_skb_output_ = std::make_optional<bool>(has_features);
-    map_ringbuf_ = std::make_optional<bool>(has_features);
     has_ktime_get_tai_ns_ = std::make_optional<bool>(has_features);
     has_get_func_ip_ = std::make_optional<bool>(has_features);
-    has_jiffies64_ = std::make_optional<bool>(has_features);
-    has_for_each_map_elem_ = std::make_optional<bool>(has_features);
-    has_get_ns_current_pid_tgid_ = std::make_optional<bool>(has_features);
     has_map_lookup_percpu_elem_ = std::make_optional<bool>(has_features);
     has_loop_ = std::make_optional<bool>(has_features);
   };
-
-  bool has_fentry() override
-  {
-    return has_features_;
-  }
-
-  void add_to_available_kernel_funcs(Kfunc kfunc, bool available)
-  {
-    available_kernel_funcs_.emplace(kfunc, available);
-  }
-
-  bool has_kernel_func(Kfunc kfunc) override
-  {
-    auto find_kfunc = available_kernel_funcs_.find(kfunc);
-    if (find_kfunc != available_kernel_funcs_.end())
-      return find_kfunc->second;
-
-    return false;
-  }
 
   bool has_iter(std::string name __attribute__((unused))) override
   {
@@ -243,14 +219,13 @@ public:
 #ifdef __clang__
 #pragma GCC diagnostic ignored "-Winconsistent-missing-override"
 #endif
-  MOCK_METHOD4(find,
+  MOCK_METHOD5(find,
                std::optional<usdt_probe_entry>(std::optional<int> pid,
                                                const std::string &target,
                                                const std::string &provider,
-                                               const std::string &name));
+                                               const std::string &name,
+                                              bool has_uprobe_multi));
 #pragma GCC diagnostic pop
 };
-
-std::unique_ptr<MockUSDTHelper> get_mock_usdt_helper(int num_locations);
 
 } // namespace bpftrace::test

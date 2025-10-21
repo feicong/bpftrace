@@ -14,6 +14,10 @@ NAME it mutates the passed scalar map
 PROG macro set(@x) { @x = 2; } begin { @a = 1; set(@a);  }
 EXPECT @a: 2
 
+NAME it renames internal variables
+PROG macro add(x) { let $y: typeof(x); if (true) { $y = 1 } x + $y  } begin { print(add(1));  }
+EXPECT 2
+
 NAME it reads the passed map
 PROG macro get(@x) { 1 + @x[1] } begin { @a[1] = 1; print(get(@a));  }
 EXPECT 2
@@ -98,6 +102,15 @@ NAME macro arg idents take precedence over macros with no arguments
 PROG macro add() { 2 } macro ident(add) { add } begin { print(ident(1)); }
 EXPECT 1
 
+# This is more of a regression test for clone that wasn't cloning the Iterable node
+NAME macro replaces all instances
+PROG macro first_key(@x) { let $x; for ($k : @x) { $x = $k.0; break; } $x } begin { @a[1] = 0; @b[2] = 0; print((first_key(@a), first_key(@b))); }
+EXPECT (1, 2)
+
+NAME indirect map and variable access
+PROG macro second(a, b) { print((a, b)); } macro first(@b, $x) { second(@b, $x); } begin { @d = 5; $y = 1; first(@d, $y); }
+EXPECT (5, 1)
+
 # Test builtins
 NAME builtin wrapper comm
 PROG begin { if (__builtin_comm == comm() && __builtin_comm == comm) { print(comm); } }
@@ -138,21 +151,19 @@ EXPECT_REGEX [0-9][0-9]*
 NAME builtin wrapper jiffies
 PROG begin { if (__builtin_jiffies == jiffies() && __builtin_jiffies == jiffies) { printf("SUCCESS %llu\n", jiffies);} }
 EXPECT_REGEX SUCCESS [0-9]+
-REQUIRES_FEATURE jiffies64
-MIN_KERNEL 5.9
 
 NAME builtin wrapper ncpus
 PROG begin { if (__builtin_ncpus == ncpus() && __builtin_ncpus == ncpus) { print(ncpus); } }
 EXPECT_REGEX ^[1-9][0-9]*$
 
-NAME builtin wrapper numaid
-PROG begin { if (__builtin_numaid == numaid() && __builtin_numaid == numaid) { printf("SUCCESS %d\n", numaid); } }
-EXPECT_REGEX SUCCESS [0-9]+
-
 NAME builtin wrapper probe
 PROG k:do_nanosleep { if (__builtin_probe == probe() && __builtin_probe == probe) { print(probe); } exit(); }
 EXPECT kprobe:do_nanosleep
 AFTER ./testprogs/syscall nanosleep 1e8
+
+NAME builtin wrapper probetype
+PROG begin { if (__builtin_probetype == probetype() && __builtin_probetype == probetype) { print(probetype); } exit(); }
+EXPECT special
 
 NAME builtin wrapper rand
 PROG begin { printf("SUCCESS1 %llu\n", __builtin_rand); printf("SUCCESS2 %llu\n", rand); printf("SUCCESS3 %llu\n", rand()); }

@@ -22,18 +22,15 @@ entry:
   %"$s" = alloca i64, align 8
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"$s")
   store i64 0, ptr %"$s", align 8
-  br i1 true, label %if_body, label %else_body
+  br i1 true, label %left, label %right
 
-if_body:                                          ; preds = %entry
+left:                                             ; preds = %entry
   store i64 10, ptr %"$s", align 8
-  br label %if_end
-
-if_end:                                           ; preds = %else_body, %if_body
   ret i64 0
 
-else_body:                                        ; preds = %entry
+right:                                            ; preds = %entry
   store i64 20, ptr %"$s1", align 8
-  br label %if_end
+  ret i64 0
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)

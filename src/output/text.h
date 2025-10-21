@@ -8,12 +8,13 @@ namespace bpftrace::output {
 
 class TextOutput : public Output {
 public:
-  explicit TextOutput(std::ostream &out = std::cout) : out_(out) {};
+  explicit TextOutput(std::ostream &out = std::cout,
+                      std::ostream &err = std::cerr)
+      : out_(out), err_(err) {};
 
   void map(const std::string &name, const Value &value) override;
   void value(const Value &value) override;
-  void printf(const std::string &str) override;
-  void errorf(const std::string &str, const SourceInfo &info) override;
+  void printf(const std::string &str, const SourceInfo &info, PrintfSeverity severity) override;
   void time(const std::string &time) override;
   void cat(const std::string &cat) override;
   void join(const std::string &join) override;
@@ -30,6 +31,7 @@ public:
 
 private:
   std::ostream &out_;
+  std::ostream &err_;
 };
 
 } // namespace bpftrace::output

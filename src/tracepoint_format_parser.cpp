@@ -13,6 +13,8 @@ namespace bpftrace {
 
 std::set<std::string> TracepointFormatParser::struct_list;
 
+constexpr std::string_view TRACEPOINT_STRUCT_PREFIX = "struct _tracepoint_";
+
 bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
 {
   ast::Program *program = ctx.root;
@@ -27,7 +29,9 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
     return true;
 
   if (!bpftrace.has_btf_data())
-    program->c_definitions += "#include <linux/types.h>\n";
+    program->c_statements.emplace_back(
+        ctx.make_node<ast::CStatement>("#include <linux/types.h>",
+                                       ast::Location()));
   for (ast::Probe *probe : probes_with_tracepoint) {
     ast::AttachPointList new_aps;
     for (ast::AttachPoint *ap : probe->attach_points) {
@@ -75,8 +79,10 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
         // Check to avoid adding the same struct more than once to definitions
         std::string struct_name = get_struct_name(*ap);
         if (TracepointFormatParser::struct_list.insert(struct_name).second) {
-          program->c_definitions += get_tracepoint_struct(
-              format_file, category, event_name, bpftrace);
+          program->c_statements.emplace_back(ctx.make_node<ast::CStatement>(
+              get_tracepoint_struct(
+                  format_file, category, event_name, bpftrace),
+              ast::Location()));
         }
       }
       new_aps.push_back(ap);
@@ -85,9 +91,6 @@ bool TracepointFormatParser::parse(ast::ASTContext &ctx, BPFtrace &bpftrace)
     probe->attach_points = new_aps;
   }
 
-  // We may have ended with probes without attach points, remove them
-  program->clear_empty_probes();
-
   return true;
 }
 
@@ -95,7 +98,12 @@ std::string TracepointFormatParser::get_struct_name(
     const std::string &category,
     const std::string &event_name)
 {
-  return "struct _tracepoint_" + category + "_" + event_name;
+  return std::string(TRACEPOINT_STRUCT_PREFIX) + category + "_" + event_name;
+}
+
+bool TracepointFormatParser::is_tracepoint_struct(const std::string &name)
+{
+  return name.starts_with(TRACEPOINT_STRUCT_PREFIX);
 }
 
 std::string TracepointFormatParser::get_struct_name(const ast::AttachPoint &ap)

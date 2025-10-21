@@ -18,15 +18,15 @@ declare i64 @llvm.bpf.pseudo(i64 %0, i64 %1) #0
 define i64 @kprobe_f_1(ptr %0) #0 section "s_kprobe_f_1" !dbg !35 {
 entry:
   %exit = alloca %exit_t, align 8
-  %"$a" = alloca i8, align 1
+  %"$a" = alloca i1, align 1
   call void @llvm.lifetime.start.p0(i64 -1, ptr %"$a")
-  store i8 0, ptr %"$a", align 1
-  store i8 1, ptr %"$a", align 1
-  %1 = load i8, ptr %"$a", align 1
-  %true_cond = icmp ne i8 %1, 0
-  br i1 %true_cond, label %if_body, label %if_end
+  store i1 false, ptr %"$a", align 1
+  store i1 true, ptr %"$a", align 1
+  %1 = load i1, ptr %"$a", align 1
+  %true_cond = icmp ne i1 %1, false
+  br i1 %true_cond, label %left, label %right
 
-if_body:                                          ; preds = %entry
+left:                                             ; preds = %entry
   call void @llvm.lifetime.start.p0(i64 -1, ptr %exit)
   %2 = getelementptr %exit_t, ptr %exit, i64 0, i32 0
   store i64 30000, ptr %2, align 8
@@ -36,10 +36,10 @@ if_body:                                          ; preds = %entry
   %ringbuf_loss = icmp slt i64 %ringbuf_output, 0
   br i1 %ringbuf_loss, label %event_loss_counter, label %counter_merge
 
-if_end:                                           ; preds = %deadcode, %entry
+right:                                            ; preds = %entry
   ret i64 0
 
-event_loss_counter:                               ; preds = %if_body
+event_loss_counter:                               ; preds = %left
   %get_cpu_id = call i64 inttoptr (i64 8 to ptr)() #2
   %4 = load i64, ptr @__bt__max_cpu_id, align 8
   %cpu.id.bounded = and i64 %get_cpu_id, %4
@@ -49,12 +49,9 @@ event_loss_counter:                               ; preds = %if_body
   store i64 %7, ptr %5, align 8
   br label %counter_merge
 
-counter_merge:                                    ; preds = %event_loss_counter, %if_body
+counter_merge:                                    ; preds = %event_loss_counter, %left
   call void @llvm.lifetime.end.p0(i64 -1, ptr %exit)
   ret i64 0
-
-deadcode:                                         ; No predecessors!
-  br label %if_end
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)

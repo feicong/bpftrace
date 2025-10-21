@@ -1,0 +1,25 @@
+// :variant bool is_str(any expression)
+// Determine whether the given expression is a string.
+macro is_str(expr) {
+  typeinfo(expr).1 == "string"
+}
+
+// :variant bool is_ptr(any expression)
+// Determine whether the given expression is a pointer.
+macro is_ptr(expr) {
+  typeinfo(expr).1 == "pointer"
+}
+
+// :variant bool is_array(any expression)
+// Determine whether the given expression is an array.
+macro is_array(expr) {
+  typeinfo(expr).1 == "array"
+}
+
+// :variant void static_assert(bool condition, string msg)
+// Assert something is true or fail the build.
+macro static_assert(cond, msg) {
+  if comptime !cond {
+    fail(msg);
+  }
+}

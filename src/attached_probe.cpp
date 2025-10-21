@@ -58,28 +58,28 @@ bpf_probe_attach_type attachtype(ProbeType t)
   // clang-format on
 }
 
-libbpf::bpf_prog_type progtype(ProbeType t)
+bpf_prog_type progtype(ProbeType t)
 {
   switch (t) {
       // clang-format off
-    case ProbeType::special:    return libbpf::BPF_PROG_TYPE_RAW_TRACEPOINT; break;
-    case ProbeType::benchmark:  return libbpf::BPF_PROG_TYPE_XDP; break;
-    case ProbeType::kprobe:     return libbpf::BPF_PROG_TYPE_KPROBE; break;
-    case ProbeType::kretprobe:  return libbpf::BPF_PROG_TYPE_KPROBE; break;
-    case ProbeType::uprobe:     return libbpf::BPF_PROG_TYPE_KPROBE; break;
-    case ProbeType::uretprobe:  return libbpf::BPF_PROG_TYPE_KPROBE; break;
-    case ProbeType::usdt:       return libbpf::BPF_PROG_TYPE_KPROBE; break;
-    case ProbeType::tracepoint: return libbpf::BPF_PROG_TYPE_TRACEPOINT; break;
-    case ProbeType::profile:    return libbpf::BPF_PROG_TYPE_PERF_EVENT; break;
-    case ProbeType::interval:   return libbpf::BPF_PROG_TYPE_PERF_EVENT; break;
-    case ProbeType::software:   return libbpf::BPF_PROG_TYPE_PERF_EVENT; break;
-    case ProbeType::watchpoint: return libbpf::BPF_PROG_TYPE_PERF_EVENT; break;
-    case ProbeType::asyncwatchpoint: return libbpf::BPF_PROG_TYPE_PERF_EVENT; break;
-    case ProbeType::hardware:   return libbpf::BPF_PROG_TYPE_PERF_EVENT; break;
-    case ProbeType::fentry:     return libbpf::BPF_PROG_TYPE_TRACING; break;
-    case ProbeType::fexit:      return libbpf::BPF_PROG_TYPE_TRACING; break;
-    case ProbeType::iter:       return libbpf::BPF_PROG_TYPE_TRACING; break;
-    case ProbeType::rawtracepoint: return libbpf::BPF_PROG_TYPE_TRACING; break;
+    case ProbeType::special:    return BPF_PROG_TYPE_RAW_TRACEPOINT; break;
+    case ProbeType::benchmark:  return BPF_PROG_TYPE_XDP; break;
+    case ProbeType::kprobe:     return BPF_PROG_TYPE_KPROBE; break;
+    case ProbeType::kretprobe:  return BPF_PROG_TYPE_KPROBE; break;
+    case ProbeType::uprobe:     return BPF_PROG_TYPE_KPROBE; break;
+    case ProbeType::uretprobe:  return BPF_PROG_TYPE_KPROBE; break;
+    case ProbeType::usdt:       return BPF_PROG_TYPE_KPROBE; break;
+    case ProbeType::tracepoint: return BPF_PROG_TYPE_TRACEPOINT; break;
+    case ProbeType::profile:    return BPF_PROG_TYPE_PERF_EVENT; break;
+    case ProbeType::interval:   return BPF_PROG_TYPE_PERF_EVENT; break;
+    case ProbeType::software:   return BPF_PROG_TYPE_PERF_EVENT; break;
+    case ProbeType::watchpoint: return BPF_PROG_TYPE_PERF_EVENT; break;
+    case ProbeType::asyncwatchpoint: return BPF_PROG_TYPE_PERF_EVENT; break;
+    case ProbeType::hardware:   return BPF_PROG_TYPE_PERF_EVENT; break;
+    case ProbeType::fentry:     return BPF_PROG_TYPE_TRACING; break;
+    case ProbeType::fexit:      return BPF_PROG_TYPE_TRACING; break;
+    case ProbeType::iter:       return BPF_PROG_TYPE_TRACING; break;
+    case ProbeType::rawtracepoint: return BPF_PROG_TYPE_TRACING; break;
     // clang-format on
     case ProbeType::invalid:
       LOG(BUG) << "program type invalid";
@@ -88,14 +88,14 @@ libbpf::bpf_prog_type progtype(ProbeType t)
   return {}; // unreached
 }
 
-std::string progtypeName(libbpf::bpf_prog_type t)
+std::string progtypeName(bpf_prog_type t)
 {
   switch (t) {
       // clang-format off
-    case libbpf::BPF_PROG_TYPE_KPROBE:     return "BPF_PROG_TYPE_KPROBE";     break;
-    case libbpf::BPF_PROG_TYPE_TRACEPOINT: return "BPF_PROG_TYPE_TRACEPOINT"; break;
-    case libbpf::BPF_PROG_TYPE_PERF_EVENT: return "BPF_PROG_TYPE_PERF_EVENT"; break;
-    case libbpf::BPF_PROG_TYPE_TRACING:    return "BPF_PROG_TYPE_TRACING";    break;
+    case BPF_PROG_TYPE_KPROBE:     return "BPF_PROG_TYPE_KPROBE";     break;
+    case BPF_PROG_TYPE_TRACEPOINT: return "BPF_PROG_TYPE_TRACEPOINT"; break;
+    case BPF_PROG_TYPE_PERF_EVENT: return "BPF_PROG_TYPE_PERF_EVENT"; break;
+    case BPF_PROG_TYPE_TRACING:    return "BPF_PROG_TYPE_TRACING";    break;
     // clang-format on
     default:
       LOG(BUG) << "invalid program type: " << t;
@@ -360,7 +360,6 @@ Result<uint64_t> resolve_offset_uprobe(Probe &probe, bool safe_mode)
   return offset;
 }
 
-#ifdef HAVE_LIBBPF_UPROBE_MULTI
 struct bcc_sym_cb_data {
   std::vector<std::string> &syms;
   std::set<uint64_t> &offsets;
@@ -462,7 +461,6 @@ Result<std::vector<unsigned long>> resolve_offsets_uprobe_multi(
 
   return offsets;
 }
-#endif // HAVE_LIBBPF_UPROBE_MULTI
 
 class AttachedKprobeProbe : public AttachedProbe {
 public:
@@ -535,10 +533,9 @@ Result<std::unique_ptr<AttachedKprobeProbe>> AttachedKprobeProbe::make(
   if (!is_symbol_kprobe)
     funcname += probe.attach_point;
 
-  BPFTRACE_LIBBPF_OPTS(bpf_kprobe_opts,
-                       opts,
-                       .offset = offset,
-                       .retprobe = probe.type == ProbeType::kretprobe);
+  DECLARE_LIBBPF_OPTS(bpf_kprobe_opts, opts);
+  opts.offset = offset;
+  opts.retprobe = probe.type == ProbeType::kretprobe;
 
   auto *link = bpf_program__attach_kprobe_opts(prog.bpf_prog(),
                                                funcname.c_str(),
@@ -595,7 +592,7 @@ size_t AttachedMultiKprobeProbe::probe_count() const
 Result<std::unique_ptr<AttachedMultiKprobeProbe>> AttachedMultiKprobeProbe::
     make(Probe &probe, const BpfProgram &prog)
 {
-  BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, opts);
+  DECLARE_LIBBPF_OPTS(bpf_link_create_opts, opts);
   std::vector<const char *> syms;
   unsigned int i = 0;
 
@@ -615,11 +612,10 @@ Result<std::unique_ptr<AttachedMultiKprobeProbe>> AttachedMultiKprobeProbe::
     }
   }
 
-  auto attach_type = probe.is_session ? libbpf::BPF_TRACE_KPROBE_SESSION
-                                      : libbpf::BPF_TRACE_KPROBE_MULTI;
+  auto attach_type = probe.is_session ? BPF_TRACE_KPROBE_SESSION
+                                      : BPF_TRACE_KPROBE_MULTI;
 
-  int link_fd = bpf_link_create(
-      prog.fd(), 0, static_cast<enum ::bpf_attach_type>(attach_type), &opts);
+  int link_fd = bpf_link_create(prog.fd(), 0, attach_type, &opts);
   if (link_fd < 0) {
     return make_error<AttachError>();
   }
@@ -674,9 +670,8 @@ Result<std::unique_ptr<AttachedUprobeProbe>> AttachedUprobeProbe::make(
     return offset_res.takeError();
   }
 
-  BPFTRACE_LIBBPF_OPTS(bpf_uprobe_opts,
-                       opts,
-                       .retprobe = probe.type == ProbeType::uretprobe);
+  DECLARE_LIBBPF_OPTS(bpf_uprobe_opts, opts);
+  opts.retprobe = probe.type == ProbeType::uretprobe;
 
   auto *link = bpf_program__attach_uprobe_opts(prog.bpf_prog(),
                                                pid.has_value() ? *pid : -1,
@@ -723,7 +718,6 @@ size_t AttachedMultiUprobeProbe::probe_count() const
   return probe_.funcs.size();
 }
 
-#ifdef HAVE_LIBBPF_UPROBE_MULTI
 Result<std::unique_ptr<AttachedMultiUprobeProbe>> AttachedMultiUprobeProbe::
     make(Probe &probe, const BpfProgram &prog, std::optional<int> pid)
 {
@@ -737,8 +731,7 @@ Result<std::unique_ptr<AttachedMultiUprobeProbe>> AttachedMultiUprobeProbe::
   }
 
   // Attach uprobe through uprobe_multi link
-  BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, opts);
-
+  DECLARE_LIBBPF_OPTS(bpf_link_create_opts, opts);
   opts.uprobe_multi.path = probe.path.c_str();
   opts.uprobe_multi.offsets = offset_res->data();
   opts.uprobe_multi.cnt = offset_res->size();
@@ -756,11 +749,7 @@ Result<std::unique_ptr<AttachedMultiUprobeProbe>> AttachedMultiUprobeProbe::
     }
   }
 
-  int link_fd = bpf_link_create(prog.fd(),
-                                0,
-                                static_cast<enum ::bpf_attach_type>(
-                                    libbpf::BPF_TRACE_UPROBE_MULTI),
-                                &opts);
+  int link_fd = bpf_link_create(prog.fd(), 0, BPF_TRACE_UPROBE_MULTI, &opts);
 
   if (link_fd < 0) {
     return make_error<AttachError>();
@@ -769,13 +758,6 @@ Result<std::unique_ptr<AttachedMultiUprobeProbe>> AttachedMultiUprobeProbe::
   return std::unique_ptr<AttachedMultiUprobeProbe>(
       new AttachedMultiUprobeProbe(probe, link_fd));
 }
-#else
-Result<std::unique_ptr<AttachedMultiUprobeProbe>> AttachedMultiUprobeProbe::
-    make(Probe &probe, const BpfProgram &prog, std::optional<int> pid)
-{
-  return make_error<AttachError>("uprobe multi not available on this system");
-}
-#endif // HAVE_LIBBPF_UPROBE_MULTI
 
 class AttachedUSDTProbe : public AttachedProbe {
 public:
@@ -1005,8 +987,7 @@ class AttachedIntervalProbe : public AttachedProbe {
 public:
   static Result<std::unique_ptr<AttachedIntervalProbe>> make(
       Probe &probe,
-      const BpfProgram &prog,
-      std::optional<int> pid);
+      const BpfProgram &prog);
   ~AttachedIntervalProbe() override;
 
   int link_fd() override;
@@ -1036,8 +1017,7 @@ int AttachedIntervalProbe::link_fd()
 
 Result<std::unique_ptr<AttachedIntervalProbe>> AttachedIntervalProbe::make(
     Probe &probe,
-    const BpfProgram &prog,
-    std::optional<int> pid)
+    const BpfProgram &prog)
 {
   int group_fd = -1;
   int cpu = 0;
@@ -1060,7 +1040,7 @@ Result<std::unique_ptr<AttachedIntervalProbe>> AttachedIntervalProbe::make(
                                       PERF_COUNT_SW_CPU_CLOCK,
                                       period,
                                       freq,
-                                      pid.has_value() ? *pid : -1,
+                                      -1,
                                       cpu,
                                       group_fd);
 
@@ -1368,23 +1348,15 @@ Result<std::unique_ptr<AttachedIterProbe>> AttachedIterProbe::make(
 {
   int iter_fd = -1;
   if (!pid.has_value()) {
-    iter_fd = bpf_link_create(prog.fd(),
-                              0,
-                              static_cast<enum ::bpf_attach_type>(
-                                  libbpf::BPF_TRACE_ITER),
-                              nullptr);
+    iter_fd = bpf_link_create(prog.fd(), 0, BPF_TRACE_ITER, nullptr);
   } else {
-    BPFTRACE_LIBBPF_OPTS(bpf_link_create_opts, opts);
+    DECLARE_LIBBPF_OPTS(bpf_link_create_opts, opts);
     union bpf_iter_link_info linfo;
     memset(&linfo, 0, sizeof(linfo));
     linfo.task.pid = *pid;
     opts.iter_info = &linfo;
     opts.iter_info_len = sizeof(linfo);
-    iter_fd = bpf_link_create(prog.fd(),
-                              0,
-                              static_cast<enum ::bpf_attach_type>(
-                                  libbpf::BPF_TRACE_ITER),
-                              &opts);
+    iter_fd = bpf_link_create(prog.fd(), 0, BPF_TRACE_ITER, &opts);
   }
 
   if (iter_fd < 0) {
@@ -1541,7 +1513,7 @@ Result<std::unique_ptr<AttachedProbe>> AttachedProbe::make(
       return AttachedProfileProbe::make(probe, prog, pid);
     }
     case ProbeType::interval: {
-      return AttachedIntervalProbe::make(probe, prog, pid);
+      return AttachedIntervalProbe::make(probe, prog);
     }
     case ProbeType::software: {
       return AttachedSoftwareProbe::make(probe, prog, pid);

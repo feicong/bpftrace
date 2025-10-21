@@ -14,13 +14,14 @@
 #include <unistd.h>
 
 #include "aot/aot.h"
-#include "ast/attachpoint_parser.h"
 #include "ast/diagnostic.h"
 #include "ast/helpers.h"
 #include "ast/pass_manager.h"
+#include "ast/passes/attachpoint_passes.h"
 #include "ast/passes/clang_build.h"
 #include "ast/passes/clang_parser.h"
 #include "ast/passes/codegen_llvm.h"
+#include "ast/passes/control_flow_analyser.h"
 #include "ast/passes/fold_literals.h"
 #include "ast/passes/map_sugar.h"
 #include "ast/passes/named_param.h"
@@ -28,9 +29,9 @@
 #include "ast/passes/pid_filter_pass.h"
 #include "ast/passes/portability_analyser.h"
 #include "ast/passes/printer.h"
+#include "ast/passes/probe_prune.h"
 #include "ast/passes/recursion_check.h"
 #include "ast/passes/resource_analyser.h"
-#include "ast/passes/return_path_analyser.h"
 #include "ast/passes/semantic_analyser.h"
 #include "ast/passes/type_system.h"
 #include "benchmark.h"
@@ -43,6 +44,7 @@
 #include "globalvars.h"
 #include "lockdown.h"
 #include "log.h"
+#include "output/buffer_mode.h"
 #include "probe_matcher.h"
 #include "procmon.h"
 #include "run_bpftrace.h"
@@ -55,12 +57,6 @@
 using namespace bpftrace;
 
 namespace {
-enum class OutputBufferConfig {
-  UNSET = 0,
-  LINE,
-  FULL,
-  NONE,
-};
 
 enum class TestMode {
   NONE = 0,
@@ -170,7 +166,7 @@ void usage(std::ostream& out)
   // clang-format on
 }
 
-static void enforce_infinite_rlimit()
+static void enforce_infinite_rlimit_memlock()
 {
   struct rlimit rl = {};
   int err;
@@ -305,8 +301,7 @@ struct Args {
   bool listing = false;
   bool safe_mode = true;
   bool usdt_file_activation = false;
-  int helper_check_level = 1;
-  bool no_warnings = false;
+  int warning_level = 1;
   bool verify_llvm_ir = false;
   TestMode test_mode = TestMode::NONE;
   std::string script;
@@ -330,13 +325,11 @@ struct Args {
 void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
 {
   add(ast::CreateFoldLiteralsPass());
-  add(ast::CreatePidFilterPass());
   add(ast::CreateClangBuildPass());
   add(ast::CreateTypeSystemPass());
   add(ast::CreateSemanticPass());
+  add(ast::CreateProbePrunePass());
   add(ast::CreateResourcePass());
-  add(ast::CreateRecursionCheckPass());
-  add(ast::CreateReturnPathPass());
 }
 
 void CreateAotPasses(std::function<void(ast::Pass&& pass)> add)
@@ -346,9 +339,8 @@ void CreateAotPasses(std::function<void(ast::Pass&& pass)> add)
   add(ast::CreateClangBuildPass());
   add(ast::CreateTypeSystemPass());
   add(ast::CreateSemanticPass());
+  add(ast::CreateProbePrunePass());
   add(ast::CreateResourcePass());
-  add(ast::CreateRecursionCheckPass());
-  add(ast::CreateReturnPathPass());
 }
 
 ast::Pass printPass(const std::string& name)
@@ -457,7 +449,6 @@ Args parse_args(int argc, char* argv[])
   };
 
   int c;
-  bool has_k = false;
   while ((c = getopt_long(argc, argv, short_options, long_options, nullptr)) !=
          -1) {
     switch (c) {
@@ -473,9 +464,12 @@ Args parse_args(int argc, char* argv[])
         args.output_llvm = optarg;
         break;
       case Options::NO_WARNING: // --no-warnings
+        if (args.warning_level == 2) {
+          LOG(ERROR) << "USAGE: -k conflicts with --no-warnings";
+          exit(1);
+        }
         DISABLE_LOG(WARNING);
-        args.no_warnings = true;
-        args.helper_check_level = 0;
+        args.warning_level = 0;
         break;
       case Options::TEST_MODE: // --test-mode
         if (std::strcmp(optarg, "codegen") == 0) {
@@ -573,16 +567,17 @@ Args parse_args(int argc, char* argv[])
         std::cout << "bpftrace " << BPFTRACE_VERSION << std::endl;
         exit(0);
       case 'k':
-        if (has_k) {
+        if (args.warning_level == 2) {
           LOG(ERROR) << "USAGE: -kk has been deprecated. Use a single -k for "
                         "runtime warnings for errors in map "
                         "lookups and probe reads.";
           exit(1);
         }
-        if (!args.no_warnings) {
-          args.helper_check_level = 2;
+        if (args.warning_level == 0) {
+          LOG(ERROR) << "USAGE: -k conflicts with --no-warnings";
+          exit(1);
         }
-        has_k = true;
+        args.warning_level = 2;
         break;
       default:
         usage(std::cerr);
@@ -602,8 +597,7 @@ Args parse_args(int argc, char* argv[])
   }
 
   // Difficult to serialize flex generated types
-  if (args.helper_check_level == 2 &&
-      args.build_mode == BuildMode::AHEAD_OF_TIME) {
+  if (args.warning_level == 2 && args.build_mode == BuildMode::AHEAD_OF_TIME) {
     LOG(ERROR) << "Cannot use -k with --aot";
     exit(1);
   }
@@ -680,14 +674,15 @@ bool is_colorize()
 static ast::ASTContext buildListProgram(const std::string& search)
 {
   ast::ASTContext ast("listing", search);
-  auto* ap = ast.make_node<ast::AttachPoint>(search, true, location());
-  auto* probe = ast.make_node<ast::Probe>(
-      ast::AttachPointList({ ap }), nullptr, nullptr, location());
-  ast.root = ast.make_node<ast::Program>("",
+  auto* ap = ast.make_node<ast::AttachPoint>(search, true, ast::Location());
+  auto* probe = ast.make_node<ast::Probe>(ast::AttachPointList({ ap }),
+                                          nullptr,
+                                          ast::Location());
+  ast.root = ast.make_node<ast::Program>(ast::CStatementList(),
                                          nullptr,
                                          ast::ImportList(),
                                          ast::RootStatements({ probe }),
-                                         location());
+                                         ast::Location());
   return ast;
 }
 
@@ -717,14 +712,12 @@ int main(int argc, char* argv[])
   // Most configuration can be applied during the configuration pass, however
   // we need to extract a few bits of configuration up front, because they may
   // affect the actual compilation process.
-  util::get_uint64_env_var("BPFTRACE_MAX_AST_NODES",
-                           [&](uint64_t x) { bpftrace.max_ast_nodes_ = x; });
   util::get_bool_env_var("BPFTRACE_DEBUG_OUTPUT",
                          [&](bool x) { bpftrace.debug_output_ = x; });
 
   bpftrace.usdt_file_activation_ = args.usdt_file_activation;
   bpftrace.safe_mode_ = args.safe_mode;
-  bpftrace.helper_check_level_ = args.helper_check_level;
+  bpftrace.warning_level_ = args.warning_level;
   bpftrace.boottime_ = get_boottime();
   bpftrace.delta_taitime_ = get_delta_taitime();
   bpftrace.run_benchmarks_ = args.test_mode == TestMode::BPF_BENCHMARK;
@@ -795,10 +788,11 @@ int main(int argc, char* argv[])
                         .put(no_c_defs)
                         .put(no_types)
                         .add(ast::CreateParseAttachpointsPass(args.listing))
+                        .add(ast::CreateCheckAttachpointsPass(args.listing))
                         .add(CreateParseBTFPass())
                         .add(ast::CreateMapSugarPass())
                         .add(ast::CreateNamedParamsPass())
-                        .add(ast::CreateSemanticPass(args.listing))
+                        .add(ast::CreateSemanticPass())
                         .run();
 
     if (!pmresult) {
@@ -863,7 +857,7 @@ int main(int argc, char* argv[])
 
     // FIXME (mmarchini): maybe we don't want to always enforce an infinite
     // rlimit?
-    enforce_infinite_rlimit();
+    enforce_infinite_rlimit_memlock();
   }
 
   // Temporarily, we make the full `BPFTrace` object available via the pass
@@ -880,14 +874,15 @@ int main(int argc, char* argv[])
   if (args.listing) {
     ast::CDefinitions no_c_defs; // See above.
     ast::TypeMetadata no_types;  // See above.
-    pm.add(CreateParsePass(bpftrace.max_ast_nodes_))
+    pm.add(CreateParsePass(bt_debug.contains(DebugStage::Parse)))
         .put(no_c_defs)
         .put(no_types)
         .add(ast::CreateParseAttachpointsPass(args.listing))
+        .add(ast::CreateCheckAttachpointsPass(args.listing))
         .add(CreateParseBTFPass())
         .add(ast::CreateMapSugarPass())
         .add(ast::CreateNamedParamsPass())
-        .add(ast::CreateSemanticPass(args.listing));
+        .add(ast::CreateSemanticPass());
 
     auto pmresult = pm.run();
     if (!pmresult) {
@@ -912,7 +907,9 @@ int main(int argc, char* argv[])
     }
   };
   // Start with all the basic parsing steps.
-  for (auto& pass : ast::AllParsePasses(std::move(flags))) {
+  for (auto& pass : ast::AllParsePasses(std::move(flags),
+                                        {},
+                                        bt_debug.contains(DebugStage::Parse))) {
     addPass(std::move(pass));
   }
   pm.add(ast::CreateLLVMInitPass());
@@ -1016,5 +1013,6 @@ int main(int argc, char* argv[])
                       args.output_format,
                       c_definitions,
                       bytecode,
-                      std::move(args.named_params));
+                      std::move(args.named_params),
+                      args.obc);
 }

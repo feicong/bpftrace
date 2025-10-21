@@ -1,9 +1,11 @@
+# Disabled - repeatedly fails on upstream kernel (6.14)
 NAME watchpoint - absolute address
 BEFORE ./testprogs/watchpoint
 RUN {{BPFTRACE}} -e "watchpoint:$(awk '{print $1}' /tmp/watchpoint_mem):8:w { printf(\"hit!\n\"); exit() }" -p {{BEFORE_PID}}
 EXPECT hit!
 ARCH aarch64|ppc64|ppc64le|x86_64
 CLEANUP rm -f /tmp/watchpoint_mem
+REQUIRES bash -c "exit 1"
 
 NAME kwatchpoint - knl absolute address
 RUN {{BPFTRACE}} -e "watchpoint:0x$(awk '$3 == "jiffies" {print $1}' /proc/kallsyms):4:w { printf(\"hit\n\"); exit(); }"
@@ -15,52 +17,44 @@ NAME function_arg_addr
 RUN {{BPFTRACE}} -e 'watchpoint:increment+arg1:4:w { printf("hit!\n"); exit() }' -c ./testprogs/watchpoint_func
 EXPECT hit!
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME async_function_arg_addr
 RUN {{BPFTRACE}} -e 'asyncwatchpoint:increment+arg1:4:w { printf("hit!\n"); exit() }' -c ./testprogs/watchpoint_func
 EXPECT hit!
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME function_arg_addr_process_flag
 RUN {{BPFTRACE}} -e 'watchpoint:increment+arg1:4:w { printf("hit!\n"); exit() }' -p $(pidof watchpoint_func)
 BEFORE ./testprogs/watchpoint_func
 EXPECT hit!
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME many_function_probes
 RUN {{BPFTRACE}} -e 'config = { missing_probes = "warn" } watchpoint:increment+arg0:4:w { printf("hit!\n") }' -c ./testprogs/watchpoint_func_many_probes
 EXPECT WARNING: No more HW registers left
 EXPECT WARNING: Unable to attach probe: watchpoint:./testprogs/watchpoint_func_many_probes:increment:4:w. Skipping.
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME unwatch
 RUN {{BPFTRACE}} runtime/scripts/watchpoint_unwatch.bt -c ./testprogs/watchpoint_unwatch
 EXPECT count=1
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME function_multiattach
 RUN {{BPFTRACE}} runtime/scripts/watchpoint_multiattach.bt -c ./testprogs/watchpoint_func_wildcard
 EXPECT count=3
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME wildcarded_function
 RUN {{BPFTRACE}} -e 'config = { missing_probes = "warn" } watchpoint:increment_*+arg0:4:w { printf("hit!\n") }' -c ./testprogs/watchpoint_func_wildcard
 EXPECT WARNING: No more HW registers left
-EXPECT WARNING: Unable to attach probe: watchpoint:./testprogs/watchpoint_func_wildcard:increment_0:4:w. Skipping.
+EXPECT WARNING: Unable to attach probe: watchpoint:./testprogs/watchpoint_func_wildcard:increment_4:4:w. Skipping.
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME unique_probe_bodies
 RUN {{BPFTRACE}} -e 'config = { missing_probes = "warn" } watchpoint:increment_*+arg0:4:w { printf("%s!\n", probe) }' -c ./testprogs/watchpoint_func_wildcard
 EXPECT_REGEX .*increment_0:4:w!
 ARCH aarch64|x86_64
-REQUIRES_FEATURE signal
 
 NAME execution breakpoint
 RUN {{BPFTRACE}} -e 'watchpoint:0x10000000:1:x { printf("hit!\n"); exit() }' -c ./testprogs/watchpoint_exec

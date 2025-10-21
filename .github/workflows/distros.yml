@@ -17,11 +17,14 @@ jobs:
     strategy:
       matrix:
         dockerfile:
+        - docker/Dockerfile.alpine
         - docker/Dockerfile.debian
         - docker/Dockerfile.fedora
         - docker/Dockerfile.ubuntu
 
     steps:
     - uses: actions/checkout@v2
+      with:
+        submodules: true
     - name: Build
       run: docker build -f ${{ matrix.dockerfile }} .

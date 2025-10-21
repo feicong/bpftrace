@@ -79,14 +79,18 @@ EXPECT 12
 AFTER ./testprogs/simple_struct
 
 NAME array in tuple
-PROG struct A { int x[4]; } u:./testprogs/array_access:test_struct { @t = (1, ((struct A *)arg0)->x); exit(); }
+PROG struct A { int x[4]; } u:./testprogs/array_access:test_struct { @t = (1, ((struct A *)arg0).x); exit(); }
 EXPECT @t: (1, [1,2,3,4])
 AFTER ./testprogs/array_access
 
 NAME array in tuple sizing
-PROG struct A { int x[4]; } u:./testprogs/array_access:test_struct { $t = ((int32)1, ((struct A *)arg0)->x); print(sizeof($t)); exit(); }
+PROG struct A { int x[4]; } u:./testprogs/array_access:test_struct { $t = ((int32)1, ((struct A *)arg0).x); print(sizeof($t)); exit(); }
 EXPECT 20
 AFTER ./testprogs/array_access
+
+NAME array-style tuple access
+PROG begin{ $a = (1, 2, 3); print($a[1 + 1]); }
+EXPECT 3
 
 NAME nested tuple
 PROG begin{ @ = ((int8)1, ((int8)-20, (int8)30)); exit(); }
@@ -121,3 +125,13 @@ EXPECT Attached 1 probe
 NAME kstack in tuple
 PROG begin { print((kstack, "a"));  }
 EXPECT Attached 1 probe
+
+NAME tuple binop equals
+PROG begin { $x = ("hello", -6); $y = ("hello", -6); $a = (1, true, $x); @b = (1, true, $y); if ($a == @b) { printf("ok\n"); } if ($a == (1, true, ("ello", -6))) { printf("nok\n"); } }
+EXPECT ok
+EXPECT_NONE nok
+
+NAME tuple binop not equals
+PROG begin { $x = ("hello", -6); $y = ("hello", -6); $a = (1, true, $x); @b = (1, true, $y); if ($a != @b) { printf("nok\n"); } if ($a != (1, true, ("ello", -6))) { printf("ok\n"); } }
+EXPECT ok
+EXPECT_NONE nok

@@ -49,9 +49,8 @@ BpfBytecode::BpfBytecode(std::span<const std::byte> elf)
   else if (bt_verbose)
     log_level = 1;
 
-  BPFTRACE_LIBBPF_OPTS(bpf_object_open_opts,
-                       opts,
-                       .kernel_log_level = static_cast<__u32>(log_level));
+  DECLARE_LIBBPF_OPTS(bpf_object_open_opts, opts);
+  opts.kernel_log_level = static_cast<__u32>(log_level);
 
   bpf_object_ = std::unique_ptr<struct bpf_object, bpf_object_deleter>(
       bpf_object__open_mem(elf.data(), elf.size(), &opts));
@@ -83,19 +82,8 @@ BpfBytecode::BpfBytecode(std::span<const std::byte> elf)
 
 const BpfProgram &BpfBytecode::getProgramForProbe(const Probe &probe) const
 {
-  auto usdt_location_idx = (probe.type == ProbeType::usdt)
-                               ? std::make_optional<int>(
-                                     probe.usdt_location_idx)
-                               : std::nullopt;
-
-  auto prog = programs_.find(util::get_function_name_for_probe(
-      probe.name, probe.index, usdt_location_idx));
-  if (prog == programs_.end()) {
-    prog = programs_.find(util::get_function_name_for_probe(probe.orig_name,
-                                                            probe.index,
-                                                            usdt_location_idx));
-  }
-
+  auto prog = programs_.find(
+      util::get_function_name_for_probe(probe.name, probe.index));
   if (prog == programs_.end()) {
     std::stringstream msg;
     if (probe.name != probe.orig_name)
@@ -182,7 +170,7 @@ void maybe_throw_helper_verifier_error(std::string_view log,
 
   std::string msg = std::string{ "helper " } + helper_name +
                     exception_msg_suffix;
-  throw HelperVerifierError(msg, static_cast<libbpf::bpf_func_id>(func_id));
+  throw HelperVerifierError(msg, static_cast<bpf_func_id>(func_id));
 }
 
 // The log should end with line:
@@ -258,17 +246,6 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
           log,
           "pointer arithmetic on ptr_or_null_ prohibited, null-check it first",
           ": result needs to be null-checked before accessing fields");
-
-      auto err_pos = log.find("from non-GPL compatible program");
-      if (err_pos != std::string_view::npos) {
-        LOG(ERROR) << "Your bpftrace program cannot load because you are using "
-                      "a license that is non-GPL compatible. License: "
-                   << config.license;
-        LOG(HINT)
-            << "Read more about BPF programs and licensing: "
-               "https://docs.kernel.org/bpf/"
-               "bpf_licensing.html#using-bpf-programs-in-the-linux-kernel";
-      }
 
       std::stringstream errmsg;
       errmsg << "Error loading BPF program for " << name << ".";

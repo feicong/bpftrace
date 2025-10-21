@@ -161,7 +161,7 @@ void setup_mock_bpftrace(MockBPFtrace &bpftrace)
 
   // Even though this is set to 1 by default, make it 0 here
   // to reduce the amount of repeated generated IR in the codegen tests
-  bpftrace.helper_check_level_ = 0;
+  bpftrace.warning_level_ = 0;
 }
 
 std::unique_ptr<MockBPFtrace> get_mock_bpftrace()
@@ -192,27 +192,6 @@ std::unique_ptr<MockBPFtrace> get_strict_mock_bpftrace()
   bpftrace->feature_ = std::make_unique<MockBPFfeature>(true);
 
   return bpftrace;
-}
-
-std::unique_ptr<MockUSDTHelper> get_mock_usdt_helper(int num_locations)
-{
-  auto usdt_helper = std::make_unique<NiceMock<MockUSDTHelper>>();
-
-  ON_CALL(*usdt_helper, find(_, _, _, _))
-      .WillByDefault([num_locations](std::optional<int>,
-                                     const std::string &,
-                                     const std::string &,
-                                     const std::string &) {
-        return usdt_probe_entry{
-          .path = "",
-          .provider = "",
-          .name = "",
-          .semaphore_offset = 0,
-          .num_locations = num_locations,
-        };
-      });
-
-  return usdt_helper;
 }
 
 } // namespace bpftrace::test

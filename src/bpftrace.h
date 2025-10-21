@@ -15,8 +15,8 @@
 
 #include "ast/ast.h"
 #include "ast/pass_manager.h"
+#include "ast/passes/ap_probe_expansion.h"
 #include "ast/passes/clang_parser.h"
-#include "ast/passes/probe_expansion.h"
 #include "attached_probe.h"
 #include "bpfbytecode.h"
 #include "bpffeature.h"
@@ -117,8 +117,7 @@ public:
   virtual int add_probe(const ast::AttachPoint &ap,
                         const ast::Probe &p,
                         ast::ExpansionType expansion,
-                        std::set<std::string> expanded_funcs,
-                        int usdt_location_idx = 0);
+                        std::set<std::string> expanded_funcs);
   Probe generateWatchpointSetupProbe(const ast::AttachPoint &ap,
                                      const ast::Probe &probe);
   int num_probes() const;
@@ -174,6 +173,11 @@ public:
   virtual std::unordered_set<std::string> get_raw_tracepoint_modules(
       const std::string &name) const;
   virtual const std::optional<struct stat> &get_pidns_self_stat() const;
+  // This gets the number of perf or ring buffer pages in total across all cpus by first checking if the
+  // user set this manually with a config value (`perf_rb_pages`), then falling
+  // back to a dynamic default based on the amount of available system memory
+  virtual Result<uint64_t> get_buffer_pages(bool per_cpu = false) const;
+  Result<uint64_t> get_buffer_pages_per_cpu() const;
 
   bool write_pcaps(uint64_t id, uint64_t ns, const OpaqueValue &pkt);
   void parse_module_btf(const std::set<std::string> &modules);
@@ -194,7 +198,7 @@ public:
   StructManager structs;
   FunctionRegistry functions;
   // For each helper, list of all generated call sites.
-  std::map<libbpf::bpf_func_id, std::vector<RuntimeErrorInfo>> helper_use_loc_;
+  std::map<bpf_func_id, std::vector<RuntimeErrorInfo>> helper_use_loc_;
   const util::FuncsModulesMap &get_traceable_funcs() const;
   const util::FuncsModulesMap &get_raw_tracepoints() const;
   util::KConfig kconfig;
@@ -210,8 +214,7 @@ public:
   bool safe_mode_ = true;
   bool has_usdt_ = false;
   bool usdt_file_activation_ = false;
-  int helper_check_level_ = 1;
-  uint64_t max_ast_nodes_ = std::numeric_limits<uint64_t>::max();
+  int warning_level_ = 1;
   bool debug_output_ = false;
   std::optional<struct timespec> boottime_;
   std::optional<struct timespec> delta_taitime_;
@@ -230,7 +233,6 @@ public:
     return std::nullopt;
   }
   int ncpus_;
-  int online_cpus_;
   int max_cpu_id_;
   std::unique_ptr<Config> config_;
   bool run_benchmarks_ = false;
@@ -241,7 +243,6 @@ private:
   Usyms usyms_;
   std::vector<std::string> params_;
 
-  std::vector<std::unique_ptr<void, void (*)(void *)>> open_perf_buffers_;
   std::map<std::string, std::unique_ptr<PCAPwriter>> pcap_writers_;
 
   int create_pcaps();
@@ -261,18 +262,16 @@ private:
                                               bool show_debug_info);
   void teardown_output();
   void poll_output(output::Output &out, bool drain = false);
-  int poll_skboutput_events();
   void poll_event_loss(output::Output &out);
   static uint64_t read_address_from_output(std::string output);
   struct bcc_symbol_option &get_symbol_opts();
   Probe generate_probe(const ast::AttachPoint &ap,
                        const ast::Probe &p,
                        ast::ExpansionType expansion,
-                       std::set<std::string> expanded_funcs,
-                       int usdt_location_idx = 0);
+                       std::set<std::string> expanded_funcs);
   bool has_iter_ = false;
-  int epollfd_ = -1;
   struct ring_buffer *ringbuf_ = nullptr;
+  struct perf_buffer *skb_perfbuf_ = nullptr;
   uint64_t event_loss_count_ = 0;
 
   // Mapping traceable functions to modules (or "vmlinux") they appear in.

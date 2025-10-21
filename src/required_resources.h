@@ -27,14 +27,20 @@ static const auto DIVIDE_BY_ZERO_MSG =
     "Divide or modulo by 0 detected. This can lead to unexpected "
     "results. 1 is being used as the result.";
 
+static const auto ARRAY_ACCESS_OOB_MSG =
+    "Array access out of bounds. This can lead to unexpected "
+    "results.";
+
 enum class RuntimeErrorId {
   DIVIDE_BY_ZERO,
   HELPER_ERROR,
+  ARRAY_ACCESS_OOB,
 };
 
 enum class PrintfSeverity {
   NONE,
   ERROR,
+  WARNING,
 };
 
 struct SourceLocation {
@@ -93,22 +99,21 @@ public:
   // are needed to emit the error in a useful way. This is because it may be
   // serialized and used by a separate runtime.
   RuntimeErrorInfo(RuntimeErrorId error_id,
-                   libbpf::bpf_func_id func_id,
+                   bpf_func_id func_id,
                    const ast::Location &loc)
       : SourceInfo(loc), error_id(error_id), func_id(func_id)
   {
   }
 
   RuntimeErrorInfo(RuntimeErrorId error_id, const ast::Location &loc)
-      : RuntimeErrorInfo(error_id, static_cast<libbpf::bpf_func_id>(-1), loc) {
-        };
+      : RuntimeErrorInfo(error_id, __BPF_FUNC_MAX_ID, loc) {};
 
   RuntimeErrorInfo()
       : error_id(RuntimeErrorId::HELPER_ERROR),
-        func_id(static_cast<libbpf::bpf_func_id>(-1)) {};
+        func_id(__BPF_FUNC_MAX_ID) {};
 
   RuntimeErrorId error_id;
-  libbpf::bpf_func_id func_id;
+  bpf_func_id func_id;
 
 private:
   friend class cereal::access;
@@ -204,6 +209,10 @@ public:
   std::vector<Probe> benchmark_probes;
   std::vector<Probe> signal_probes;
   std::vector<Probe> watchpoint_probes;
+
+  size_t num_probes() {
+    return probes.size() + special_probes.size() + benchmark_probes.size() + signal_probes.size() + watchpoint_probes.size();
+  }
 
   // List of probes using userspace symbol resolution
   std::unordered_set<const ast::Probe *> probes_using_usym;
