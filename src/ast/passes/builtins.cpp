@@ -4,7 +4,10 @@
 #include "ast/passes/builtins.h"
 #include "ast/signal_bt.h"
 #include "ast/visitor.h"
+#include "bpffeature.h"
 #include "bpftrace.h"
+#include "log.h"
+#include "util/paths.h"
 
 namespace bpftrace::ast {
 
@@ -43,27 +46,47 @@ std::optional<Expression> Builtins::check(const std::string &ident, Node &node)
   if (ident == "__builtin_arch") {
     std::stringstream ss;
     ss << bpftrace::arch::current();
-    return ast_.make_node<String>(ss.str(), Location(node.loc));
+    return ast_.make_node<String>(node.loc, ss.str());
   }
   if (ident == "__builtin_safe_mode") {
-    return ast_.make_node<Boolean>(bpftrace_.safe_mode_, Location(node.loc));
+    return ast_.make_node<Boolean>(node.loc, bpftrace_.safe_mode_);
   }
   if (ident == "__builtin_probe") {
     if (auto *probe = dynamic_cast<Probe *>(top_level_node_)) {
-      return ast_.make_node<String>(probe->attach_points.empty()
+      return ast_.make_node<String>(node.loc,
+                                    probe->attach_points.empty()
                                         ? "none"
-                                        : probe->attach_points.front()->name(),
-                                    Location(node.loc));
+                                        : probe->attach_points.front()->name());
     }
   }
   if (ident == "__builtin_probetype") {
     if (auto *probe = dynamic_cast<Probe *>(top_level_node_)) {
       return ast_.make_node<String>(
+          node.loc,
           probe->attach_points.empty()
               ? "none"
               : probetypeName(
-                    probetype(probe->attach_points.front()->provider)),
-          Location(node.loc));
+                    probetype(probe->attach_points.front()->provider)));
+    }
+  }
+  if (ident == "__builtin_elf_is_exe" || ident == "__builtin_elf_ino") {
+    auto *probe = dynamic_cast<Probe *>(top_level_node_);
+    if (!probe) {
+      return std::nullopt;
+    }
+    ProbeType type = probetype(probe->attach_points.front()->provider);
+    // Only for uprobe,uretprobe,USDT.
+    if (type != ProbeType::uprobe && type != ProbeType::uretprobe &&
+        type != ProbeType::usdt) {
+      LOG(BUG) << "The " << ident << " can not be used with '"
+               << probe->attach_points.front()->provider << "' probes";
+    }
+    if (ident == "__builtin_elf_is_exe") {
+      return ast_.make_node<Boolean>(
+          node.loc, util::is_exe(probe->attach_points.front()->target));
+    } else {
+      return ast_.make_node<Integer>(
+          node.loc, util::file_ino(probe->attach_points.front()->target));
     }
   }
   return std::nullopt;
@@ -81,8 +104,39 @@ std::optional<Expression> Builtins::visit(Call &call)
         if (signal_num < 1) {
           call.addError() << "Invalid string for signal: " << str->value;
         }
-        return ast_.make_node<Integer>(signal_num, Location(str->loc));
+        return ast_.make_node<Integer>(str->loc, signal_num);
       }
+    }
+  } else if (call.func == "__builtin_kfunc_exist") {
+    if (call.vargs.size() != 1 || !call.vargs.at(0).is<String>()) {
+      call.addError() << call.func << " expects 1 string literal argument";
+    } else {
+      auto *kfunc = call.vargs.at(0).as<String>();
+      return ast_.make_node<Boolean>(
+          kfunc->loc, bpftrace_.feature_->has_kfunc(kfunc->value));
+    }
+  } else if (call.func == "__builtin_kfunc_allowed") {
+    if (call.vargs.size() != 1 || !call.vargs.at(0).is<String>()) {
+      call.addError() << call.func << " expects 1 string literal argument";
+    } else {
+      auto *kfunc = call.vargs.at(0).as<String>();
+      auto *probe = dynamic_cast<Probe *>(top_level_node_);
+      if (!probe) {
+        LOG(BUG) << "Inner error: can't get probe for " << call.func;
+        return std::nullopt;
+      }
+      ProbeType type = probetype(probe->attach_points.front()->provider);
+      bpf_prog_type prog_type = progtype(type);
+      return ast_.make_node<Boolean>(
+          kfunc->loc,
+          bpftrace_.feature_->kfunc_allowed(kfunc->value.c_str(), prog_type));
+    }
+  } else if (call.func == "__builtin_is_literal") {
+    if (call.vargs.size() != 1) {
+      call.addError() << call.func << " expects 1 argument";
+    } else {
+      return ast_.make_node<Boolean>(call.vargs.at(0).loc(),
+                                     call.vargs.at(0).is_literal());
     }
   }
   return std::nullopt;

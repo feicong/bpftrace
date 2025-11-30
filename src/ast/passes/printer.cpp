@@ -14,7 +14,7 @@ std::string Printer::type(const SizedType &ty)
   if (ty.IsNoneTy())
     return "";
   std::stringstream buf;
-  buf << " :: [" << typestr(ty, true);
+  buf << " :: [" << typestr(ty);
   if (ty.IsCtxAccess())
     buf << ", ctx: 1";
   if (ty.GetAS() != AddrSpace::none)
@@ -26,14 +26,15 @@ std::string Printer::type(const SizedType &ty)
 void Printer::visit(Integer &integer)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << "int: " << integer.value << type(integer.integer_type)
+  out_ << indent << "int: " << integer.value << type(integer.type())
        << std::endl;
 }
 
 void Printer::visit(NegativeInteger &integer)
 {
   std::string indent(depth_, ' ');
-  out_ << indent << "negative int: " << integer.value << std::endl;
+  out_ << indent << "negative int: " << integer.value << type(integer.type())
+       << std::endl;
 }
 
 void Printer::visit(Boolean &boolean)
@@ -187,10 +188,10 @@ void Printer::visit(Map &map)
     out_ << " :: ";
   }
   if (!map.key_type.IsNoneTy()) {
-    out_ << "[" << typestr(map.key_type, true) << "]";
+    out_ << "[" << typestr(map.key_type) << "]";
   }
   if (!map.value_type.IsNoneTy()) {
-    out_ << typestr(map.value_type, true);
+    out_ << typestr(map.value_type);
   }
   out_ << std::endl;
 }
@@ -353,10 +354,7 @@ void Printer::visit(AssignMapStatement &assignment)
   out_ << indent << "=" << std::endl;
 
   ++depth_;
-  visit(assignment.map);
-  ++depth_;
-  visit(assignment.key);
-  --depth_;
+  visit(assignment.map_access);
   visit(assignment.expr);
   --depth_;
 }

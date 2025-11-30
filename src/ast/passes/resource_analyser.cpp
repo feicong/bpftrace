@@ -191,27 +191,37 @@ void ResourceAnalyser::visit(Call &call)
     auto fmtstr = call.vargs.at(0).as<String>()->value;
     if (call.func == "printf") {
       if (probe_ != nullptr && probe_->get_probetype() == ProbeType::iter) {
+        resources_.bpf_print_fmts_id_map[&call] =
+            resources_.bpf_print_fmts.size();
         resources_.bpf_print_fmts.emplace_back(fmtstr);
       } else {
+        resources_.printf_args_id_map[&call] = resources_.printf_args.size();
         resources_.printf_args.emplace_back(
             fmtstr, tuple->fields, PrintfSeverity::NONE, SourceInfo(call.loc));
       }
     } else if (call.func == "errorf") {
+      resources_.printf_args_id_map[&call] = resources_.printf_args.size();
       resources_.printf_args.emplace_back(
           fmtstr, tuple->fields, PrintfSeverity::ERROR, SourceInfo(call.loc));
     } else if (call.func == "warnf") {
+      resources_.printf_args_id_map[&call] = resources_.printf_args.size();
       resources_.printf_args.emplace_back(
           fmtstr, tuple->fields, PrintfSeverity::WARNING, SourceInfo(call.loc));
     } else if (call.func == "debugf") {
+      resources_.bpf_print_fmts_id_map[&call] =
+          resources_.bpf_print_fmts.size();
       resources_.bpf_print_fmts.emplace_back(fmtstr);
     } else if (call.func == "system") {
+      resources_.system_args_id_map[&call] = resources_.system_args.size();
       resources_.system_args.emplace_back(fmtstr, tuple->fields);
     } else {
+      resources_.cat_args_id_map[&call] = resources_.cat_args.size();
       resources_.cat_args.emplace_back(fmtstr, tuple->fields);
     }
   } else if (call.func == "join") {
     auto delim = call.vargs.size() > 1 ? call.vargs.at(1).as<String>()->value
                                        : " ";
+    resources_.join_args_id_map[&call] = resources_.join_args.size();
     resources_.join_args.push_back(delim);
   } else if (call.func == "count" || call.func == "sum" || call.func == "min" ||
              call.func == "max" || call.func == "avg") {
@@ -295,16 +305,20 @@ void ResourceAnalyser::visit(Call &call)
       call.addError() << "Different tseries bounds in a single map unsupported";
     }
   } else if (call.func == "time") {
+    resources_.time_args_id_map[&call] = resources_.time_args.size();
     if (!call.vargs.empty())
       resources_.time_args.push_back(call.vargs.at(0).as<String>()->value);
     else
       resources_.time_args.emplace_back("%H:%M:%S\n");
   } else if (call.func == "strftime") {
+    resources_.strftime_args_id_map[&call] = resources_.strftime_args.size();
     resources_.strftime_args.push_back(call.vargs.at(0).as<String>()->value);
   } else if (call.func == "print") {
     constexpr auto nonmap_headroom = sizeof(AsyncEvent::PrintNonMap);
     auto &arg = call.vargs.at(0);
     if (!arg.is<Map>()) {
+      resources_.non_map_print_args_id_map[&call] =
+          resources_.non_map_print_args.size();
       resources_.non_map_print_args.push_back(arg.type());
       const size_t fmtstring_args_size = nonmap_headroom + arg.type().GetSize();
       if (exceeds_stack_limit(fmtstring_args_size)) {
@@ -313,24 +327,20 @@ void ResourceAnalyser::visit(Call &call)
       }
     }
   } else if (call.func == "cgroup_path") {
+    resources_.cgroup_path_args_id_map[&call] =
+        resources_.cgroup_path_args.size();
     if (call.vargs.size() > 1)
       resources_.cgroup_path_args.push_back(
           call.vargs.at(1).as<String>()->value);
     else
       resources_.cgroup_path_args.emplace_back("*");
   } else if (call.func == "skboutput") {
+    resources_.skboutput_args_id_map[&call] = resources_.skboutput_args_.size();
     const auto &file = call.vargs.at(0).as<String>()->value;
     const auto &offset = call.vargs.at(3).as<Integer>()->value;
 
     resources_.skboutput_args_.emplace_back(file, offset);
     resources_.using_skboutput = true;
-  } else if (call.func == "delete") {
-    auto &arg0 = call.vargs.at(0);
-    auto &map = *arg0.as<Map>();
-    if (exceeds_stack_limit(map.value_type.GetSize())) {
-      resources_.max_write_map_value_size = std::max(
-          resources_.max_write_map_value_size, map.value_type.GetSize());
-    }
   }
 
   if (call.func == "print" || call.func == "clear" || call.func == "zero") {
@@ -354,8 +364,7 @@ void ResourceAnalyser::visit(Call &call)
   // a slightly different type due to type promotion in an earlier pass.
   // This requires us to allocate a new map key (or create a scratch buffer)
   // and copy individual elements of the tuple instead of the whole thing.
-  if (getAssignRewriteFuncs().contains(call.func) || call.func == "delete" ||
-      call.func == "has_key") {
+  if (getAssignRewriteFuncs().contains(call.func)) {
     if (call.func == "lhist" || call.func == "hist" || call.func == "tseries") {
       auto &map = *call.vargs.at(0).as<Map>();
       // Allocation is always needed for lhist/hist/tseries but we need to
@@ -468,20 +477,21 @@ void ResourceAnalyser::visit(AssignMapStatement &assignment)
   // an additional read map buffer. Thus to mimic CodegenLLVM, we
   // skip calling ResourceAnalser::visit(a.map) and do the AST traversal
   // ourselves.
-  visit(assignment.map);
-  visit(assignment.key);
+  visit(assignment.map_access->map);
+  visit(assignment.map_access->key);
   visit(assignment.expr);
 
   // The `MapAccess` validated the read limit, we know this to be
   // a write, so we validate the write limit.
   if (needAssignMapStatementAllocation(assignment)) {
-    if (exceeds_stack_limit(assignment.map->value_type.GetSize())) {
+    if (exceeds_stack_limit(assignment.map_access->map->value_type.GetSize())) {
       resources_.max_write_map_value_size = std::max(
           resources_.max_write_map_value_size,
-          assignment.map->value_type.GetSize());
+          assignment.map_access->map->value_type.GetSize());
     }
   }
-  maybe_allocate_map_key_buffer(*assignment.map, assignment.key);
+  maybe_allocate_map_key_buffer(*assignment.map_access->map,
+                                assignment.map_access->key);
 }
 
 void ResourceAnalyser::visit(IfExpr &if_expr)
@@ -550,8 +560,7 @@ void ResourceAnalyser::update_map_info(Map &map)
     map_info.bpf_type = decl->second.first;
     map_info.max_entries = decl->second.second;
   } else {
-    map_info.bpf_type = get_bpf_map_type(map_info.value_type,
-                                         map_info.is_scalar);
+    map_info.bpf_type = get_bpf_map_type(map_info.value_type);
     // hist() and lhist() transparently create additional elements in whatever
     // map they are assigned to. So even if the map looks like it has no keys,
     // multiple keys are necessary.
@@ -567,8 +576,7 @@ void ResourceAnalyser::maybe_allocate_map_key_buffer(const Map &map,
                                                      const Expression &key_expr)
 {
   const auto map_key_size = map.key_type.GetSize();
-  if (needMapKeyAllocation(map, key_expr) &&
-      exceeds_stack_limit(map_key_size)) {
+  if (needMapKeyAllocation(key_expr) && exceeds_stack_limit(map_key_size)) {
     resources_.map_key_buffers++;
     resources_.max_map_key_size = std::max(resources_.max_map_key_size,
                                            map_key_size);

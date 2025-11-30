@@ -31,7 +31,8 @@ void test(BPFtrace &bpftrace, const std::string &input, bool ok = true)
                     .add(ast::CreateFieldAnalyserPass())
                     .run();
   ASSERT_TRUE(bool(result)) << msg.str();
-  EXPECT_EQ(ast.diagnostics().ok(), ok);
+  ast.diagnostics().emit(msg);
+  EXPECT_EQ(ast.diagnostics().ok(), ok) << msg.str();
 }
 
 void test(const std::string &input, bool ok = true)
@@ -124,10 +125,11 @@ TEST_F(field_analyser_btf, btf_arrays)
   ASSERT_TRUE(bpftrace->structs.Has("struct Arrays"));
   auto arrs = bpftrace->structs.Lookup("struct Arrays").lock();
 
-  EXPECT_EQ(arrs->size, 64);
-  ASSERT_EQ(arrs->fields.size(), 6U);
+  EXPECT_EQ(arrs->size, 80);
+  ASSERT_EQ(arrs->fields.size(), 7U);
   ASSERT_TRUE(arrs->HasField("int_arr"));
   ASSERT_TRUE(arrs->HasField("char_arr"));
+  ASSERT_TRUE(arrs->HasField("char_arr2"));
   ASSERT_TRUE(arrs->HasField("ptr_arr"));
   ASSERT_TRUE(arrs->HasField("multi_dim"));
   ASSERT_TRUE(arrs->HasField("zero"));
@@ -139,19 +141,22 @@ TEST_F(field_analyser_btf, btf_arrays)
   EXPECT_EQ(arrs->GetField("int_arr").type.GetSize(), 16U);
   EXPECT_EQ(arrs->GetField("int_arr").offset, 0);
 
-  // See type construction in btf.cpp; for fixed sized fields our string type
-  // has an extra character because we need to be able to signal that it is
-  // well-formed (including the NUL), even if the field itself contains no NUL
-  // character, because the field has a known fixed size.
-  EXPECT_TRUE(arrs->GetField("char_arr").type.IsStringTy());
-  EXPECT_EQ(arrs->GetField("char_arr").type.GetSize(), 8U + 1U);
+  EXPECT_TRUE(arrs->GetField("char_arr").type.IsArrayTy());
+  EXPECT_EQ(arrs->GetField("char_arr").type.GetNumElements(), 8);
+  EXPECT_EQ(arrs->GetField("char_arr").type.GetSize(), 8);
   EXPECT_EQ(arrs->GetField("char_arr").offset, 16);
 
+  EXPECT_TRUE(arrs->GetField("char_arr2").type.IsArrayTy());
+  EXPECT_EQ(arrs->GetField("char_arr2").type.GetNumElements(), 16);
+  EXPECT_EQ(arrs->GetField("char_arr2").type.GetSize(), 16);
+  EXPECT_EQ(arrs->GetField("char_arr2").offset, 24);
+
+  EXPECT_TRUE(arrs->GetField("ptr_arr").type.IsArrayTy());
   EXPECT_TRUE(arrs->GetField("ptr_arr").type.IsArrayTy());
   EXPECT_EQ(arrs->GetField("ptr_arr").type.GetNumElements(), 2);
   EXPECT_TRUE(arrs->GetField("ptr_arr").type.GetElementTy()->IsPtrTy());
   EXPECT_EQ(arrs->GetField("ptr_arr").type.GetSize(), 2 * sizeof(uintptr_t));
-  EXPECT_EQ(arrs->GetField("ptr_arr").offset, 24);
+  EXPECT_EQ(arrs->GetField("ptr_arr").offset, 40);
 
   // BTF flattens multi-dimensional arrays, so this test doesn't
   // check the correct number of elements. The correct values are
@@ -160,19 +165,19 @@ TEST_F(field_analyser_btf, btf_arrays)
   EXPECT_EQ(arrs->GetField("multi_dim").type.GetNumElements(), 6);
   EXPECT_TRUE(arrs->GetField("multi_dim").type.GetElementTy()->IsIntTy());
   EXPECT_EQ(arrs->GetField("multi_dim").type.GetSize(), 24U);
-  EXPECT_EQ(arrs->GetField("multi_dim").offset, 40);
+  EXPECT_EQ(arrs->GetField("multi_dim").offset, 56);
 
   EXPECT_TRUE(arrs->GetField("zero").type.IsArrayTy());
   EXPECT_EQ(arrs->GetField("zero").type.GetNumElements(), 0);
   EXPECT_TRUE(arrs->GetField("zero").type.GetElementTy()->IsIntTy());
   EXPECT_EQ(arrs->GetField("zero").type.GetSize(), 0U);
-  EXPECT_EQ(arrs->GetField("zero").offset, 64);
+  EXPECT_EQ(arrs->GetField("zero").offset, 80);
 
   EXPECT_TRUE(arrs->GetField("flexible").type.IsArrayTy());
   EXPECT_EQ(arrs->GetField("flexible").type.GetNumElements(), 0);
   EXPECT_TRUE(arrs->GetField("flexible").type.GetElementTy()->IsIntTy());
   EXPECT_EQ(arrs->GetField("flexible").type.GetSize(), 0U);
-  EXPECT_EQ(arrs->GetField("flexible").offset, 64);
+  EXPECT_EQ(arrs->GetField("flexible").offset, 80);
 }
 
 // Disabled because BTF flattens multi-dimensional arrays #3082.
@@ -300,6 +305,45 @@ TEST_F(field_analyser_btf, btf_types_arr_access)
   ASSERT_EQ(foo2->fields.size(), 0U); // fields are not resolved
   EXPECT_EQ(foo3->size, 16);
   ASSERT_EQ(foo3->fields.size(), 2U); // fields are resolved
+}
+
+TEST_F(field_analyser_btf, btf_types_anon_structs)
+{
+  auto bpftrace = get_mock_bpftrace();
+  test(*bpftrace,
+       "fentry:func_anon_struct {\n"
+       "  @ = args.AnonStruct->AnonArray[0];\n"
+       "}");
+
+  ASSERT_TRUE(bpftrace->structs.Has("struct anon_structs"));
+  auto anonstruct = bpftrace->structs.Lookup("struct anon_structs").lock();
+
+  ASSERT_TRUE(anonstruct->HasField("AnonTypedefArray"));
+  auto typedefarray = anonstruct->GetField("AnonTypedefArray").type;
+  EXPECT_TRUE(typedefarray.IsArrayTy());
+  EXPECT_EQ(typedefarray.GetNumElements(), 8);
+  EXPECT_EQ(typedefarray.GetSize(), 32);
+  EXPECT_TRUE(typedefarray.GetElementTy()->IsRecordTy());
+  EXPECT_TRUE(typedefarray.GetElementTy()->IsAnonTy());
+  EXPECT_TRUE(typedefarray.GetElementTy()->HasField("a"));
+
+  ASSERT_TRUE(anonstruct->HasField("AnonArray"));
+  auto structarray = anonstruct->GetField("AnonArray").type;
+  EXPECT_TRUE(typedefarray.IsArrayTy());
+  EXPECT_EQ(structarray.GetSize(), 96);
+  EXPECT_EQ(structarray.GetNumElements(), 4);
+  EXPECT_TRUE(structarray.GetElementTy()->IsRecordTy());
+  EXPECT_TRUE(structarray.GetElementTy()->IsAnonTy());
+  EXPECT_TRUE(structarray.GetElementTy()->HasField("a"));
+  EXPECT_TRUE(structarray.GetElementTy()->HasField("b"));
+
+  ASSERT_TRUE(structarray.GetElementTy()->HasField("AnonSubArray"));
+  auto subarray = structarray.GetElementTy()->GetField("AnonSubArray").type;
+  EXPECT_EQ(subarray.GetNumElements(), 2);
+  EXPECT_TRUE(subarray.GetElementTy()->IsRecordTy());
+  EXPECT_TRUE(subarray.GetElementTy()->IsAnonTy());
+  EXPECT_TRUE(subarray.GetElementTy()->HasField("c"));
+  EXPECT_TRUE(subarray.GetElementTy()->HasField("d"));
 }
 
 TEST_F(field_analyser_btf, btf_types_bitfields)

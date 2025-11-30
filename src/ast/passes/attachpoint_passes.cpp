@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <bcc/bcc_proc.h>
 #include <cctype>
-#include <exception>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -12,7 +11,6 @@
 #include "ast/helpers.h"
 #include "ast/passes/attachpoint_passes.h"
 #include "ast/visitor.h"
-#include "types.h"
 #include "util/int_parser.h"
 #include "util/paths.h"
 #include "util/strings.h"
@@ -23,25 +21,19 @@ namespace bpftrace::ast {
 
 class AttachPointChecker : public Visitor<AttachPointChecker> {
 public:
-  explicit AttachPointChecker(ASTContext &ast,
-                              BPFtrace &bpftrace,
+  explicit AttachPointChecker(BPFtrace &bpftrace,
                               bool listing,
                               bool has_child = true)
-      : ast_(ast),
-        bpftrace_(bpftrace),
-        listing_(listing),
-        has_child_(has_child) {};
+      : bpftrace_(bpftrace), listing_(listing), has_child_(has_child) {};
 
   using Visitor<AttachPointChecker>::visit;
   void visit(AttachPoint &ap);
 
 private:
-  ASTContext &ast_;
   BPFtrace &bpftrace_;
   bool listing_;
-  bool has_begin_probe_ = false;
-  bool has_end_probe_ = false;
   bool has_child_ = false;
+  std::unordered_map<std::string, Location> test_locs_;
   std::unordered_map<std::string, Location> benchmark_locs_;
 };
 
@@ -275,17 +267,8 @@ void AttachPointChecker::visit(AttachPoint &ap)
     else if (ap.freq < 0)
       ap.addError() << "hardware frequency should be a positive integer";
   } else if (ap.provider == "begin" || ap.provider == "end") {
-    if (!ap.target.empty() || !ap.func.empty())
+    if (!ap.target.empty() || !ap.func.empty()) {
       ap.addError() << "begin/end probes should not have a target";
-    if (ap.provider == "begin") {
-      if (has_begin_probe_)
-        ap.addError() << "More than one begin probe defined";
-      has_begin_probe_ = true;
-    }
-    if (ap.provider == "end") {
-      if (has_end_probe_)
-        ap.addError() << "More than one end probe defined";
-      has_end_probe_ = true;
     }
   } else if (ap.provider == "self") {
     if (ap.target == "signal") {
@@ -294,6 +277,19 @@ void AttachPointChecker::visit(AttachPoint &ap)
       return;
     }
     ap.addError() << ap.target << " is not a supported trigger";
+  } else if (ap.provider == "test") {
+    if (ap.target.empty())
+      ap.addError() << "test probes must have a name";
+    auto it = test_locs_.find(ap.target);
+
+    if (it != test_locs_.end()) {
+      auto &err = ap.addError();
+      err << "\"" + ap.target + "\""
+          << " was used as the name for more than one TEST probe";
+      err.addContext(it->second) << "this is the other instance";
+    }
+
+    test_locs_.emplace(ap.target, ap.loc);
   } else if (ap.provider == "bench") {
     if (ap.target.empty())
       ap.addError() << "bench probes must have a name";
@@ -410,16 +406,25 @@ AttachPointParser::State AttachPointParser::parse_attachpoint(AttachPoint &ap)
     return INVALID;
   }
 
-  if (parts_.front().empty()) {
+  auto &front = parts_.front();
+  if (front.empty()) {
     // Do not fail on empty attach point, could be just a trailing comma
     ap_->provider = "";
     return OK;
   }
 
+  // First, if there is a '=' in the provider, then this is treated
+  // as a deliminator for the user-provided name.
+  auto pos = front.find('=');
+  if (pos != std::string::npos && pos != front.size() - 1) {
+    ap.user_provided_name.emplace(front.substr(0, pos));
+    front = front.substr(pos + 1);
+  }
+
   std::set<std::string> probe_types;
-  if (util::has_wildcard(parts_.front())) {
+  if (util::has_wildcard(front)) {
     // Single argument listing looks at all relevant probe types
-    std::string probetype_query = (parts_.size() == 1) ? "*" : parts_.front();
+    std::string probetype_query = (parts_.size() == 1) ? "*" : front;
 
     // Probe type expansion
     // If PID is specified or the second part of the attach point is a path
@@ -434,13 +439,13 @@ AttachPointParser::State AttachPointParser::parse_attachpoint(AttachPoint &ap)
           probetype_query);
     }
   } else
-    probe_types = { parts_.front() };
+    probe_types = { front };
 
   if (probe_types.empty()) {
-    if (util::has_wildcard(parts_.front()))
-      errs_ << "No probe type matched for " << parts_.front() << std::endl;
+    if (util::has_wildcard(front))
+      errs_ << "No probe type matched for " << front << std::endl;
     else
-      errs_ << "Invalid probe type: " << parts_.front() << std::endl;
+      errs_ << "Invalid probe type: " << front << std::endl;
     return INVALID;
   } else if (probe_types.size() > 1) {
     // If the probe type string matches more than 1 probe, create a new set of
@@ -454,7 +459,7 @@ AttachPointParser::State AttachPointParser::parse_attachpoint(AttachPoint &ap)
       // which raw_input has invalid number of parts will be ignored (instead
       // of throwing an error). These will have the same associated location.
       new_attach_points.push_back(
-          ctx_.make_node<AttachPoint>(raw_input, true, Location(ap.loc)));
+          ctx_.make_node<AttachPoint>(ap.loc, raw_input, true));
     }
     return NEW_APS;
   }
@@ -464,6 +469,8 @@ AttachPointParser::State AttachPointParser::parse_attachpoint(AttachPoint &ap)
   switch (probetype(ap.provider)) {
     case ProbeType::special:
       return special_parser();
+    case ProbeType::test:
+      return test_parser();
     case ProbeType::benchmark:
       return benchmark_parser();
     case ProbeType::kprobe:
@@ -597,19 +604,27 @@ AttachPointParser::State AttachPointParser::special_parser()
   return OK;
 }
 
+AttachPointParser::State AttachPointParser::test_parser()
+{
+  // Can only have reached here if provider is `test`
+  assert(ap_->provider == "test");
+  if (parts_.size() != 2) {
+    return argument_count_error(1);
+  }
+
+  ap_->target = parts_[1];
+  return OK;
+}
+
 AttachPointParser::State AttachPointParser::benchmark_parser()
 {
   // Can only have reached here if provider is `bench`
   assert(ap_->provider == "bench");
-
-  if (ap_->provider == "bench") {
-    if (parts_.size() != 2) {
-      return argument_count_error(1);
-    }
-
-    ap_->target = parts_[1];
+  if (parts_.size() != 2) {
+    return argument_count_error(1);
   }
 
+  ap_->target = parts_[1];
   return OK;
 }
 
@@ -680,8 +695,7 @@ AttachPointParser::State AttachPointParser::uprobe_parser(bool allow_offset,
       (parts_.size() == 2 ||
        (parts_.size() == 3 && is_supported_lang(parts_[1])))) {
     // For PID, the target may be skipped
-    if (parts_.size() == 2)
-      parts_.insert(parts_.begin() + 1, "");
+    parts_.insert(parts_.begin() + 1, "");
 
     auto target = util::get_pid_exe(*pid);
     parts_[1] = target ? util::path_for_pid_mountns(*pid, *target) : "";
@@ -1113,11 +1127,8 @@ Pass CreateCheckAttachpointsPass(bool listing)
 {
   return Pass::create("check-attachpoints",
                       [listing](ASTContext &ast, BPFtrace &b) {
-                        AttachPointChecker ap_checker(ast,
-                                                      b,
-                                                      listing,
-                                                      !b.cmd_.empty() ||
-                                                          b.child_ != nullptr);
+                        AttachPointChecker ap_checker(
+                            b, listing, !b.cmd_.empty() || b.child_ != nullptr);
                         ap_checker.visit(*ast.root);
                       });
 }

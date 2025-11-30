@@ -75,7 +75,7 @@ Value *IRBuilderBPF::CreateGetPid(const Location &loc, bool force_init)
         getInt64(pidns->st_dev), getInt64(pidns->st_ino), res, loc);
     Value *pid = CreateLoad(
         getInt32Ty(),
-        CreateGEP(BpfPidnsInfoType(), res, { getInt32(0), getInt32(0) }));
+        CreateGEP(BpfPidnsInfoType(), res, { getInt32(0), getInt32(1) }));
     CreateLifetimeEnd(res);
     return pid;
   }
@@ -96,7 +96,7 @@ Value *IRBuilderBPF::CreateGetTid(const Location &loc, bool force_init)
         getInt64(pidns->st_dev), getInt64(pidns->st_ino), res, loc);
     Value *tid = CreateLoad(
         getInt32Ty(),
-        CreateGEP(BpfPidnsInfoType(), res, { getInt32(0), getInt32(1) }));
+        CreateGEP(BpfPidnsInfoType(), res, { getInt32(0), getInt32(0) }));
     CreateLifetimeEnd(res);
     return tid;
   }
@@ -361,7 +361,7 @@ llvm::Type *IRBuilderBPF::GetType(const SizedType &stype)
     for (const auto &elem : stype.GetFields()) {
       const auto &elemtype = elem.type;
       llvm_elems.emplace_back(GetType(elemtype));
-      ty_name += typestr(elemtype, true) + "_";
+      ty_name += typestr(elemtype) + "_";
     }
     ty_name += "_tuple_t";
 
@@ -791,7 +791,7 @@ Value *IRBuilderBPF::CreateMapLookupElem(const std::string &map_name,
   if (needMemcpy(type))
     CreateMemcpyBPF(value, call, type.GetSize());
   else {
-    CreateStore(CreateLoad(getPtrTy(), call), value);
+    CreateStore(CreateLoad(GetType(type), call), value);
   }
   CreateBr(lookup_merge_block);
 
@@ -1139,31 +1139,6 @@ void IRBuilderBPF::CreateMapUpdateElem(const std::string &map_ident,
                               { map_ptr, key, val, flags_val },
                               "update_elem");
   CreateHelperErrorCond(call, BPF_FUNC_map_update_elem, loc);
-}
-
-CallInst *IRBuilderBPF::CreateMapDeleteElem(Map &map,
-                                            Value *key,
-                                            bool ret_val_discarded,
-                                            const Location &loc)
-{
-  assert(key->getType()->isPointerTy());
-  Value *map_ptr = GetMapVar(map.ident);
-
-  // long map_delete_elem(&map, &key)
-  // Return: 0 on success or negative error
-  FunctionType *delete_func_type = FunctionType::get(
-      getInt64Ty(), { map_ptr->getType(), key->getType() }, false);
-  PointerType *delete_func_ptr_type = PointerType::get(getContext(), 0);
-  Constant *delete_func = ConstantExpr::getCast(Instruction::IntToPtr,
-                                                getInt64(
-                                                    BPF_FUNC_map_delete_elem),
-                                                delete_func_ptr_type);
-  CallInst *call = createCall(
-      delete_func_type, delete_func, { map_ptr, key }, "delete_elem");
-  CreateHelperErrorCond(
-      call, BPF_FUNC_map_delete_elem, loc, !ret_val_discarded);
-
-  return call;
 }
 
 Value *IRBuilderBPF::CreateForRange(Value *iters,
@@ -1760,8 +1735,8 @@ llvm::Type *IRBuilderBPF::BpfPidnsInfoType()
 {
   return GetStructType("bpf_pidns_info",
                        {
-                           getInt32Ty(),
-                           getInt32Ty(),
+                           getInt32Ty(), // pid   (TID in userspace)
+                           getInt32Ty(), // tgid  (PID in userspace)
                        },
                        false);
 }
@@ -1887,7 +1862,7 @@ CallInst *IRBuilderBPF::CreatePerCpuPtr(Value *var,
   //    A pointer pointing to the kernel percpu variable on
   //    cpu, or NULL, if cpu is invalid.
   FunctionType *percpuptr_func_type = FunctionType::get(
-      getPtrTy(), { getPtrTy(), getInt64Ty() }, false);
+      getPtrTy(), { getPtrTy(), getInt32Ty() }, false);
   return CreateHelperCall(BPF_FUNC_per_cpu_ptr,
                           percpuptr_func_type,
                           { var, cpu },
@@ -2330,10 +2305,9 @@ void IRBuilderBPF::CreateRuntimeError(RuntimeErrorId rte_id,
 
 void IRBuilderBPF::CreateHelperErrorCond(Value *return_value,
                                          bpf_func_id func_id,
-                                         const Location &loc,
-                                         bool suppress_error)
+                                         const Location &loc)
 {
-  if (bpftrace_.warning_level_ == 0 || suppress_error ||
+  if (bpftrace_.warning_level_ == 0 ||
       (bpftrace_.warning_level_ == 1 && return_zero_if_err(func_id)))
     return;
 

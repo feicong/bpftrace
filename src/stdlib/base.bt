@@ -131,11 +131,40 @@ macro cgroup() {
 // ```
 
 // :variant string comm()
-// Name of the current thread
+// :variant string comm(uint32 pid)
+// Name of the current thread or the process with the specified PID
 //
 // This utilizes the BPF helper `get_current_comm`
 macro comm() {
   __builtin_comm
+}
+
+macro comm($pid) {
+    if comptime !is_integer($pid) {
+        fail("Only integer supported for comm()'s pid");
+    }
+
+    let $name : string[64];
+    if comptime kfunc_allowed("bpf_task_from_pid") {
+      let $ret = (int32)__bpf_task_comm_from_pid((int32)$pid, &$name);
+      // EOPNOTSUPP: Operation not supported
+      if ($ret == (int32)-95) {
+        warnf("'bpf_task_from_pid kfunc', which is used for getting the process comm, is not supported on your system.");
+        $name = "[unknown]";
+      // ESRCH: No such process
+      } else if ($ret == (int32)-3) {
+        warnf("No such process (pid=%d)", $pid);
+        $name = "N/A";
+      }
+    } else {
+      fail("Syntax comm(PID) is not supported in this probe type yet. Type: %s", probetype);
+    }
+    $name
+}
+
+macro comm(arg_pid) {
+    let $pid = arg_pid;
+    comm($pid)
 }
 
 // :variant uint32 cpid()
@@ -162,7 +191,6 @@ macro curtask() {
   __builtin_curtask
 }
 
-// :function delete
 // :variant bool delete(map m, mapkey k)
 // :deprecated_variant bool delete(mapkey k)
 //
@@ -206,6 +234,32 @@ macro curtask() {
 //     delete(@associative[1, 2]);
 // }
 // ```
+macro delete(@map, $key) {
+  check_key(@map, $key, "delete() with two arguments");
+  __delete((void *)&@map, (void *)&$key) == 0
+}
+
+macro delete(@map, key) {
+  check_key(@map, key, "delete() with two arguments");
+  let $key: typeof(@map) = key;
+  __delete((void *)&@map, (void *)&$key) == 0
+}
+
+macro delete(@map) {
+  if comptime !is_scalar(@map) {
+    fail("call to delete() with a single argument expects a map without explicit keys (scalar map)");
+    false
+  } else {
+    let $key: int64 = 0;
+    __delete((void *)&@map, (void *)&$key) == 0
+  }
+}
+
+macro delete(map_access) {
+  // This supports the deprecated delete API, e.g. `delete(@a[1])`
+  // which is handled in the map_sugar pass
+  __deprecated_delete(map_access)
+}
 
 // :variant uint64 elapsed()
 // ktime_get_ns - ktime_get_boot_ns
@@ -299,7 +353,6 @@ macro gid() {
   __builtin_gid
 }
 
-// :function has_key
 // :variant boolean has_key(map m, mapkey k)
 //
 // Return `true` if the key exists in this map.
@@ -319,6 +372,11 @@ macro gid() {
 //     }
 // }
 // ```
+macro has_key(@map, key) {
+  check_key(@map, key, "has_key()");
+  let $key: typeof(@map) = key;
+  __has_key((void *)&@map, (void *)&$key)
+}
 
 // :variant uint64 jiffies()
 // Jiffies of the kernel
@@ -493,6 +551,32 @@ macro len(e) {
 //  * SRC 18:C0:4D:08:2E:BB, DST 74:83:C2:7F:8C:FF
 //  */
 // ```
+
+// :variant int memcmp(left, right, uint64 count)
+// Compares the first 'count' bytes of two expressions.
+// 0 is returned if they are the same.
+// negative value if the first differing byte in left is less
+// than the corresponding byte in right.
+//
+macro memcmp($left, $right, count) {
+  __memcmp((void *)&$left, (void *)&$right, count)
+}
+
+macro memcmp($left, right, count) {
+   $right = right;
+   memcmp($left, $right, count)
+}
+
+macro memcmp(left, $right, count) {
+   $left = left;
+   memcmp($left, $right, count)
+}
+
+macro memcmp(left, right, count) {
+  $left = left;
+  $right = right;
+  memcmp($left, $right, count)
+}
 
 // :variant uint64 ncpus()
 // Number of CPUs
@@ -674,17 +758,32 @@ macro override(expr) {
 // * `pid(curr_ns)` - The process ID as seen from the PID namespace of bpftrace.
 // * `pid(init)` - The process ID as seen from the initial PID namespace.
 
+// :variant uint32 ppid()
 // :variant uint32 ppid(struct task_struct * task)
-// Get the pid of the parent process
+// Get the pid of the parent process for the passed task or the current task if called without arguments.
 macro ppid(task) {
     task->real_parent->pid
+}
+
+macro ppid() {
+    ppid(curtask)
+}
+
+// :variant string pcomm()
+// :variant string pcomm(struct task_struct * task)
+// Get the name of the process for the passed task or the current task if called without arguments. This is an alias for (task->group_leader->comm).
+macro pcomm(task) {
+    task->group_leader->comm
+}
+
+macro pcomm() {
+    pcomm(curtask)
 }
 
 // :function print
 // :variant void print(T val)
 //
 // **async**
-
 // :variant void print(T val)
 // :variant void print(@map)
 // :variant void print(@map, uint64 top)
@@ -902,13 +1001,6 @@ macro retval() {
 // $ ls
 // Trace/breakpoint trap (core dumped)
 // ```
-macro signal($var) {
-  if comptime (is_str($var)) {
-    fail("this first argument to signal() must be a string literal or a positive integer");
-  }
-  __signal($var, false);
-}
-
 macro signal(expr) {
   __signal(expr, false);
 }
@@ -925,13 +1017,6 @@ macro signal(expr) {
 // Send a signal to the thread being traced.
 // Use `signal` to send to the process being traced (any thread).
 // The signal can either be identified by name, e.g. `SIGSTOP` or by ID, e.g. `19` as found in `kill -l`.
-macro signal_thread($var) {
-  if comptime (is_str($var)) {
-    fail("this first argument to signal_thread() must be a string literal or a positive integer");
-  }
-  __signal($var, true);
-}
-
 macro signal_thread(expr) {
   __signal(expr, true);
 }
@@ -1033,7 +1118,7 @@ macro signal_thread(expr) {
 // The maximum string length is limited by the `BPFTRACE_MAX_STRLEN` env variable, unless `length` is specified and shorter than the maximum.
 // In case the string is longer than the specified length only `length - 1` bytes are copied and a NULL byte is appended at the end.
 //
-// When available (starting from kernel 5.5, see the `--info` flag) bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see [Address-spaces](./language.md#address-spaces) for more information.
+// bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see [Address-spaces](./language.md#address-spaces) for more information.
 
 // :function strftime
 // :variant timestamp strftime(const string fmt, int64 timestamp_ns)
@@ -1143,7 +1228,6 @@ macro signal_thread(expr) {
 //
 // bpftrace uses the `strftime(3)` function for formatting time and supports the same format specifiers.
 
-// :function uaddr
 // :variant T * uaddr(const string sym)
 //
 // **Supported probes**
@@ -1152,7 +1236,7 @@ macro signal_thread(expr) {
 // * uretprobes
 // * USDT
 //
-// ***Does not work with ASLR, see issue [#75](https://github.com/bpftrace/bpftrace/issues/75)***
+// If kernel supports task_vma open-coded iterator kfuncs (linux >= 6.7), uaddr() will correct the symbol addresses of PIE and dynamic libraries instead of directly using the symbol addresses in the ELF file, see https://github.com/torvalds/linux/commit/4ac454682158.
 //
 // The `uaddr` function returns the address of the specified symbol.
 // This lookup happens during program compilation and cannot be used dynamically.
@@ -1166,6 +1250,18 @@ macro signal_thread(expr) {
 //   printf("PS1: %s\n", str(*uaddr("ps1_prompt")));
 // }
 // ```
+macro uaddr(sym) {
+  let $addr = (uint64)__builtin_uaddr(sym);
+
+  // There are three types of ELF that use uprobe: PIE, EXEC, and dynamic
+  // libraries. Among them, PIE and dynamic libraries need to correct the
+  // symbol address according to the actual load address.
+  if comptime (!__builtin_elf_is_exe) {
+    $offset = (uint64)__bpf_task_map_file_min_addr((uint64)__builtin_elf_ino);
+    $addr += $offset;
+  }
+  $addr
+}
 
 // :variant uint64 uid()
 // User ID of the current thread, as seen from the init namespace

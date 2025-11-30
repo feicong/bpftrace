@@ -48,6 +48,7 @@ bpf_probe_attach_type attachtype(ProbeType t)
     case ProbeType::kprobe:    return BPF_PROBE_ENTRY;  break;
     case ProbeType::kretprobe: return BPF_PROBE_RETURN; break;
     case ProbeType::special:   return BPF_PROBE_ENTRY;  break;
+    case ProbeType::test:      return BPF_PROBE_ENTRY;  break;
     case ProbeType::benchmark: return BPF_PROBE_ENTRY;  break;
     case ProbeType::uprobe:    return BPF_PROBE_ENTRY;  break;
     case ProbeType::uretprobe: return BPF_PROBE_RETURN; break;
@@ -63,6 +64,7 @@ bpf_prog_type progtype(ProbeType t)
   switch (t) {
       // clang-format off
     case ProbeType::special:    return BPF_PROG_TYPE_RAW_TRACEPOINT; break;
+    case ProbeType::test:       return BPF_PROG_TYPE_XDP; break;
     case ProbeType::benchmark:  return BPF_PROG_TYPE_XDP; break;
     case ProbeType::kprobe:     return BPF_PROG_TYPE_KPROBE; break;
     case ProbeType::kretprobe:  return BPF_PROG_TYPE_KPROBE; break;
@@ -321,16 +323,9 @@ Result<uint64_t> resolve_offset_uprobe(Probe &probe, bool safe_mode)
 
   if (sym.size == 0 && func_offset == 0) {
     if (safe_mode) {
-      std::stringstream msg;
-      msg << "Could not determine boundary for " << sym.name
-          << " (symbol has size 0).";
-      if (probe.orig_name == probe.name) {
-        msg << hint_unsafe;
-        return make_error<AttachError>(msg.str());
-      } else {
-        LOG(WARNING) << msg.str() << " Skipping attachment." << hint_unsafe;
-      }
-      return make_error<AttachError>();
+      return make_error<AttachError>("Could not determine boundary for " +
+                                     sym.name + " (symbol has size 0)." +
+                                     std::string{ hint_unsafe });
     }
   } else if (func_offset >= sym.size) {
     return make_error<AttachError>("Offset outside the function bounds ('" +
@@ -963,6 +958,7 @@ Result<std::unique_ptr<AttachedProfileProbe>> AttachedProfileProbe::make(
 
     auto *link = bpf_program__attach_perf_event(prog.bpf_prog(), perf_event_fd);
     if (!link) {
+      close(perf_event_fd);
       has_error = true;
       break;
     }
@@ -1050,6 +1046,7 @@ Result<std::unique_ptr<AttachedIntervalProbe>> AttachedIntervalProbe::make(
 
   auto *link = bpf_program__attach_perf_event(prog.bpf_prog(), perf_event_fd);
   if (!link) {
+    close(perf_event_fd);
     return make_error<AttachError>();
   }
 
@@ -1128,6 +1125,7 @@ Result<std::unique_ptr<AttachedSoftwareProbe>> AttachedSoftwareProbe::make(
 
     auto *link = bpf_program__attach_perf_event(prog.bpf_prog(), perf_event_fd);
     if (!link) {
+      close(perf_event_fd);
       has_error = true;
       break;
     }
@@ -1219,6 +1217,7 @@ Result<std::unique_ptr<AttachedHardwareProbe>> AttachedHardwareProbe::make(
 
     auto *link = bpf_program__attach_perf_event(prog.bpf_prog(), perf_event_fd);
     if (!link) {
+      close(perf_event_fd);
       has_error = true;
       break;
     }
@@ -1547,6 +1546,7 @@ Result<std::unique_ptr<AttachedProbe>> AttachedProbe::make(
     }
     case ProbeType::invalid:
     case ProbeType::special:
+    case ProbeType::test:
     case ProbeType::benchmark: {
       LOG(BUG) << "invalid attached probe type \"" << probe.type << "\"";
     }

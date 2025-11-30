@@ -23,7 +23,7 @@ PROG i:ms:1 {$a = ""; if (1 > 2) { $a = "hi" } else if (5 < 3) { $a = "hello" } 
 EXPECT a=asdf
 
 NAME if_cast
-PROG i:ms:1 { if ((int32)pid) {} printf("done\n"); exit();}
+PROG i:ms:1 { if ((int32)nsecs) { printf("done\n"); } exit(); }
 EXPECT done
 
 NAME ternary
@@ -37,6 +37,14 @@ EXPECT 1
 NAME ternary_int8
 PROG i:ms:1 { $a = 1 ? (int8)1 : 0; printf("%d\n", $a); exit();}
 EXPECT 1
+
+NAME ternary_mixed_int
+PROG i:ms:1 { $a = nsecs ? (uint8)1 : (int32)-1; printf("%d\n", $a); exit();}
+EXPECT 1
+
+NAME ternary_bool
+PROG i:ms:1 { $a = nsecs ? true : false; print($a); exit(); }
+EXPECT true
 
 NAME ternary_none_type
 PROG i:ms:1 { nsecs ? printf("yes\n") : printf("no") ; exit(); }
@@ -258,14 +266,6 @@ TIMEOUT 1
 NAME map_assign_map_ptr
 PROG i:ms:100 { @ = curtask; @a = @; printf("%p\n", @a); exit(); }
 EXPECT_REGEX 0x[0-9a-f]+
-TIMEOUT 1
-
-NAME runtime_error_check_delete
-RUN {{BPFTRACE}} -k -e 'i:ms:100 { @[1] = 1; delete(@, 2); exit(); }'
-EXPECT stdin:1:22-34: WARNING: Can't delete map element because it does not exist.
-       Additional Info - helper: map_delete_elem, retcode: -2
-       i:ms:100 { @[1] = 1; delete(@, 2); exit(); }
-                            ~~~~~~~~~~~~
 TIMEOUT 1
 
 NAME runtime_error_check_lookup

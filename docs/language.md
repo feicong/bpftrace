@@ -15,14 +15,14 @@ actionblock2
 Each action block consists of three parts:
 
 ```
-probe[,probe]
+[name=]probe[,probe]
 /predicate/ {
   action
 }
 ```
 
 * **Probes**\
-  A probe specifies the event and event type to attach to. [Probes list](#probes).
+  A probe specifies the event and event type to attach to. See [the probes section](#probes) for more detail.
 * **Predicate**\
   The predicate is an optional condition that must be met for the action to be executed.
 * **Action**\
@@ -370,7 +370,6 @@ Controls whether maps are printed on exit. Set to `false` in order to change the
 ### unstable features
 
 These are the list of unstable features:
-- `unstable_macro` -  feature flag for bpftrace macros
 - `unstable_map_decl` - feature flag for map declarations
 - `unstable_tseries` - feature flag for time series map type
 - `unstable_addr` - feature flag for address of operator (&)
@@ -386,9 +385,6 @@ Default: warn
 ## Data Types
 
 The following fundamental types are provided by the language.
-Note: Integers are by default represented as 64 bit signed but that can be
-changed by either casting them or, for scratch variables, explicitly specifying
-the type upon declaration.
 
 |     |     |
 | --- | --- |
@@ -410,6 +406,29 @@ begin { $x = 1<<16; printf("%d %d\n", (uint16)$x, $x); }
  * Output:
  * 0 65536
  */
+```
+
+Integers are by default represented as the smallest possible
+type, e.g. `1` is a `uint8` and `-1` is an `int8`. However integers,
+scratch variables, and map keys/values will be automatically upcast
+when necessary, e.g.
+
+```
+$a = 1; // starts as uint8
+$b = -1000; // starts as int16
+$a = $b; // $a now becomes an int16
+
+$c = (uint64)1;
+$d = (int64)-1;
+
+$c = $d; // ERROR: type mismatch because there isn't a larger type
+         // that fits both.
+```
+
+Additionally, when vmlinux BTF is available, bpftrace supports
+casting to some of the kernel's fixed integer types:
+```
+$a = (uint64_t)1; // $a is a uint64
 ```
 
 ## Filters/Predicates
@@ -617,9 +636,6 @@ interval:s:1 {
 
 ## Macros
 
-***Warning*** this feature is experimental and may be subject to changes.
-Stabilization is tracked in [#4079](https://github.com/bpftrace/bpftrace/issues/4079).
-
 bpftrace macros (as opposed to C macros) provide a way for you to structure your script.
 They can be useful when you want to factor out code into smaller, more understandable parts.
 Or if you want to share code between probes.
@@ -824,6 +840,20 @@ let $a = {
 
 This can be used anywhere an expression can be used.
 
+**Note:** There will be a warning for discarded expressions, e.g.,
+
+```
+{ 1 } // Warning
+$a = { 1 } // No Warning
+has_key(@a, 1); // Warning
+$b = has_key(@a, 1); // No Warning
+```
+The warning can also be silenced by utilizing the Discard Expression:
+
+```
+_ = has_key(@a, 1); // No Warning
+```
+
 ## Preamble
 
 The preamble consists of multiple optional pieces:
@@ -854,6 +884,7 @@ let @a = lruhash(100);
 
 bpftrace supports various probe types which allow the user to attach BPF programs to different types of events.
 Each probe starts with a provider (e.g. `kprobe`) followed by a colon (`:`) separated list of options.
+An optional name may precede the provider with an equals sign (e.g. `name=`), which is reserved for internal use and future features.
 The amount of options and their meaning depend on the provider and are detailed below.
 The valid values for options can depend on the system or binary being traced, e.g. for uprobes it depends on the binary.
 Also see [Listing Probes](../man/adoc/bpftrace.adoc#listing-probes).
@@ -911,6 +942,8 @@ Most providers also support a short name which can be used instead of the full n
 These are special built-in events provided by the bpftrace runtime.
 `begin` is triggered before all other probes are attached.
 `end` is triggered after all other probes are detached.
+Each of these probes can be used any number of times, and they will be executed in the same order they are declared.
+For imports containing `begin` and `end` probes, an effort is made to preserve the partial order implied by the import graph (e.g. if `A` depends on `B`, then `B` will have both its `begin` and `end` probes executed first), but this is not strictly guaranteed.
 
 Note that specifying an `end` probe doesn’t override the printing of 'non-empty' maps at exit.
 To prevent printing all used maps need be cleared in the `end` probe:
@@ -922,15 +955,30 @@ end {
 }
 ```
 
+### test
+
+`test` is a special built-in probe type for creating tests.
+bpftrace executes each `test` probe and checks the return value, error count and possible exit calls to determine a pass.
+If multiple `test` probes exist in a script, bpftrace executes them sequentially in the order they are specified.
+To run `test` probes, you must run bpftrace in test mode: `bpftrace --test ...`; otherwise `test` probes will be ignored.
+
+```
+test:okay {
+  print("I'm okay! This output will be suppressed.");
+}
+
+test:failure {
+  print("This is a failure! This output will be shown");
+  return 1;
+}
+```
+
 ### bench
 
 `bench` is a special built-in probe type for creating micro benchmarks.
-bpftrace executes each `bench` probe repeatedly to measure the average
-execution time of the contained code. If multiple `bench` probes exist
-in a script, bpftrace executes them sequentially in the order they are
-specified. To run `bench` probes, you must run bpftrace in bench mode:
-`bpftrace --test-mode bench ...`; otherwise, `bench` probes will be
-ignored.
+bpftrace executes each `bench` probe repeatedly to measure the average execution time of the contained code.
+If multiple `bench` probes exist in a script, bpftrace executes them sequentially in the order they are specified.
+To run `bench` probes, you must run bpftrace in bench mode: `bpftrace --bench ...`; otherwise, `bench` probes will be ignored.
 
 ```
 bench:lhist {
@@ -1452,6 +1500,14 @@ a full path. The path will be then automatically resolved using `/etc/ld.so.cach
 uprobe:libc:malloc { printf("Allocated %d bytes\n", arg0); }
 ```
 
+If multiple versions of the same shared library exist (e.g. `libssl.so.3` and
+`libssl.so.59`), bpftrace may resolve the wrong one. To fix this, you can specify
+a versioned SONAME to ensure the correct library is traced:
+
+```
+uprobe:libssl.so.3:SSL_write { ... }
+```
+
 If the traced binary has DWARF included, function arguments are available in the `args` struct which can be inspected with verbose listing, see the [Listing Probes](../man/adoc/bpftrace.adoc#listing-probes) section for more details.
 
 ```
@@ -1784,7 +1840,6 @@ Currently these are available in bpftrace:
 - lruhash (BPF_MAP_TYPE_LRU_HASH)
 - percpuhash (BPF_MAP_TYPE_PERCPU_HASH)
 - percpulruhash (BPF_MAP_TYPE_LRU_PERCPU_HASH)
-- percpuarray (BPF_MAP_TYPE_PERCPU_ARRAY)
 
 Additionally, map declarations must supply a single argument: ***max entries*** e.g. `let @a = lruhash(100);`
 All maps that are not declared in the global scope utilize the default set in the config variable "max_map_keys".

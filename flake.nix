@@ -42,7 +42,11 @@
           # Override to specify the bcc build we want.
           # We need a specific patch in BCC which resolves a build failure with
           # LLVM 21 and is not a part of any official release, yet.
-          bccVersion = "8c5c96ad3beeed2fa827017f451a952306826974";
+          # commit: "8c5c96ad3beeed2fa827017f451a952306826974"
+          #
+          # Updated to BCC commit enabling versioned SONAME support in uprobes
+          # (supports attachpoints like uprobe:libssl.so.3:SSL_write)
+          bccVersion = "beb1fe40e1183a9068c93640e4687342d822c4e3";
           bcc = (pkgs.bcc.override {
             llvmPackages = pkgs."llvmPackages_${toString defaultLlvmVersion}";
           }).overridePythonAttrs {
@@ -52,9 +56,28 @@
               repo = "bcc";
               rev = "${bccVersion}";
               # See above
-              sha256 = "sha256-XcTqcsbyUBe83vsjUC70GoffCXaxk32QddBKFEP6LD8=";
+              sha256 = "sha256-9BapcFFVn+4zCDBlt15Wmiwnaj0RAqCOfuByu2n6GAs=";
             };
           };
+
+          # gtest-parallel for running tests
+          gtest_parallel = pkgs.stdenv.mkDerivation {
+            name = "gtest-parallel";
+            src = pkgs.fetchFromGitHub {
+              owner = "google";
+              repo = "gtest-parallel";
+              rev = "96f4f904922f9bf66689e749c40f314845baaac8";
+              sha256 = "VUuk5tBTh+aU2dxVWUF1FePWlKUJaWSiGSXk/J5zgHw=";
+            };
+            propagatedBuildInputs = [
+              pkgs.python3
+            ];
+            phases = [ "installPhase" ];
+            installPhase = ''
+              install -m0644 -D $src/gtest_parallel.py $out/bin/gtest_parallel.py
+              install -m755 -D $src/gtest-parallel $out/bin/gtest-parallel
+            '';
+         };
 
           # Download statically linked vmtest binary
           arch = pkgs.lib.strings.removeSuffix "-linux" system;
@@ -180,6 +203,7 @@
                   git
                   gnugrep
                   go  # For runtime tests
+                  gtest_parallel
                   iproute2
                   kmod
                   # For git-clang-format

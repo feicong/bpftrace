@@ -182,6 +182,7 @@ private:
                      // owned by the `StructManager`.
   AddrSpace as_ = AddrSpace::none;
   bool is_signed_ = false;
+  bool is_anon_ = false;
   bool ctx_ = false;                              // Is bpf program context
   std::unordered_set<std::string> btf_type_tags_; // Only populated for
                                                   // Type::pointer
@@ -197,6 +198,7 @@ private:
             stack_type,
             is_internal,
             is_funcarg,
+            is_anon_,
             funcarg_idx,
             is_signed_,
             element_type_,
@@ -257,14 +259,12 @@ public:
   bool IsByteArray() const;
   bool IsAggregate() const;
   bool IsStack() const;
+  bool IsCString() const;
 
   bool IsEqual(const SizedType &t) const;
   bool operator==(const SizedType &t) const;
   std::strong_ordering operator<=>(const SizedType &t) const;
   bool IsSameType(const SizedType &t) const;
-  // This is primarily for Tuples which have equal total size (due to padding)
-  // but their individual elements have different sizes.
-  bool IsSameSizeRecursive(const SizedType &t) const;
   bool FitsInto(const SizedType &t) const;
 
   bool IsPrintableTy() const
@@ -328,6 +328,18 @@ public:
   {
     assert(IsRecordTy() || IsEnumTy());
     return name_;
+  }
+
+  bool IsAnonTy() const
+  {
+    assert(IsRecordTy());
+    return is_anon_;
+  }
+
+  void SetAnon()
+  {
+    assert(IsRecordTy());
+    is_anon_ = true;
   }
 
   Type GetTy() const
@@ -501,7 +513,7 @@ public:
 
   bool NeedsPercpuMap() const;
 
-  friend std::string typestr(const SizedType &type, bool debug);
+  friend std::string typestr(const SizedType &type);
 
   // Factories
 
@@ -570,7 +582,7 @@ SizedType CreateTimestampMode();
 
 std::string addrspacestr(AddrSpace as);
 std::string typestr(Type t);
-std::string typestr(const SizedType &type, bool debug = false);
+std::string typestr(const SizedType &type);
 std::ostream &operator<<(std::ostream &os, const SizedType &type);
 
 enum class TSeriesAggFunc { none, avg, max, min, sum };

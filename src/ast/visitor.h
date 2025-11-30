@@ -166,8 +166,7 @@ public:
   }
   R visit(AssignMapStatement &assignment)
   {
-    visitImpl(assignment.map);
-    visitImpl(assignment.key);
+    visitImpl(assignment.map_access);
     return visitImpl(assignment.expr);
   }
   R visit(AssignVarStatement &assignment)
@@ -184,6 +183,10 @@ public:
     visitImpl(decl.var);
     visitImpl(decl.typeof);
     return default_value();
+  }
+  R visit(DiscardExpr &discard_expr)
+  {
+    return visitImpl(discard_expr.expr);
   }
   R visit(Jump &jump)
   {
@@ -249,6 +252,7 @@ public:
   R visit(Program &program)
   {
     // This order is important.
+    visitImpl(program.c_statements);
     visitImpl(program.config);
     visitImpl(program.imports);
     visitImpl(program.macros);
@@ -268,6 +272,14 @@ public:
   R visit(Statement &stmt)
   {
     return visitImpl(stmt.value);
+  }
+  R visit(RootStatement &root)
+  {
+    return visitImpl(root.value);
+  }
+  R visit([[maybe_unused]] CStatement &cstmt)
+  {
+    return default_value();
   }
   R visit([[maybe_unused]] const SizedType &type)
   {

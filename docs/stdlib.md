@@ -157,8 +157,9 @@ interval:s:10 {
 ### comm
 - `string comm()`
 - `string comm`
+- `string comm(uint32 pid)`
 
-Name of the current thread
+Name of the current thread or the process with the specified PID
 
 This utilizes the BPF helper `get_current_comm`
 
@@ -368,6 +369,18 @@ kprobe:dummy {
 Determine whether the given expression is an array.
 
 
+### is_integer
+- `bool is_integer(any expression)`
+
+Determine whether the given expression is an integer.
+
+
+### is_literal
+- `bool is_literal(Expression expr)`
+
+Returns true if the passed expression is a literal, e.g. 1, true, "hello"
+
+
 ### is_ptr
 - `bool is_ptr(any expression)`
 
@@ -423,6 +436,18 @@ interval:s:1 {
 ```
 
 You can find all kernel symbols at `/proc/kallsyms`.
+
+
+### kfunc_allowed
+- `boolean kfunc_allowed(const string kfunc)`
+
+Determine if a kfunc is supported for particular probe types.
+
+
+### kfunc_exist
+- `boolean kfunc_exist(const string kfunc)`
+
+Determine if a kfunc exists using BTF.
 
 
 ### kptr
@@ -543,6 +568,16 @@ kprobe:arp_create {
  * SRC 18:C0:4D:08:2E:BB, DST 74:83:C2:7F:8C:FF
  */
 ```
+
+
+### memcmp
+- `int memcmp(left, right, uint64 count)`
+
+Compares the first 'count' bytes of two expressions.
+0 is returned if they are the same.
+negative value if the first differing byte in left is less
+than the corresponding byte in right.
+
 
 
 ### ncpus
@@ -681,6 +716,14 @@ If `size` is smaller than the resolved path, the resulting string will be trunca
 This function can only be used by functions that are allowed to, these functions are contained in the `btf_allowlist_d_path` set in the kernel.
 
 
+### pcomm
+- `string pcomm()`
+- `string pcomm`
+- `string pcomm(struct task_struct * task)`
+
+Get the name of the process for the passed task or the current task if called without arguments. This is an alias for (task->group_leader->comm).
+
+
 ### percpu_kaddr
 - `uint64 *percpu_kaddr(const string name)`
 - `uint64 *percpu_kaddr(const string name, int cpu)`
@@ -724,15 +767,108 @@ Defaults to `curr_ns`.
 
 
 ### ppid
+- `uint32 ppid()`
+- `uint32 ppid`
 - `uint32 ppid(struct task_struct * task)`
 
-Get the pid of the parent process
+Get the pid of the parent process for the passed task or the current task if called without arguments.
 
 
 ### print
 - `void print(T val)`
+- `void print(T val)`
+- `void print(@map)`
+- `void print(@map, uint64 top)`
+- `void print(@map, uint64 top, uint64 div)`
 
 **async**
+
+`print` prints a the value, which can be a map or a scalar value, with the default formatting for the type.
+
+```
+interval:s:1 {
+  print(123);
+  print("abc");
+  exit();
+}
+
+/*
+ * Sample output:
+ * 123
+ * abc
+ */
+```
+
+```
+interval:ms:10 { @=hist(rand); }
+interval:s:1 {
+  print(@);
+  exit();
+}
+```
+
+Prints:
+
+```
+@:
+[16M, 32M)             3 |@@@                                                 |
+[32M, 64M)             2 |@@                                                  |
+[64M, 128M)            1 |@                                                   |
+[128M, 256M)           4 |@@@@                                                |
+[256M, 512M)           3 |@@@                                                 |
+[512M, 1G)            14 |@@@@@@@@@@@@@@                                      |
+[1G, 2G)              22 |@@@@@@@@@@@@@@@@@@@@@@                              |
+[2G, 4G)              51 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+```
+
+Declared maps and histograms are automatically printed out on program termination.
+
+Note that maps are printed by reference while scalar values are copied.
+This means that updating and printing maps in a fast loop will likely result in bogus map values as the map will be updated before userspace gets the time to dump and print it.
+
+The printing of maps supports the optional `top` and `div` arguments.
+`top` limits the printing to the top N entries with the highest integer values
+
+```
+BEGIN {
+  $i = 11;
+  while($i) {
+    @[$i] = --$i;
+  }
+  print(@, 2);
+  clear(@);
+  exit()
+}
+
+/*
+ * Sample output:
+ * @[9]: 9
+ * @[10]: 10
+ */
+```
+
+The `div` argument scales the values prior to printing them.
+Scaling values before storing them can result in rounding errors.
+Consider the following program:
+
+```
+kprobe:f {
+  @[func] += arg0/10;
+}
+```
+
+With the following sequence as numbers for arg0: `134, 377, 111, 99`.
+The total is `721` which rounds to `72` when scaled by 10 but the program would print `70` due to the rounding of individual values.
+
+Changing the print call to `print(@, 5, 2)` will take the top 5 values and scale them by 2:
+
+```
+@[6]: 3
+@[7]: 3
+@[8]: 4
+@[9]: 4
+@[10]: 5
+```
 
 
 ### printf
@@ -991,7 +1127,7 @@ This utilizes the BPF helpers `probe_read_str, probe_read_{kernel,user}_str`
 The maximum string length is limited by the `BPFTRACE_MAX_STRLEN` env variable, unless `length` is specified and shorter than the maximum.
 In case the string is longer than the specified length only `length - 1` bytes are copied and a NULL byte is appended at the end.
 
-When available (starting from kernel 5.5, see the `--info` flag) bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see [Address-spaces](./language.md#address-spaces) for more information.
+bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see [Address-spaces](./language.md#address-spaces) for more information.
 
 
 ### strcap
@@ -1051,9 +1187,9 @@ bpftrace also supports the following format string extensions:
 
 
 ### strlen
-- `int64 strlen(string exp)`
-- `int64 strlen(int8 exp[])`
-- `int64 strlen(int8 *exp)`
+- `uint64 strlen(string exp)`
+- `uint64 strlen(int8 exp[])`
+- `uint64 strlen(int8 *exp)`
 
 Returns the length of a string-like object.
 
@@ -1073,6 +1209,19 @@ The use of the `==` and `!=` operators is recommended over calling `strncmp` dir
 - `int64 strstr(string haystack, string needle)`
 
 Returns the index of the first occurrence of the string needle in the string haystack. If needle is not in haystack then -1 is returned.
+
+
+### syscall_name
+- `string syscall_name(int nr_syscall)`
+
+Convert syscall number to string.
+
+```
+#include <syscall.h>
+begin {
+  print(syscall_name(__NR_read)); // outputs "read"
+}
+```
 
 
 ### system
@@ -1163,7 +1312,7 @@ bpftrace uses the `strftime(3)` function for formatting time and supports the sa
 * uretprobes
 * USDT
 
-***Does not work with ASLR, see issue [#75](https://github.com/bpftrace/bpftrace/issues/75)***
+If kernel supports task_vma open-coded iterator kfuncs (linux >= 6.7), uaddr() will correct the symbol addresses of PIE and dynamic libraries instead of directly using the symbol addresses in the ELF file, see https://github.com/torvalds/linux/commit/4ac454682158.
 
 The `uaddr` function returns the address of the specified symbol.
 This lookup happens during program compilation and cannot be used dynamically.

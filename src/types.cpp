@@ -27,7 +27,7 @@ std::ostream &operator<<(std::ostream &os, const SizedType &type)
   return os;
 }
 
-std::string typestr(const SizedType &type, bool debug)
+std::string typestr(const SizedType &type)
 {
   switch (type.GetTy()) {
     case Type::integer:
@@ -37,29 +37,42 @@ std::string typestr(const SizedType &type, bool debug)
       return (type.is_signed_ ? "int" : "uint") +
              std::to_string(8 * type.GetSize());
     case Type::string:
-      if (debug)
-        return typestr(type.GetTy()) + "[" + std::to_string(type.GetSize()) +
-               "]";
-      return typestr(type.GetTy());
+      if (type.GetSize() == 0) {
+        return typestr(type.GetTy());
+      }
+      return typestr(type.GetTy()) + "[" + std::to_string(type.GetSize()) + "]";
     case Type::inet:
     case Type::buffer:
       return typestr(type.GetTy()) + "[" + std::to_string(type.GetSize()) + "]";
-    case Type::pointer: {
-      std::string prefix;
-      if (type.IsCtxAccess())
-        prefix = "(ctx) ";
-      return prefix + typestr(*type.GetPointeeTy(), debug) + " *";
-    }
+    case Type::pointer:
+      return typestr(*type.GetPointeeTy()) + " *";
     case Type::array:
-      return typestr(*type.GetElementTy(), debug) + "[" +
+      return typestr(*type.GetElementTy()) + "[" +
              std::to_string(type.GetNumElements()) + "]";
-    case Type::record:
-      return type.GetName();
+    case Type::record: {
+      if (!type.IsAnonTy())
+        return type.GetName();
+
+      // For anonymous structs/unions, return a string of the
+      // format "struct { field1type,... }"
+      const std::string &type_name = type.GetName();
+      std::string res = type_name.substr(0, type_name.find(" "));
+      size_t n = type.GetFieldCount();
+
+      res += " {";
+      for (size_t i = 0; i < n; ++i) {
+        res += typestr(type.GetField(i).type);
+        if (i != n - 1)
+          res += ",";
+      }
+      res += "}";
+      return res;
+    }
     case Type::tuple: {
       std::string res = "(";
       size_t n = type.GetFieldCount();
       for (size_t i = 0; i < n; ++i) {
-        res += typestr(type.GetField(i).type, debug);
+        res += typestr(type.GetField(i).type);
         if (i != n - 1)
           res += ",";
       }
@@ -190,6 +203,12 @@ bool SizedType::IsAggregate() const
 bool SizedType::IsStack() const
 {
   return type_ == Type::ustack_t || type_ == Type::kstack_t;
+}
+
+bool SizedType::IsCString() const
+{
+  return IsArrayTy() && GetElementTy()->IsIntegerTy() &&
+         GetElementTy()->GetSize() == 1;
 }
 
 std::string addrspacestr(AddrSpace as)
@@ -580,26 +599,6 @@ std::shared_ptr<const Struct> SizedType::GetStruct() const
 {
   assert(IsRecordTy() || IsTupleTy());
   return inner_struct();
-}
-
-bool SizedType::IsSameSizeRecursive(const SizedType &t) const
-{
-  if (GetSize() != t.GetSize()) {
-    return false;
-  }
-
-  if (IsTupleTy() && t.IsTupleTy()) {
-    if (GetFieldCount() != t.GetFieldCount()) {
-      return false;
-    }
-
-    for (ssize_t i = 0; i < GetFieldCount(); i++) {
-      if (!GetField(i).type.IsSameSizeRecursive(t.GetField(i).type))
-        return false;
-    }
-  }
-
-  return true;
 }
 
 bool SizedType::FitsInto(const SizedType &t) const

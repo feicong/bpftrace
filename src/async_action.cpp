@@ -35,7 +35,7 @@ static Result<std::vector<output::Primitive>> prepare_args(
 void AsyncHandlers::exit(const OpaqueValue &data)
 {
   auto exit = data.bitcast<AsyncEvent::Exit>();
-  BPFtrace::exit_code = exit.exit_code;
+  bpftrace.exit_code = exit.exit_code;
   bpftrace.request_finalize();
 }
 
@@ -48,11 +48,15 @@ void AsyncHandlers::join(const OpaqueValue &data)
   size_t arg_count = arg.count<char>() / bpftrace.join_argsize_;
   std::stringstream joined;
   for (unsigned int i = 0; i < arg_count; i++) {
+    const char *current_str = arg.data() + (i * bpftrace.join_argsize_);
+    if (current_str == nullptr || current_str[0] == '\0') {
+      break;
+    }
     if (i)
       joined << delim;
-    joined << (arg.data() + (i * bpftrace.join_argsize_));
+    joined << current_str;
   }
-  out.join(joined.str());
+  out->join(joined.str());
 }
 
 void AsyncHandlers::time(const OpaqueValue &data)
@@ -72,7 +76,7 @@ void AsyncHandlers::time(const OpaqueValue &data)
     LOG(WARNING) << "strftime returned 0";
     return;
   }
-  out.time(timestr);
+  out->time(timestr);
 }
 
 void AsyncHandlers::runtime_error(const OpaqueValue &data)
@@ -81,7 +85,7 @@ void AsyncHandlers::runtime_error(const OpaqueValue &data)
   auto error_id = runtime_error.error_id;
   const auto return_value = runtime_error.return_value;
   const auto &info = bpftrace.resources.runtime_error_info[error_id];
-  out.runtime_error(return_value, info);
+  out->runtime_error(return_value, info);
 }
 
 void AsyncHandlers::print_non_map(const OpaqueValue &data)
@@ -95,7 +99,7 @@ void AsyncHandlers::print_non_map(const OpaqueValue &data)
   if (!v) {
     LOG(BUG) << "error printing non-map value: " << v.takeError();
   }
-  out.value(*v);
+  out->value(*v);
 }
 
 void AsyncHandlers::print_map(const OpaqueValue &data)
@@ -109,7 +113,7 @@ void AsyncHandlers::print_map(const OpaqueValue &data)
              << "\": " << res.takeError();
   }
 
-  out.map(map.name(), *res);
+  out->map(map.name(), *res);
 }
 
 void AsyncHandlers::zero_map(const OpaqueValue &data)
@@ -129,8 +133,7 @@ void AsyncHandlers::clear_map(const OpaqueValue &data)
 {
   auto mapevent = data.bitcast<AsyncEvent::MapEvent>();
   const auto &map = bpftrace.bytecode_.getMap(mapevent.mapid);
-  uint64_t nvalues = map.is_per_cpu_type() ? bpftrace.ncpus_ : 1;
-  auto ok = map.clear(nvalues);
+  auto ok = map.clear();
   if (!ok) {
     LOG(BUG) << "Could not clear map with ident \"" << map.name()
              << "\", err=" << ok.takeError();
@@ -235,13 +238,18 @@ void AsyncHandlers::syscall(const OpaqueValue &data)
     LOG(BUG) << "Error processing syscall arguments: " << vals.takeError();
   }
 
-  auto result = util::exec_system(fmt.format(*vals).c_str());
+  // Always execute via a shell, if available.
+  std::vector<std::string> system_args;
+  system_args.emplace_back("sh");
+  system_args.emplace_back("-c");
+  system_args.emplace_back(fmt.format(*vals));
+  auto result = util::exec_system(system_args);
   if (!result) {
     LOG(ERROR) << "Error executing program: " << result.takeError();
     return;
   }
 
-  out.syscall(*result);
+  out->syscall(*result);
 }
 
 void AsyncHandlers::cat(const OpaqueValue &data)
@@ -259,7 +267,7 @@ void AsyncHandlers::cat(const OpaqueValue &data)
   util::cat_file(fmt.format(*vals).c_str(),
                  bpftrace.config_->max_cat_bytes,
                  buf);
-  out.cat(buf.str());
+  out->cat(buf.str());
 }
 
 void AsyncHandlers::printf(const OpaqueValue &data)
@@ -280,7 +288,7 @@ void AsyncHandlers::printf(const OpaqueValue &data)
     return;
   }
 
-  out.printf(fmt.format(*vals), source_info, severity);
+  out->printf(fmt.format(*vals), source_info, severity);
 }
 
 } // namespace bpftrace::async_action

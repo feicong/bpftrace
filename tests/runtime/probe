@@ -255,7 +255,7 @@ REQUIRES_FEATURE uprobe_multi
 AFTER ./testprogs/uprobe_test
 
 NAME uprobe_multi_wildcard_target_wildcard
-RUN {{BPFTRACE}} --unsafe -e 'uretprobe:*:uprobeFunction* { printf("link: "); system("bpftool link | grep -E \"uprobe_multi|type 12\" | wc -l"); exit(); }' -p {{BEFORE_PID}}
+RUN {{BPFTRACE}} --unsafe -e 'uretprobe:*:uprobeFunction* { printf("link: "); system("bpftool link | grep -E \"uprobe_multi|type 12\" | wc -l"); exit(); }' --pid {{BEFORE_PID}}
 EXPECT link: 1
 REQUIRES bpftool
 REQUIRES_FEATURE uprobe_multi
@@ -304,6 +304,12 @@ WILL_FAIL
 
 NAME uprobe_library
 PROG uprobe:libc:fread { printf("size: %d\n", arg1); exit(); }
+EXPECT_REGEX size: [0-9]+
+AFTER ./testprogs/uprobe_library
+REQUIRES_FEATURE libpath_resolv
+
+NAME uprobe_library_soname
+PROG uprobe:libc.so.6:fread { printf("size: %d\n", arg1); exit(); }
 EXPECT_REGEX size: [0-9]+
 AFTER ./testprogs/uprobe_library
 REQUIRES_FEATURE libpath_resolv
@@ -507,28 +513,18 @@ TIMEOUT 2
 
 NAME bench
 RUN {{BPFTRACE}} --test-mode bench -e 'begin { print("begin\n"); } bench:a { @ = count(); } end { print(@); clear(@); }'
-EXPECT_REGEX begin\n
-             @: 1000000\n\n
-             \+-----------\+--------------\+
-             \| BENCHMARK \| AVERAGE TIME \|
-             \+-----------\+--------------\+
-             \| a         \| \d+ns[ ]+\|
-             \+-----------\+--------------\+
-TIMEOUT 2
+EXPECT_REGEX Benchmark                                Time\(ns\)       Iterations
+             ------------------------------------------------------------------
+             a                                        \d+[ ]+\d+
+TIMEOUT 5
 
 NAME bench multiple
 RUN {{BPFTRACE}} --test-mode bench -e 'begin { printf("begin\n"); } bench:a { @a++; } bench:b { if (@b == 0) { print(@a); } @b++; } bench:c { if(@c == 0) { print(@b);  } @c++; } end { print(@c); clear(@a); clear(@b); clear(@c); }'
-EXPECT_REGEX begin
-             @a: 1000000
-             @b: 1000000
-             @c: 1000000\n\n
-             \+-----------\+--------------\+
-             \| BENCHMARK \| AVERAGE TIME \|
-             \+-----------\+--------------\+
-             \| a         \| \d+ns[ ]+\|
-             \| b         \| \d+ns[ ]+\|
-             \| c         \| \d+ns[ ]+\|
-             \+-----------\+--------------\+
+EXPECT_REGEX Benchmark                                Time\(ns\)       Iterations
+             ------------------------------------------------------------------
+             a                                        \d+[ ]+\d+
+             b                                        \d+[ ]+\d+
+             c                                        \d+[ ]+\d+
 TIMEOUT 5
 
 # The "probe" builtin forces bpftrace to generate one BPF function for each
@@ -609,7 +605,7 @@ EXPECT_REGEX (first)+ second
 
 NAME some_missing_probes_default_error
 PROG kprobe:vfs_read { exit(); } t:syscalls:nonsense { exit(); }
-EXPECT stdin:1:28-48: ERROR: Tracepoint not found: syscalls:nonsense
+EXPECT stdin:1:29-48: ERROR: Tracepoint not found: syscalls:nonsense
 EXPECT HINT: If this is expected, set the 'missing_probes' config variable to 'warn' or 'ignore'.
 WILL_FAIL
 
@@ -620,7 +616,7 @@ WILL_FAIL
 
 NAME some_missing_probes_warn
 PROG config = { missing_probes=warn } kprobe:vfs_read { exit(); } t:syscalls:nonsense { exit(); }
-EXPECT stdin:1:61-81: WARNING: Tracepoint not found: syscalls:nonsense
+EXPECT stdin:1:62-81: WARNING: Tracepoint not found: syscalls:nonsense
 
 NAME some_missing_probes_ignore
 PROG config = { missing_probes=ignore } kprobe:vfs_read { exit(); } t:syscalls:nonsense { exit(); }
@@ -629,7 +625,7 @@ EXPECT_NONE WARNING: Unable to attach probe: tracepoint:syscalls:nonsense. Skipp
 NAME all_missing_probes_warn
 PROG config = { missing_probes=warn } kprobe:nonsense { exit(); } t:syscalls:nonsense { exit(); } uprobe:./testprogs/uprobe_test:uprobeFunction3 { exit(); }
 EXPECT WARNING: Unable to attach probe: kprobe:nonsense. Skipping.
-EXPECT stdin:1:61-81: WARNING: Tracepoint not found: syscalls:nonsense
+EXPECT stdin:1:62-81: WARNING: Tracepoint not found: syscalls:nonsense
 EXPECT WARNING: Unable to attach probe: uprobe:./testprogs/uprobe_test:uprobeFunction3. Skipping.
 EXPECT ERROR: Attachment failed for all probes.
 WILL_FAIL

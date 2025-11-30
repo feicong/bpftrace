@@ -34,6 +34,8 @@ class Node;
 #include "ast/ast.h"
 #include "ast/context.h"
 #include "ast/location.h"
+#include "util/int_parser.h"
+#include "util/strings.h"
 }
 
 %{
@@ -100,6 +102,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
   PTR        "->"
   STRUCT     "struct"
   UNION      "union"
+  UNDERSCORE "_"
 
   // Pseudo token; see below.
   LOW "low-precedence"
@@ -120,7 +123,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %token <std::string> MAP "map"
 %token <std::string> VAR "variable"
 %token <std::string> PARAM "positional parameter"
-%token <uint64_t> UNSIGNED_INT "integer"
+%token <std::string> UNSIGNED_INT "integer"
 %token <std::string> CONFIG "config"
 %token <std::string> UNROLL "unroll"
 %token <std::string> WHILE "while"
@@ -141,7 +144,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %token <bool> BOOL "bool"
 
 %type <ast::Operator> unary_op compound_op
-%type <std::string> attach_point_def ident keyword external_name
+%type <std::string> attach_point_def attach_point_elem ident keyword external_name
 %type <std::vector<std::string>> struct_field
 
 %type <ast::ArrayAccess *> array_access_expr
@@ -167,6 +170,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %type <ast::PositionalParameterCount *> param_count
 %type <std::optional<ast::Expression>> pred
 %type <ast::Config *> config
+%type <ast::Integer *> integer
 %type <ast::Import *> import_stmt
 %type <ast::ImportList> imports
 %type <ast::Statement> assign_stmt block_stmt expr_stmt nonexpr_stmt jump_stmt while_stmt for_stmt
@@ -186,7 +190,7 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 %type <ast::VariableAddr *> var_addr
 %type <ast::MapAddr *> map_addr
 %type <ast::Program *> program
-%type <std::string> header
+%type <std::string> header c_struct
 
 
 // A pseudo token, which is the lowest precedence among all tokens.
@@ -229,25 +233,40 @@ void yyerror(bpftrace::Driver &driver, const char *s);
 
 %%
 
-start:          START_PROGRAM program END { driver.result = $2; }
-        |       START_EXPR expr END       { driver.result = $2; }
+start:          START_PROGRAM program { driver.result = $2; }
+        |       START_EXPR expr END   { driver.result = $2; }
                 ;
 
 header:
-                HEADER { $$ = $1; }
+                HEADER { auto s = $1; $$ = util::rtrim(s); }
         |       %empty { $$ = ""; }
 
 program:
-                header c_definitions config imports root_stmts {
-                    $$ = driver.ctx.make_node<ast::Program>(std::move($2), $3, std::move($4), std::move($5), @$, $1);
+                header c_definitions config imports root_stmts END {
+                    $$ = driver.ctx.make_node<ast::Program>(@$, std::move($2), $3, std::move($4), std::move($5), $1);
                 }
                 ;
 
+c_struct:       STRUCT STRUCT_DEFN { $$ = $2; }
+        |       STRUCT ENUM        { $$ = $2; }
+                ;
+
 c_definitions:
-                c_definitions CPREPROC           { $$ = std::move($1); $$.push_back(driver.ctx.make_node<ast::CStatement>($2, driver.loc)); }
-        |       c_definitions STRUCT STRUCT_DEFN { $$ = std::move($1); $$.push_back(driver.ctx.make_node<ast::CStatement>($3 + ";", driver.loc)); }
-        |       c_definitions STRUCT ENUM        { $$ = std::move($1); $$.push_back(driver.ctx.make_node<ast::CStatement>($3 + ";", driver.loc)); }
-        |       %empty                           { $$ = ast::CStatementList(); }
+                c_definitions CPREPROC
+                {
+                    $$ = std::move($1);
+                    auto s = util::rtrim($2);
+                    $$.push_back(driver.ctx.make_node<ast::CStatement>(driver.loc, s));
+                }
+        |       c_definitions c_struct  {
+                    $$ = std::move($1);
+                    auto s = util::rtrim($2);
+                    if (!s.empty() && s.back() != ';') {
+                      s += ";";
+                    }
+                    $$.push_back(driver.ctx.make_node<ast::CStatement>(driver.loc, s));
+                }
+        |       %empty { $$ = ast::CStatementList(); }
                 ;
 
 imports:
@@ -256,7 +275,7 @@ imports:
                 ;
 
 import_stmt:
-                IMPORT STRING ";" { $$ = driver.ctx.make_node<ast::Import>($2, @$); }
+                IMPORT STRING ";" { $$ = driver.ctx.make_node<ast::Import>(@$, $2); }
                 ;
 
 type:
@@ -290,20 +309,20 @@ type:
                         $$ = CreateString(0);
                     }
                 }
-        |       SIZED_TYPE "[" UNSIGNED_INT "]" {
+        |       SIZED_TYPE "[" integer "]" {
                     if ($1 == "inet") {
-                        $$ = CreateInet($3);
+                        $$ = CreateInet($3->value);
                     } else if ($1 == "buffer") {
-                        $$ = CreateBuffer($3);
+                        $$ = CreateBuffer($3->value);
                     } else if ($1 == "string") {
-                        $$ = CreateString($3);
+                        $$ = CreateString($3->value);
                     }
                 }
-        |       int_type "[" UNSIGNED_INT "]" {
-                  $$ = CreateArray($3, $1);
+        |       int_type "[" integer "]" {
+                  $$ = CreateArray($3->value, $1);
                 }
-        |       struct_type "[" UNSIGNED_INT "]" {
-                  $$ = CreateArray($3, $1);
+        |       struct_type "[" integer "]" {
+                  $$ = CreateArray($3->value, $1);
                 }
         |       int_type "[" "]" {
                   $$ = CreateArray(0, $1);
@@ -337,8 +356,8 @@ struct_type:
                 ;
 
 config:
-                CONFIG ASSIGN config_block     { $$ = driver.ctx.make_node<ast::Config>(std::move($3), @$); }
-        |        %empty                        { $$ = nullptr; }
+                CONFIG ASSIGN config_block     { $$ = driver.ctx.make_node<ast::Config>(@$, std::move($3)); }
+        |       %empty                         { $$ = nullptr; }
                 ;
 
 /*
@@ -354,18 +373,18 @@ config_assign_stmt_list:
                 ;
 
 config_assign_stmt:
-                IDENT ASSIGN UNSIGNED_INT { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
-        |       IDENT ASSIGN IDENT        { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
-        |       IDENT ASSIGN STRING       { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
-        |       IDENT ASSIGN BOOL         { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>($1, $3, @$); }
+                IDENT ASSIGN integer { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>(@$, $1, $3->value); }
+        |       IDENT ASSIGN IDENT   { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>(@$, $1, $3); }
+        |       IDENT ASSIGN STRING  { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>(@$, $1, $3); }
+        |       IDENT ASSIGN BOOL    { $$ = driver.ctx.make_node<ast::AssignConfigVarStatement>(@$, $1, $3); }
                 ;
 
 subprog:
                 SUBPROG IDENT "(" subprog_args ")" ":" any_type none_block {
-                    $$ = driver.ctx.make_node<ast::Subprog>($2, $7, std::move($4), std::move($8), @1+@2);
+                    $$ = driver.ctx.make_node<ast::Subprog>(@1+@2, $2, $7, std::move($4), std::move($8));
                 }
         |       SUBPROG IDENT "(" ")" ":" any_type none_block {
-                    $$ = driver.ctx.make_node<ast::Subprog>($2, $6, ast::SubprogArgList(), std::move($7), @1+@2);
+                    $$ = driver.ctx.make_node<ast::Subprog>(@1+@2, $2, $6, ast::SubprogArgList(), std::move($7));
                 }
                 ;
 
@@ -375,21 +394,21 @@ subprog_args:
                 ;
 
 subprog_arg:
-                var ":" any_type { $$ = driver.ctx.make_node<ast::SubprogArg>($1, $3, @$); }
+                var ":" any_type { $$ = driver.ctx.make_node<ast::SubprogArg>(@$, $1, $3); }
                 ;
 
 macro:
-                MACRO IDENT "(" macro_args ")" block_expr { $$ = driver.ctx.make_node<ast::Macro>($2, std::move($4), $6, @1+@2); }
-        |       MACRO IDENT "(" macro_args ")" bare_block { $$ = driver.ctx.make_node<ast::Macro>($2, std::move($4), $6, @1+@2); }
+                MACRO IDENT "(" macro_args ")" block_expr { $$ = driver.ctx.make_node<ast::Macro>(@1+@2, $2, std::move($4), $6); }
+        |       MACRO IDENT "(" macro_args ")" bare_block { $$ = driver.ctx.make_node<ast::Macro>(@1+@2, $2, std::move($4), $6); }
                 ;
 
 macro_args:
                 macro_args "," map   { $$ = std::move($1); $$.push_back($3); }
         |       macro_args "," var   { $$ = std::move($1); $$.push_back($3); }
-        |       macro_args "," ident { $$ = std::move($1); $$.push_back(driver.ctx.make_node<ast::Identifier>($3, @$)); }
+        |       macro_args "," ident { $$ = std::move($1); $$.push_back(driver.ctx.make_node<ast::Identifier>(@$, $3)); }
         |       map                  { $$ = ast::ExpressionList{$1}; }
         |       var                  { $$ = ast::ExpressionList{$1}; }
-        |       ident                { $$ = ast::ExpressionList{driver.ctx.make_node<ast::Identifier>($1, @$)}; }
+        |       ident                { $$ = ast::ExpressionList{driver.ctx.make_node<ast::Identifier>(@$, $1)}; }
         |       %empty               { $$ = ast::ExpressionList{}; }
                 ;
 
@@ -412,48 +431,54 @@ probe:
                     // If there a predicate, consider this as an `if` statement
                     // over the full block. This simplifies all later steps, and
                     // the predicate may still be folded, eliminating the probe.
-                    auto *none = driver.ctx.make_node<ast::None>(@1);
-                    auto *cond = driver.ctx.make_node<ast::IfExpr>($2.value(), block, none, @2);
-                    block = driver.ctx.make_node<ast::BlockExpr>(ast::StatementList{}, cond, @$);
+                    auto *none = driver.ctx.make_node<ast::None>(@2);
+                    auto *cond = driver.ctx.make_node<ast::IfExpr>(@2, $2.value(), block, none);
+                    block = driver.ctx.make_node<ast::BlockExpr>(@2+@3, ast::StatementList{}, cond);
                   }
-                  $$ = driver.ctx.make_node<ast::Probe>(std::move($1), block, @1);
+                  $$ = driver.ctx.make_node<ast::Probe>(@1, std::move($1), block);
                 }
                 ;
 
 attach_points:
                 attach_points "," attach_point { $$ = std::move($1); $$.push_back($3); }
+        |       attach_points ","              { $$ = std::move($1); }
         |       attach_point                   { $$ = ast::AttachPointList{$1}; }
                 ;
 
 attach_point:
-                attach_point_def                { $$ = driver.ctx.make_node<ast::AttachPoint>($1, false, @$); }
+                attach_point_def               { $$ = driver.ctx.make_node<ast::AttachPoint>(@$, $1, false); }
                 ;
 
 attach_point_def:
-                attach_point_def ident    { $$ = $1 + $2; }
+                attach_point_elem                  { $$ = $1; }
+        |       attach_point_def attach_point_elem { $$ = $1 + $2; }
+                ;
+
+attach_point_elem:
+                ident        { $$ = $1; }
                 // Since we're double quoting the STRING for the benefit of the
                 // AttachPointParser, we have to make sure we re-escape any double
                 // quotes. Note that this is a general escape hatch for many cases,
                 // since we can't handle the general parsing and unparsing of e.g.
                 // integer types that use `_` separators, or exponential notation,
                 // or hex vs. non-hex representation etc.
-        |       attach_point_def STRING       { $$ = $1 + "\"" + std::regex_replace($2, std::regex("\""), "\\\"") + "\""; }
-        |       attach_point_def UNSIGNED_INT { $$ = $1 + std::to_string($2); }
-        |       attach_point_def PATH         { $$ = $1 + $2; }
-        |       attach_point_def COLON        { $$ = $1 + ":"; }
-        |       attach_point_def DOT          { $$ = $1 + "."; }
-        |       attach_point_def PLUS         { $$ = $1 + "+"; }
-        |       attach_point_def MUL          { $$ = $1 + "*"; }
-        |       attach_point_def LBRACKET     { $$ = $1 + "["; }
-        |       attach_point_def RBRACKET     { $$ = $1 + "]"; }
-        |       attach_point_def param
+        |       STRING       { $$ = "\"" + std::regex_replace($1, std::regex("\""), "\\\"") + "\""; }
+        |       UNSIGNED_INT { $$ = $1; }
+        |       PATH         { $$ = $1; }
+        |       COLON        { $$ = ":"; }
+        |       DOT          { $$ = "."; }
+        |       PLUS         { $$ = "+"; }
+        |       MUL          { $$ = "*"; }
+        |       LBRACKET     { $$ = "["; }
+        |       RBRACKET     { $$ = "]"; }
+        |       EQ           { $$ = "="; }
+        |       param
                 {
                   // "Un-parse" the positional parameter back into text so
                   // we can give it to the AttachPointParser. This is kind of
                   // a hack but there doesn't look to be any other way.
-                  $$ = $1 + "$" + std::to_string($2->n);
+                  $$ = "$" + std::to_string($1->n);
                 }
-        |       %empty                    { $$ = ""; }
                 ;
 
 pred:
@@ -467,7 +492,7 @@ param:
                         try {
                           long n = std::stol($1.substr(1, $1.size()-1));
                           if (n == 0) throw std::exception();
-                          $$ = driver.ctx.make_node<ast::PositionalParameter>(n, @$);
+                          $$ = driver.ctx.make_node<ast::PositionalParameter>(@$, n);
                         } catch (std::exception const& e) {
                           error(@1, "param " + $1 + " is out of integer range [1, " +
                                 std::to_string(std::numeric_limits<long>::max()) + "]");
@@ -489,16 +514,16 @@ stmt_list:
 
 block_stmt:
                 while_stmt { $$ = $1; }
-        |       if_stmt    { $$ = driver.ctx.make_node<ast::ExprStatement>($1, @$); }
+        |       if_stmt    { $$ = driver.ctx.make_node<ast::ExprStatement>(@$, $1); }
         |       for_stmt   { $$ = $1; }
-        |       bare_block { $$ = driver.ctx.make_node<ast::ExprStatement>($1, @$); }
+        |       bare_block { $$ = driver.ctx.make_node<ast::ExprStatement>(@$, $1); }
                 ;
 
 expr_stmt:
                 // We do not accept a top-level if for the statement, as we parse using
                 // `if_stmt` to avoid ambiguity. The `expr` node itself will accept an
                 // `if_expr`, which is used for any other expression except the statement.
-                non_if_expr { $$ = driver.ctx.make_node<ast::ExprStatement>($1, @1); }
+                non_if_expr { $$ = driver.ctx.make_node<ast::ExprStatement>(@1, $1); }
                 ;
 
 nonexpr_stmt:
@@ -508,10 +533,10 @@ nonexpr_stmt:
                 ;
 
 jump_stmt:
-                BREAK       { $$ = driver.ctx.make_node<ast::Jump>(ast::JumpType::BREAK, @$); }
-        |       CONTINUE    { $$ = driver.ctx.make_node<ast::Jump>(ast::JumpType::CONTINUE, @$); }
-        |       RETURN      { $$ = driver.ctx.make_node<ast::Jump>(ast::JumpType::RETURN, @$); }
-        |       RETURN expr { $$ = driver.ctx.make_node<ast::Jump>(ast::JumpType::RETURN, $2, @$); }
+                BREAK       { $$ = driver.ctx.make_node<ast::Jump>(@$, ast::JumpType::BREAK); }
+        |       CONTINUE    { $$ = driver.ctx.make_node<ast::Jump>(@$, ast::JumpType::CONTINUE); }
+        |       RETURN      { $$ = driver.ctx.make_node<ast::Jump>(@$, ast::JumpType::RETURN); }
+        |       RETURN expr { $$ = driver.ctx.make_node<ast::Jump>(@$, ast::JumpType::RETURN, $2); }
                 ;
 
 cond_expr:
@@ -520,38 +545,38 @@ cond_expr:
                 ;
 
 while_stmt:
-                UNROLL cond_expr none_block { $$ = driver.ctx.make_node<ast::Unroll>($2, $3, @1 + @2); }
-        |       WHILE  cond_expr none_block { $$ = driver.ctx.make_node<ast::While>($2, $3, @1); }
+                UNROLL cond_expr none_block { $$ = driver.ctx.make_node<ast::Unroll>(@1 + @2, $2, $3); }
+        |       WHILE  cond_expr none_block { $$ = driver.ctx.make_node<ast::While>(@1, $2, $3); }
                 ;
 
 for_stmt:
-                FOR "(" var ":" map ")" none_block   { $$ = driver.ctx.make_node<ast::For>($3, $5, std::move($7), @1); }
-        |       FOR var ":" map none_block           { $$ = driver.ctx.make_node<ast::For>($2, $4, std::move($5), @1); }
-        |       FOR "(" var ":" range ")" none_block { $$ = driver.ctx.make_node<ast::For>($3, $5, std::move($7), @1); }
-        |       FOR var ":" range none_block         { $$ = driver.ctx.make_node<ast::For>($2, $4, std::move($5), @1); }
+                FOR "(" var ":" map ")" none_block   { $$ = driver.ctx.make_node<ast::For>(@1, $3, $5, std::move($7)); }
+        |       FOR var ":" map none_block           { $$ = driver.ctx.make_node<ast::For>(@1, $2, $4, std::move($5)); }
+        |       FOR "(" var ":" range ")" none_block { $$ = driver.ctx.make_node<ast::For>(@1, $3, $5, std::move($7)); }
+        |       FOR var ":" range none_block         { $$ = driver.ctx.make_node<ast::For>(@1, $2, $4, std::move($5)); }
                 ;
 
 range:
-                primary_expr DOT DOT primary_expr { $$ = driver.ctx.make_node<ast::Range>($1, $4, @$); }
+                primary_expr DOT DOT primary_expr { $$ = driver.ctx.make_node<ast::Range>(@$, $1, $4); }
                 ;
 
 if_stmt:
-                IF cond_expr none_block                 { $$ = driver.ctx.make_node<ast::IfExpr>($2, $3, driver.ctx.make_node<ast::None>(@1), @$); }
-        |       IF cond_expr bare_block ELSE none_block { $$ = driver.ctx.make_node<ast::IfExpr>($2, $3, $5, @$); }
-        |       IF cond_expr bare_block ELSE if_stmt    { $$ = driver.ctx.make_node<ast::IfExpr>($2, $3, $5, @$); }
+                IF cond_expr none_block                 { $$ = driver.ctx.make_node<ast::IfExpr>(@$, $2, $3, driver.ctx.make_node<ast::None>(@1)); }
+        |       IF cond_expr bare_block ELSE none_block { $$ = driver.ctx.make_node<ast::IfExpr>(@$, $2, $3, $5); }
+        |       IF cond_expr bare_block ELSE if_stmt    { $$ = driver.ctx.make_node<ast::IfExpr>(@$, $2, $3, $5); }
         |       IF cond_expr bare_block ELSE if_expr
                 {
                   // This is a pure statement; override the value with `none`.
-                  auto *stmt = driver.ctx.make_node<ast::ExprStatement>($5, @$);
-                  auto *none = driver.ctx.make_node<ast::None>(@2);
-                  auto *block = driver.ctx.make_node<ast::BlockExpr>(ast::StatementList{ stmt }, none, @5);
-                  $$ = driver.ctx.make_node<ast::IfExpr>($2, $3, block, @$);
+                  auto *stmt = driver.ctx.make_node<ast::ExprStatement>(@5, $5);
+                  auto *none = driver.ctx.make_node<ast::None>(@4);
+                  auto *block = driver.ctx.make_node<ast::BlockExpr>(@5, ast::StatementList{ stmt }, none);
+                  $$ = driver.ctx.make_node<ast::IfExpr>(@$, $2, $3, block);
                 }
                 ;
 
 if_expr:
-                IF cond_expr block_expr ELSE if_expr    { $$ = driver.ctx.make_node<ast::IfExpr>($2, $3, $5, @$); }
-        |       IF cond_expr block_expr ELSE block_expr { $$ = driver.ctx.make_node<ast::IfExpr>($2, $3, $5, @$); }
+                IF cond_expr block_expr ELSE if_expr    { $$ = driver.ctx.make_node<ast::IfExpr>(@$, $2, $3, $5); }
+        |       IF cond_expr block_expr ELSE block_expr { $$ = driver.ctx.make_node<ast::IfExpr>(@$, $2, $3, $5); }
                 ;
 
 assign_stmt:
@@ -560,34 +585,35 @@ assign_stmt:
                   error(@1 + @3, "Tuples are immutable once created. Consider creating a new tuple and assigning it instead.");
                   YYERROR;
                 }
-        |       map ASSIGN expr           { $$ = driver.ctx.make_node<ast::AssignScalarMapStatement>($1, $3, @$); }
-        |       map_expr ASSIGN expr      { $$ = driver.ctx.make_node<ast::AssignMapStatement>($1->map, $1->key, $3, @$); }
-        |       var_decl_stmt ASSIGN expr { $$ = driver.ctx.make_node<ast::AssignVarStatement>($1, $3, @$); }
-        |       var ASSIGN expr           { $$ = driver.ctx.make_node<ast::AssignVarStatement>($1, $3, @$); }
+        |       map ASSIGN expr           { $$ = driver.ctx.make_node<ast::AssignScalarMapStatement>(@$, $1, $3); }
+        |       map_expr ASSIGN expr      { $$ = driver.ctx.make_node<ast::AssignMapStatement>(@$, $1, $3); }
+        |       var_decl_stmt ASSIGN expr { $$ = driver.ctx.make_node<ast::AssignVarStatement>(@$, $1, $3); }
+        |       var ASSIGN expr           { $$ = driver.ctx.make_node<ast::AssignVarStatement>(@$, $1, $3); }
+        |       UNDERSCORE ASSIGN expr    { $$ = driver.ctx.make_node<ast::DiscardExpr>(@$, $3); }
         |       map compound_op expr
                 {
-                  auto b = driver.ctx.make_node<ast::Binop>($1, $2, $3, @2);
-                  $$ = driver.ctx.make_node<ast::AssignScalarMapStatement>($1, b, @$);
+                  auto b = driver.ctx.make_node<ast::Binop>(@2, $1, $2, $3);
+                  $$ = driver.ctx.make_node<ast::AssignScalarMapStatement>(@$, $1, b);
                 }
         |       map_expr compound_op expr
                 {
-                  auto b = driver.ctx.make_node<ast::Binop>($1, $2, $3, @2);
-                  $$ = driver.ctx.make_node<ast::AssignMapStatement>($1->map, $1->key, b, @$);
+                  auto b = driver.ctx.make_node<ast::Binop>(@2, $1, $2, $3);
+                  $$ = driver.ctx.make_node<ast::AssignMapStatement>(@$, $1, b);
                 }
         |       var compound_op expr
                 {
-                  auto b = driver.ctx.make_node<ast::Binop>($1, $2, $3, @2);
-                  $$ = driver.ctx.make_node<ast::AssignVarStatement>($1, b, @$);
+                  auto b = driver.ctx.make_node<ast::Binop>(@2, $1, $2, $3);
+                  $$ = driver.ctx.make_node<ast::AssignVarStatement>(@$, $1, b);
                 }
         ;
 
 map_decl_stmt:
-                LET MAP ASSIGN IDENT LPAREN UNSIGNED_INT RPAREN ";" { $$ = driver.ctx.make_node<ast::MapDeclStatement>($2, $4, $6, @$); }
+                LET MAP ASSIGN IDENT LPAREN integer RPAREN ";" { $$ = driver.ctx.make_node<ast::MapDeclStatement>(@$, $2, $4, $6->value); }
         ;
 
 var_decl_stmt:
-                 LET var                {  $$ = driver.ctx.make_node<ast::VarDeclStatement>($2, @$); }
-        |        LET var COLON any_type {  $$ = driver.ctx.make_node<ast::VarDeclStatement>($2, $4, @$); }
+                 LET var                {  $$ = driver.ctx.make_node<ast::VarDeclStatement>(@$, $2); }
+        |        LET var COLON any_type {  $$ = driver.ctx.make_node<ast::VarDeclStatement>(@$, $2, $4); }
         ;
 
 tuple_expr:
@@ -595,26 +621,42 @@ tuple_expr:
                 {
                   auto &args = $2;
                   args.push_back($4);
-                  $$ = driver.ctx.make_node<ast::Tuple>(std::move(args), @$);
+                  $$ = driver.ctx.make_node<ast::Tuple>(@$, std::move(args));
                 }
         |       "(" vargs "," ")"
                 {
                   // Tuple with a single element (possibly).
-                  $$ = driver.ctx.make_node<ast::Tuple>(std::move($2), @$);
+                  $$ = driver.ctx.make_node<ast::Tuple>(@$, std::move($2));
                 }
         |       "(" ")"
                 {
                   // Empty tuple.
-                  $$ = driver.ctx.make_node<ast::Tuple>(ast::ExpressionList({}), @$);
+                  $$ = driver.ctx.make_node<ast::Tuple>(@$, ast::ExpressionList({}));
+                }
+                ;
+
+integer:
+                UNSIGNED_INT
+                {
+                  auto res = util::to_uint($1, 0);
+                  if (!res) {
+                    std::stringstream ss;
+                    ss << res.takeError();
+                    error(@1, ss.str());
+                    YYERROR;
+                  } else {
+                    // Construct with the original string, which will be preserved.
+                    $$ = driver.ctx.make_node<ast::Integer>(@1, *res, std::move($1));
+                  }
                 }
                 ;
 
 primary_expr:
                 LPAREN expr RPAREN { $$ = $2; }
-        |       UNSIGNED_INT       { $$ = driver.ctx.make_node<ast::Integer>($1, @$); }
-        |       BOOL               { $$ = driver.ctx.make_node<ast::Boolean>($1, @$); }
-        |       STRING             { $$ = driver.ctx.make_node<ast::String>($1, @$); }
-        |       BUILTIN            { $$ = driver.ctx.make_node<ast::Builtin>($1, @$); }
+        |       integer            { $$ = $1; }
+        |       BOOL               { $$ = driver.ctx.make_node<ast::Boolean>(@$, $1); }
+        |       STRING             { $$ = driver.ctx.make_node<ast::String>(@$, $1); }
+        |       BUILTIN            { $$ = driver.ctx.make_node<ast::Builtin>(@$, $1); }
         |       param              { $$ = $1; }
         |       param_count        { $$ = $1; }
         |       var                { $$ = $1; }
@@ -630,48 +672,48 @@ primary_expr:
         |       offsetof_expr      { $$ = $1; }
         |       typeinfo_expr      { $$ = $1; }
         |       map %prec LOW      { $$ = $1; }
-        |       IDENT %prec LOW    { $$ = driver.ctx.make_node<ast::Identifier>($1, @$); }
+        |       IDENT %prec LOW    { $$ = driver.ctx.make_node<ast::Identifier>(@$, $1); }
                 ;
 
 prefix_expr:
-                INCREMENT var        { $$ = driver.ctx.make_node<ast::Unop>($2, ast::Operator::PRE_INCREMENT, @1); }
-        |       DECREMENT var        { $$ = driver.ctx.make_node<ast::Unop>($2, ast::Operator::PRE_DECREMENT, @1); }
-        |       INCREMENT map        { $$ = driver.ctx.make_node<ast::Unop>($2, ast::Operator::PRE_INCREMENT, @1); }
-        |       DECREMENT map        { $$ = driver.ctx.make_node<ast::Unop>($2, ast::Operator::PRE_DECREMENT, @1); }
-        |       INCREMENT map_expr   { $$ = driver.ctx.make_node<ast::Unop>($2, ast::Operator::PRE_INCREMENT, @1); }
-        |       DECREMENT map_expr   { $$ = driver.ctx.make_node<ast::Unop>($2, ast::Operator::PRE_DECREMENT, @1); }
+                INCREMENT var        { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, ast::Operator::PRE_INCREMENT); }
+        |       DECREMENT var        { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, ast::Operator::PRE_DECREMENT); }
+        |       INCREMENT map        { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, ast::Operator::PRE_INCREMENT); }
+        |       DECREMENT map        { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, ast::Operator::PRE_DECREMENT); }
+        |       INCREMENT map_expr   { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, ast::Operator::PRE_INCREMENT); }
+        |       DECREMENT map_expr   { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, ast::Operator::PRE_DECREMENT); }
 /* errors */
         |       INCREMENT ident      { error(@1, "The ++ operator must be applied to a map or variable"); YYERROR; }
         |       DECREMENT ident      { error(@1, "The -- operator must be applied to a map or variable"); YYERROR; }
                 ;
 
 postfix_expr:
-                var INCREMENT        { $$ = driver.ctx.make_node<ast::Unop>($1, ast::Operator::POST_INCREMENT, @2); }
-        |       var DECREMENT        { $$ = driver.ctx.make_node<ast::Unop>($1, ast::Operator::POST_DECREMENT, @2); }
-        |       map      INCREMENT   { $$ = driver.ctx.make_node<ast::Unop>($1, ast::Operator::POST_INCREMENT, @2); }
-        |       map      DECREMENT   { $$ = driver.ctx.make_node<ast::Unop>($1, ast::Operator::POST_DECREMENT, @2); }
-        |       map_expr INCREMENT   { $$ = driver.ctx.make_node<ast::Unop>($1, ast::Operator::POST_INCREMENT, @2); }
-        |       map_expr DECREMENT   { $$ = driver.ctx.make_node<ast::Unop>($1, ast::Operator::POST_DECREMENT, @2); }
+                var INCREMENT        { $$ = driver.ctx.make_node<ast::Unop>(@2, $1, ast::Operator::POST_INCREMENT); }
+        |       var DECREMENT        { $$ = driver.ctx.make_node<ast::Unop>(@2, $1, ast::Operator::POST_DECREMENT); }
+        |       map      INCREMENT   { $$ = driver.ctx.make_node<ast::Unop>(@2, $1, ast::Operator::POST_INCREMENT); }
+        |       map      DECREMENT   { $$ = driver.ctx.make_node<ast::Unop>(@2, $1, ast::Operator::POST_DECREMENT); }
+        |       map_expr INCREMENT   { $$ = driver.ctx.make_node<ast::Unop>(@2, $1, ast::Operator::POST_INCREMENT); }
+        |       map_expr DECREMENT   { $$ = driver.ctx.make_node<ast::Unop>(@2, $1, ast::Operator::POST_DECREMENT); }
 /* errors */
         |       ident DECREMENT      { error(@1, "The -- operator must be applied to a map or variable"); YYERROR; }
         |       ident INCREMENT      { error(@1, "The ++ operator must be applied to a map or variable"); YYERROR; }
                 ;
 
 tuple_access_expr:
-                primary_expr DOT UNSIGNED_INT { $$ = driver.ctx.make_node<ast::TupleAccess>($1, $3, @3); }
+                primary_expr DOT integer { $$ = driver.ctx.make_node<ast::TupleAccess>(@3, $1, $3->value); }
                 ;
 
 array_access_expr:
-                primary_expr "[" expr "]" { $$ = driver.ctx.make_node<ast::ArrayAccess>($1, $3, @2 + @4); }
+                primary_expr "[" expr "]" { $$ = driver.ctx.make_node<ast::ArrayAccess>(@2 + @4, $1, $3); }
                 ;
 
 field_access_expr:
-                primary_expr DOT external_name { $$ = driver.ctx.make_node<ast::FieldAccess>($1, $3, @2); }
-        |       primary_expr PTR external_name { $$ = driver.ctx.make_node<ast::FieldAccess>($1, $3, @2); }
+                primary_expr DOT external_name { $$ = driver.ctx.make_node<ast::FieldAccess>(@2, $1, $3); }
+        |       primary_expr PTR external_name { $$ = driver.ctx.make_node<ast::FieldAccess>(@2, $1, $3); }
                 ;
 
 block_expr:
-                "{" stmt_list expr "}" { $$ = driver.ctx.make_node<ast::BlockExpr>(std::move($2), $3, @$); }
+                "{" stmt_list expr "}" { $$ = driver.ctx.make_node<ast::BlockExpr>(@$, std::move($2), $3); }
                 ;
 
 // This block is a bare list of statements, but it allows for a final statement
@@ -686,14 +728,14 @@ bare_block:
                 "{" stmt_list "}"
                 {
                   auto *none = driver.ctx.make_node<ast::None>(@3);
-                  $$ = driver.ctx.make_node<ast::BlockExpr>(std::move($2), none, @$);
+                  $$ = driver.ctx.make_node<ast::BlockExpr>(@$, std::move($2), none);
                 }
         |       "{" stmt_list nonexpr_stmt "}"
                 {
                   auto stmts = std::move($2);
                   stmts.push_back($3);
                   auto *none = driver.ctx.make_node<ast::None>(@4);
-                  $$ = driver.ctx.make_node<ast::BlockExpr>(std::move(stmts), none, @$);
+                  $$ = driver.ctx.make_node<ast::BlockExpr>(@$, std::move(stmts), none);
                 }
                 ;
 
@@ -706,27 +748,27 @@ none_block:
         |       block_expr
                 {
                   auto *none = driver.ctx.make_node<ast::None>(@1);
-                  auto *stmt = driver.ctx.make_node<ast::ExprStatement>($1->expr, @$);
+                  auto *stmt = driver.ctx.make_node<ast::ExprStatement>(@$, $1->expr);
                   $1->stmts.push_back(stmt);
                   $1->expr.value = none;
                   $$ = $1;
                 }
 
 cast_expr:
-                LPAREN any_type RPAREN cast_expr           { $$ = driver.ctx.make_node<ast::Cast>($2, $4, @1 + @3); }
-        |       LPAREN any_type RPAREN unary_expr          { $$ = driver.ctx.make_node<ast::Cast>($2, $4, @1 + @3); }
+                LPAREN any_type RPAREN cast_expr           { $$ = driver.ctx.make_node<ast::Cast>(@1 + @3, $2, $4); }
+        |       LPAREN any_type RPAREN unary_expr          { $$ = driver.ctx.make_node<ast::Cast>(@1 + @3, $2, $4); }
 /* workaround for typedef types, see https://github.com/bpftrace/bpftrace/pull/2560#issuecomment-1521783935 */
-        |       LPAREN IDENT RPAREN cast_expr          { $$ = driver.ctx.make_node<ast::Cast>(driver.ctx.make_node<ast::Typeof>(ast::ident_to_record($2, 0), @2), $4, @1 + @3); }
-        |       LPAREN IDENT RPAREN unary_expr         { $$ = driver.ctx.make_node<ast::Cast>(driver.ctx.make_node<ast::Typeof>(ast::ident_to_record($2, 0), @2), $4, @1 + @3); }
-        |       LPAREN IDENT "*" RPAREN cast_expr      { $$ = driver.ctx.make_node<ast::Cast>(driver.ctx.make_node<ast::Typeof>(ast::ident_to_record($2, 1), @2), $5, @1 + @4); }
-        |       LPAREN IDENT "*" RPAREN unary_expr     { $$ = driver.ctx.make_node<ast::Cast>(driver.ctx.make_node<ast::Typeof>(ast::ident_to_record($2, 1), @2), $5, @1 + @4); }
-        |       LPAREN IDENT "*" "*" RPAREN cast_expr  { $$ = driver.ctx.make_node<ast::Cast>(driver.ctx.make_node<ast::Typeof>(ast::ident_to_record($2, 2), @2), $6, @1 + @5); }
-        |       LPAREN IDENT "*" "*" RPAREN unary_expr { $$ = driver.ctx.make_node<ast::Cast>(driver.ctx.make_node<ast::Typeof>(ast::ident_to_record($2, 2), @2), $6, @1 + @5); }
+        |       LPAREN IDENT RPAREN cast_expr          { $$ = driver.ctx.make_node<ast::Cast>(@1 + @3, driver.ctx.make_node<ast::Typeof>(@2, ast::ident_to_record($2, 0)), $4); }
+        |       LPAREN IDENT RPAREN unary_expr         { $$ = driver.ctx.make_node<ast::Cast>(@1 + @3, driver.ctx.make_node<ast::Typeof>(@2, ast::ident_to_record($2, 0)), $4); }
+        |       LPAREN IDENT "*" RPAREN cast_expr      { $$ = driver.ctx.make_node<ast::Cast>(@1 + @4, driver.ctx.make_node<ast::Typeof>(@2, ast::ident_to_record($2, 1)), $5); }
+        |       LPAREN IDENT "*" RPAREN unary_expr     { $$ = driver.ctx.make_node<ast::Cast>(@1 + @4, driver.ctx.make_node<ast::Typeof>(@2, ast::ident_to_record($2, 1)), $5); }
+        |       LPAREN IDENT "*" "*" RPAREN cast_expr  { $$ = driver.ctx.make_node<ast::Cast>(@1 + @5, driver.ctx.make_node<ast::Typeof>(@2, ast::ident_to_record($2, 2)), $6); }
+        |       LPAREN IDENT "*" "*" RPAREN unary_expr { $$ = driver.ctx.make_node<ast::Cast>(@1 + @5, driver.ctx.make_node<ast::Typeof>(@2, ast::ident_to_record($2, 2)), $6); }
                 ;
 
 unary_expr:
-                unary_op unary_expr    { $$ = driver.ctx.make_node<ast::Unop>($2, $1, @1); }
-        |       unary_op cast_expr     { $$ = driver.ctx.make_node<ast::Unop>($2, $1, @1); }
+                unary_op unary_expr    { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, $1); }
+        |       unary_op cast_expr     { $$ = driver.ctx.make_node<ast::Unop>(@1, $2, $1); }
         |       primary_expr           { $$ = $1; }
         |       prefix_expr            { $$ = $1; }
         |       postfix_expr           { $$ = $1; }
@@ -749,54 +791,56 @@ non_if_expr:
         |       cast_expr                 { $$ = $1; }
         |       unary_expr                { $$ = $1; }
         |       comptime_expr             { $$ = $1; }
-        |       expr QUES expr COLON expr { $$ = driver.ctx.make_node<ast::IfExpr>($1, $3, $5, @$); }
-        |       expr LOR expr             { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::LOR, $3, @2); }
-        |       expr LAND expr            { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::LAND, $3, @2); }
-        |       expr BOR expr             { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::BOR, $3, @2); }
-        |       expr BXOR expr            { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::BXOR, $3, @2); }
-        |       expr BAND expr            { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::BAND, $3, @2); }
-        |       expr EQ expr              { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::EQ, $3, @2); }
-        |       expr NE expr              { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::NE, $3, @2); }
-        |       expr LE expr              { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::LE, $3, @2); }
-        |       expr GE expr              { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::GE, $3, @2); }
-        |       expr LT expr              { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::LT, $3, @2); }
-        |       expr GT expr              { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::GT, $3, @2); }
-        |       expr LEFT expr            { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::LEFT, $3, @2); }
-        |       expr RIGHT expr           { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::RIGHT, $3, @2); }
-        |       expr PLUS expr            { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::PLUS, $3, @2); }
-        |       expr MINUS expr           { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::MINUS, $3, @2); }
-        |       expr MUL expr             { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::MUL, $3, @2); }
-        |       expr DIV expr             { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::DIV, $3, @2); }
-        |       expr MOD expr             { $$ = driver.ctx.make_node<ast::Binop>($1, ast::Operator::MOD, $3, @2); }
+        |       expr QUES expr COLON expr { $$ = driver.ctx.make_node<ast::IfExpr>(@$, $1, $3, $5); }
+        |       expr LOR expr             { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::LOR, $3); }
+        |       expr LAND expr            { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::LAND, $3); }
+        |       expr BOR expr             { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::BOR, $3); }
+        |       expr BXOR expr            { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::BXOR, $3); }
+        |       expr BAND expr            { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::BAND, $3); }
+        |       expr EQ expr              { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::EQ, $3); }
+        |       expr NE expr              { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::NE, $3); }
+        |       expr LE expr              { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::LE, $3); }
+        |       expr GE expr              { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::GE, $3); }
+        |       expr LT expr              { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::LT, $3); }
+        |       expr GT expr              { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::GT, $3); }
+        |       expr LEFT expr            { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::LEFT, $3); }
+        |       expr RIGHT expr           { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::RIGHT, $3); }
+        |       expr PLUS expr            { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::PLUS, $3); }
+        |       expr MINUS expr           { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::MINUS, $3); }
+        |       expr MUL expr             { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::MUL, $3); }
+        |       expr DIV expr             { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::DIV, $3); }
+        |       expr MOD expr             { $$ = driver.ctx.make_node<ast::Binop>(@2, $1, ast::Operator::MOD, $3); }
                 ;
 
 sizeof_expr:
-                SIZEOF "(" type ")"                         { $$ = driver.ctx.make_node<ast::Sizeof>($3, @$); }
-        |       SIZEOF "(" expr ")"                         { $$ = driver.ctx.make_node<ast::Sizeof>($3, @$); }
+                SIZEOF "(" type ")"                         { $$ = driver.ctx.make_node<ast::Sizeof>(@$, $3); }
+        |       SIZEOF "(" expr ")"                         { $$ = driver.ctx.make_node<ast::Sizeof>(@$, $3); }
                 ;
 
 offsetof_expr:
-                OFFSETOF "(" struct_type "," struct_field ")"      { $$ = driver.ctx.make_node<ast::Offsetof>($3, $5, @$); }
+                OFFSETOF "(" struct_type "," struct_field ")"      { $$ = driver.ctx.make_node<ast::Offsetof>(@$, $3, $5); }
                 /* For example: offsetof(*curtask, comm) */
-        |       OFFSETOF "(" expr "," struct_field ")"             { $$ = driver.ctx.make_node<ast::Offsetof>($3, $5, @$); }
+        |       OFFSETOF "(" expr "," struct_field ")"             { $$ = driver.ctx.make_node<ast::Offsetof>(@$, $3, $5); }
                 ;
 
 typeof_expr:
-                TYPEOF "(" type ")"  { $$ = driver.ctx.make_node<ast::Typeof>($3, @$); }
-        |       TYPEOF "(" expr ")"  { $$ = driver.ctx.make_node<ast::Typeof>($3, @$); }
+                TYPEOF "(" type ")"  { $$ = driver.ctx.make_node<ast::Typeof>(@$, $3); }
+        |       TYPEOF "(" IDENT "*" ")"  { $$ = driver.ctx.make_node<ast::Typeof>(@$, ast::ident_to_record($3, 1)); }
+        |       TYPEOF "(" IDENT "*" "*" ")"  { $$ = driver.ctx.make_node<ast::Typeof>(@$, ast::ident_to_record($3, 2)); }
+        |       TYPEOF "(" expr ")"  { $$ = driver.ctx.make_node<ast::Typeof>(@$, $3); }
                 ;
 
 typeinfo_expr:
-                TYPEINFO "(" type ")"  { $$ = driver.ctx.make_node<ast::Typeinfo>(driver.ctx.make_node<ast::Typeof>($3, @$), @$); }
-        |       TYPEINFO "(" expr ")"  { $$ = driver.ctx.make_node<ast::Typeinfo>(driver.ctx.make_node<ast::Typeof>($3, @$), @$); }
+                TYPEINFO "(" type ")"  { $$ = driver.ctx.make_node<ast::Typeinfo>(@$, driver.ctx.make_node<ast::Typeof>(@$, $3)); }
+        |       TYPEINFO "(" expr ")"  { $$ = driver.ctx.make_node<ast::Typeinfo>(@$, driver.ctx.make_node<ast::Typeof>(@$, $3)); }
                 ;
 
 comptime_expr:
-                COMPTIME unary_expr { $$ = driver.ctx.make_node<ast::Comptime>($2, @$); }
+                COMPTIME unary_expr { $$ = driver.ctx.make_node<ast::Comptime>(@$, $2); }
                 ;
 
 any_type:
-                type        { $$ = driver.ctx.make_node<ast::Typeof>($1, @$); }
+                type        { $$ = driver.ctx.make_node<ast::Typeof>(@$, $1); }
         |       typeof_expr { $$ = $1; }
                 ;
 
@@ -837,37 +881,37 @@ external_name:
                 ;
 
 call_expr:
-                IDENT "(" ")"                 { $$ = driver.ctx.make_node<ast::Call>($1, ast::ExpressionList({}), @$); }
-        |       BUILTIN "(" ")"               { $$ = driver.ctx.make_node<ast::Call>($1, ast::ExpressionList({}), @$); }
-        |       IDENT "(" vargs ")"           { $$ = driver.ctx.make_node<ast::Call>($1, std::move($3), @$); }
-        |       BUILTIN "(" vargs ")"         { $$ = driver.ctx.make_node<ast::Call>($1, std::move($3), @$); }
+                IDENT "(" ")"                 { $$ = driver.ctx.make_node<ast::Call>(@$, $1, ast::ExpressionList({})); }
+        |       BUILTIN "(" ")"               { $$ = driver.ctx.make_node<ast::Call>(@$, $1, ast::ExpressionList({})); }
+        |       IDENT "(" vargs ")"           { $$ = driver.ctx.make_node<ast::Call>(@$, $1, std::move($3)); }
+        |       BUILTIN "(" vargs ")"         { $$ = driver.ctx.make_node<ast::Call>(@$, $1, std::move($3)); }
                 ;
 
 map:
-                MAP { $$ = driver.ctx.make_node<ast::Map>($1, @$); }
+                MAP { $$ = driver.ctx.make_node<ast::Map>(@$, $1); }
                 ;
 
 map_expr:
                 map "[" vargs "]" {
                         if ($3.size() > 1) {
-                          auto t = driver.ctx.make_node<ast::Tuple>(std::move($3), @$);
-                          $$ = driver.ctx.make_node<ast::MapAccess>($1, t, @$);
+                          auto t = driver.ctx.make_node<ast::Tuple>(@$, std::move($3));
+                          $$ = driver.ctx.make_node<ast::MapAccess>(@$, $1, t);
                         } else {
-                          $$ = driver.ctx.make_node<ast::MapAccess>($1, $3.back(), @$);
+                          $$ = driver.ctx.make_node<ast::MapAccess>(@$, $1, $3.back());
                         }
                 }
                 ;
 
 var:
-                VAR { $$ = driver.ctx.make_node<ast::Variable>($1, @$); }
+                VAR { $$ = driver.ctx.make_node<ast::Variable>(@$, $1); }
                 ;
 
 var_addr:
-                BAND var { $$ = driver.ctx.make_node<ast::VariableAddr>($2, @$); }
+                BAND var { $$ = driver.ctx.make_node<ast::VariableAddr>(@$, $2); }
                 ;
 
 map_addr:
-                BAND map { $$ = driver.ctx.make_node<ast::MapAddr>($2, @$); }
+                BAND map { $$ = driver.ctx.make_node<ast::MapAddr>(@$, $2); }
                 ;
 
 vargs:

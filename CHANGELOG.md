@@ -15,7 +15,15 @@ and this project adheres to
   - [#4677](https://github.com/bpftrace/bpftrace/pull/4677)
 - Remove the deprecated `sarg` builtin
   - [#4686](https://github.com/bpftrace/bpftrace/pull/4686)
+- Benchmark formats changed slightly, to reflect gbenchmark
+  - [#4753](https://github.com/bpftrace/bpftrace/pull/4753)
 #### Added
+- Add `comm()` support for PID parameters.
+  - [#4799](https://github.com/bpftrace/bpftrace/pull/4799)
+- Add `syscall_name()` to convert system call numbers into names.
+  - [#4746](https://github.com/bpftrace/bpftrace/pull/4746)
+- Add `pcomm` to stdlib and `ppid` can be called without arguments.
+  - [#4744](https://github.com/bpftrace/bpftrace/pull/4744)
 - Add support for indexing string types
   - [#4540](https://github.com/bpftrace/bpftrace/pull/4540)
 - Automatic dereferencing is supported via `.`, now the preferred access operator
@@ -26,18 +34,45 @@ and this project adheres to
   - [#4712](https://github.com/bpftrace/bpftrace/pull/4712)
 - Allow array-style access for tuples
   - [#4715](https://github.com/bpftrace/bpftrace/pull/4715)
+- Add `test` probes as means to improve runtime test latency
+  - [#4753](https://github.com/bpftrace/bpftrace/pull/4753)
+- Multiple `begin` & `end` probes are now permitted
+  - [#4789](https://github.com/bpftrace/bpftrace/pull/4789)
+- Probes may now be named (reserved for future use)
+  - [#4752](https://github.com/bpftrace/bpftrace/pull/4752)
+- Add support for more vmlinux BTF types as identifiers
+  - [#4853](https://github.com/bpftrace/bpftrace/pull/4853)
 #### Changed
+- Add helpers to check if a kfunc exists and is supported for particular probe types.
+  - [#4857](https://github.com/bpftrace/bpftrace/pull/4857)
+- `uaddr` support PIE and dynamic library symbols.
+  - [#4727](https://github.com/bpftrace/bpftrace/pull/4727)
 - Apply `-B` buffering semantics to file outputs.
   - [#4637](https://github.com/bpftrace/bpftrace/pull/4637)
 - Link against libbpf vendored from a submodule by default
   - [#4688](https://github.com/bpftrace/bpftrace/pull/4688)
 - Increase RLIMIT_NOFILE on startup as needed
   - [#4716](https://github.com/bpftrace/bpftrace/pull/4716)
+- Root user check replaced with check for required capabilities
+  (CAP_BPF, CAP_PERFMON, CAP_DAC_READ_SEARCH, CAP_DAC_OVERRIDE)
+  - [#4773](https://github.com/bpftrace/bpftrace/pull/4773)
+- Remove automatic type promotion for integers, making them more flexible
+  - [#4768](https://github.com/bpftrace/bpftrace/pull/4768)
+- Stabilize macros (remove 'unstable_macro' flag)
+  - [#4818](https://github.com/bpftrace/bpftrace/pull/4818)
+- Warn on all discarded expressions
+  - [#4836](https://github.com/bpftrace/bpftrace/pull/4836)
 #### Deprecated
 #### Removed
 - Drop support for LLVM 16
   - [#4534](https://github.com/bpftrace/bpftrace/pull/4534)
 #### Fixed
+- Fix language part being overwritten in uprobe attachpoint parser
+  - [#4856](https://github.com/bpftrace/bpftrace/pull/4856)
+- output: prevent crash when printing overflow-only lhist
+  - [#4801](https://github.com/bpftrace/bpftrace/pull/4801)
+- join(): Fix wrong index of GEP that was causing truncation
+  - [#4786](https://github.com/bpftrace/bpftrace/pull/4786)
 - Improved tuple binop comparison
   - [#4523](https://github.com/bpftrace/bpftrace/pull/4523)
 - Fix off-by-one for function argument size comparison
@@ -46,9 +81,23 @@ and this project adheres to
   - [#4714](https://github.com/bpftrace/bpftrace/pull/4714)
 - Fix block expression handling inside print statements
   - [#4704](https://github.com/bpftrace/bpftrace/issues/4704)
+- codegen: Fix tid/pid in non-init namespaces
+  - [#4813](https://github.com/bpftrace/bpftrace/issues/4813)
+- Fix automatic conversion of BTF char arrays to bpftrace strings
+  - [#4861](https://github.com/bpftrace/bpftrace/pull/4861)
+- Fix anonymous struct/unions not resolving correctly from BTF
+  - [#4732](https://github.com/bpftrace/bpftrace/pull/4732)
 #### Security
 #### Docs
 #### Tools
+- undump.bt: Support dgram packet capture
+  - [#4846](https://github.com/bpftrace/bpftrace/pull/4846)
+- opensnoop.bt: Fix multi-thread race condition of @paths
+  - [#4837](https://github.com/bpftrace/bpftrace/pull/4837)
+- syscount.bt: Fix incorrect map printing
+  - [#4831](https://github.com/bpftrace/bpftrace/pull/4831)
+- opensnoop.bt: support mount points
+  - [#4822](https://github.com/bpftrace/bpftrace/pull/4822)
 - opensnoop.bt: support full file path
   - [#4601](https://github.com/bpftrace/bpftrace/pull/4601)
 - gethostlatency.bt: add more APIs support

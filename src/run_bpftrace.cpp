@@ -1,8 +1,10 @@
 #include <csignal>
 #include <cstring>
 #include <fstream>
+#include <linux/capability.h>
 #include <linux/version.h>
 #include <optional>
+#include <sys/syscall.h>
 #include <sys/utsname.h>
 
 #include "log.h"
@@ -37,10 +39,50 @@ int libbpf_print(enum libbpf_print_level level, const char *msg, va_list ap)
   return vprintf(msg, ap);
 }
 
-void check_is_root()
+void check_privileges()
 {
-  if (geteuid() != 0) {
-    LOG(ERROR) << "bpftrace currently only supports running as the root user.";
+  struct __user_cap_header_struct header = {
+    .version = _LINUX_CAPABILITY_VERSION_3,
+    .pid = getpid(),
+  };
+  static_assert(_LINUX_CAPABILITY_U32S_3 == 2);
+  struct __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_3];
+
+  // There is no syscall wrapper for capget() in libc so we have
+  // to use syscall() here.
+  if (syscall(SYS_capget, &header, data) < 0) {
+    LOG(ERROR) << "Failed to query process capabilities: " << strerror(errno);
+    exit(1);
+  }
+
+  uint64_t effective = static_cast<uint64_t>(data[0].effective) |
+                       (static_cast<uint64_t>(data[1].effective) << 32);
+
+  static const char *root_user_msg = "please run bpftrace as the root user.";
+
+  // If we're not running as root, we need both CAP_DAC capabilities to be able
+  // to read inside of /sys/fs/bpf which is mounted with mode 0700 by default.
+  if (geteuid() != 0 && !(effective & (1ULL << CAP_DAC_READ_SEARCH))) {
+    LOG(ERROR) << "Missing CAP_DAC_READ_SEARCH capability, " << root_user_msg;
+    exit(1);
+  }
+
+  if (geteuid() != 0 && !(effective & (1ULL << CAP_DAC_OVERRIDE))) {
+    LOG(ERROR) << "Missing CAP_DAC_OVERRIDE capability" << root_user_msg;
+    exit(1);
+  }
+
+  // CAP_SYS_ADMIN covers both CAP_BPF and CAP_PERFMON for backwards compat.
+  if (effective & (1ULL << CAP_SYS_ADMIN))
+    return;
+
+  if (!(effective & (1ULL << CAP_BPF))) {
+    LOG(ERROR) << "Missing CAP_BPF capability, " << root_user_msg;
+    exit(1);
+  }
+
+  if (!(effective & (1ULL << CAP_PERFMON))) {
+    LOG(ERROR) << "Missing CAP_PERFMON capability, " << root_user_msg;
     exit(1);
   }
 }
@@ -187,37 +229,14 @@ int run_bpftrace(BPFtrace &bpftrace,
   act.sa_handler = [](int) { BPFtrace::sigusr1_recv = true; };
   sigaction(SIGUSR1, &act, nullptr);
 
+  // Record the error code, but finish the actions below.
   err = bpftrace.run(*output, c_definitions, std::move(bytecode));
-  if (err)
-    return err;
 
-  // Indicate that we are done the main loop.
-  output->end();
-
-  // We are now post-processing. If we receive another SIGINT,
-  // handle it normally (exit)
+  // We are now post-processing, remove our signal handler.
   act.sa_handler = SIG_DFL;
   sigaction(SIGINT, &act, nullptr);
 
-  // Print maps if needed (true by default).
-  if (!dry_run) {
-    if (bpftrace.run_benchmarks_) {
-      output->benchmark_results(bpftrace.benchmark_results);
-    }
-    if (bpftrace.config_->print_maps_on_exit) {
-      for (const auto &[_, map] : bpftrace.bytecode_.maps()) {
-        if (!map.is_printable())
-          continue;
-        auto res = format(bpftrace, c_definitions, map);
-        if (!res) {
-          std::cerr << "Error printing map: " << res.takeError();
-          continue;
-        }
-        output->map(map.name(), *res);
-      }
-    }
-  }
-
+  // Kill the child, if needed.
   if (bpftrace.child_) {
     auto val = 0;
     if ((val = bpftrace.child_->term_signal()) > -1)
@@ -226,8 +245,10 @@ int run_bpftrace(BPFtrace &bpftrace,
       LOG(V1) << "Child exited with code: " << val;
   }
 
-  if (err)
+  // See above; return any error.
+  if (err) {
     return err;
+  }
 
-  return BPFtrace::exit_code;
+  return bpftrace.exit_code;
 }

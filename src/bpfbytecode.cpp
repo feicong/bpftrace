@@ -85,13 +85,7 @@ const BpfProgram &BpfBytecode::getProgramForProbe(const Probe &probe) const
   auto prog = programs_.find(
       util::get_function_name_for_probe(probe.name, probe.index));
   if (prog == programs_.end()) {
-    std::stringstream msg;
-    if (probe.name != probe.orig_name)
-      msg << "Code not generated for probe " << probe.name << " (expanded from "
-          << probe.orig_name << ")";
-    else
-      msg << "Code not generated for probe: " << probe.name;
-    throw std::runtime_error(msg.str());
+    throw std::runtime_error("Code not generated for probe: " + probe.name);
   }
 
   return prog->second;
@@ -197,10 +191,9 @@ void BpfBytecode::load_progs(const RequiredResources &resources,
     bpf_program__set_log_buf(prog.bpf_prog(), log_buf.data(), log_buf.size());
   }
 
-  std::vector<Probe> special_probes;
-  for (auto probe : resources.special_probes)
-    special_probes.push_back(probe.second);
-  prepare_progs(special_probes, btf, feature, config);
+  prepare_progs(resources.begin_probes, btf, feature, config);
+  prepare_progs(resources.end_probes, btf, feature, config);
+  prepare_progs(resources.test_probes, btf, feature, config);
   prepare_progs(resources.benchmark_probes, btf, feature, config);
   prepare_progs(resources.signal_probes, btf, feature, config);
   prepare_progs(resources.probes, btf, feature, config);

@@ -26,7 +26,7 @@ EXPECT hello world!
 TIMEOUT 1
 
 NAME it lists kprobes
-RUN {{BPFTRACE}} -l | grep kprobes
+RUN {{BPFTRACE}} --list | grep kprobes
 EXPECT_REGEX kprobe:.*
 TIMEOUT 1
 
@@ -174,7 +174,7 @@ EXPECT fentry:vmlinux:vfs_read
 EXPECT_NONE fentry:vmlinux:vfs_write
 
 NAME it lists uprobes in the program
-RUN {{BPFTRACE}} -l -e 'uretprobe:*:uprobeFunction* { exit(); }' -p {{BEFORE_PID}}
+RUN {{BPFTRACE}} -l -e 'uretprobe:*:uprobeFunction* { exit(); }' --pid {{BEFORE_PID}}
 EXPECT_REGEX uretprobe:[\S]+uprobe_test:uprobeFunction1
 BEFORE ./testprogs/uprobe_test
 
@@ -248,35 +248,8 @@ TIMEOUT 1
 
 NAME clear count-map
 PROG begin { @ = count(); @a[1] = count(); clear(@); clear(@a); }
-EXPECT @: 0
-TIMEOUT 1
-
-NAME delete map
-PROG begin { @ = 1; @a[1] = 1; @b[1, 2] = 2; if (delete(@)) { printf("ok1\n"); } delete(@a, 1); if (delete(@b, (1, 2))) { printf("ok2\n"); } if (!delete(@b, (5, 6))) { printf("ok3\n"); } }
-EXPECT ok1
-EXPECT ok2
-EXPECT ok3
-TIMEOUT 1
-
-NAME delete count-map
-PROG begin { @ = count(); @a[1] = count(); delete(@); delete(@a, 1); }
-EXPECT @: 0
-TIMEOUT 1
-
-NAME delete deprecated
-PROG begin { @a[1] = 1; @b[2, "hi"] = 2; delete(@a[1]); delete(@b[2, "hi"]); }
+EXPECT_NONE @: 0
 EXPECT_NONE @a[1]: 1
-EXPECT_NONE @b[2, hi]: 2
-TIMEOUT 1
-
-NAME bad delete warning
-PROG begin { @a[1] = 1; delete(@a, 2); }
-EXPECT stdin:1:20-33: WARNING: Can't delete map element because it does not exist.
-TIMEOUT 1
-
-NAME bad delete no warning
-PROG begin { @a[1] = 1; $x = delete(@a, 2); if (1 && !delete(@a, 3)) {} }
-EXPECT_NONE stdin:1:20-33: WARNING: Can't delete map element because it does not exist.
 TIMEOUT 1
 
 NAME increment/decrement map
@@ -295,7 +268,7 @@ EXPECT 10 12 12 10
 TIMEOUT 1
 
 NAME spawn child
-RUN {{BPFTRACE}} -e 'i:ms:500 { printf("%d\n", cpid); }' -c './testprogs/syscall nanosleep 1e9'
+RUN {{BPFTRACE}} -e 'i:ms:500 { printf("%d\n", cpid); }' --cmd './testprogs/syscall nanosleep 1e9'
 EXPECT_REGEX [0-9]+
 TIMEOUT 3
 
@@ -307,6 +280,11 @@ TIMEOUT 1
 NAME basic while loop
 PROG begin { $a = 0; while ($a <= 100) { @=avg($a++) }  }
 EXPECT @: 50
+REQUIRES_FEATURE loop
+
+NAME nested while loop
+PROG begin { $i = 0; while ($i < 3) { $j = 0; while ($j < 2) { @count = count(); $j++; } $i++; } }
+EXPECT @count: 6
 REQUIRES_FEATURE loop
 
 NAME disable warnings
@@ -346,7 +324,7 @@ TIMEOUT 1
 
 NAME has_key
 RUN {{BPFTRACE}} runtime/scripts/has_key.bt
-EXPECT 7
+EXPECT 8
 
 NAME has_key error scalar
 PROG begin { @g = 2; if (has_key(@g, 2)) { printf("ok\n"); }  }
@@ -355,7 +333,7 @@ WILL_FAIL
 
 NAME has_key error type mismatch
 PROG begin { @g[1, "hi"] = 2; if (has_key(@g, (1, 2))) { printf("ok\n"); }  }
-EXPECT_REGEX .* ERROR: Argument mismatch for @g: trying to access with arguments: '\(int64,int64\)' when map expects arguments: '\(int64,string\)'.*
+EXPECT_REGEX .* ERROR: Argument mismatch for @g: trying to access with arguments: '\(uint8,uint8\)' when map expects arguments: '\(uint8,string\[3\]\)'.*
 WILL_FAIL
 
 NAME exit code
@@ -371,3 +349,37 @@ NAME print block expression with print
 PROG begin { print({ $x = 1; print ("bob"); $x > 1 }); }
 EXPECT bob
 EXPECT false
+
+NAME block expression with condition
+PROG begin { if ({ let $a = true; $a }) { print ("bob"); } }
+EXPECT bob
+
+NAME block expression complex
+PROG begin { $x = { $y = { $z = 10; $z + 5 }; $y * 2 }; print($x); }
+EXPECT 30
+
+NAME logical and with different types
+PROG begin { $x = 5; $y = true; if ($x && $y) { print("ok"); } }
+EXPECT ok
+
+NAME logical or with different types
+PROG begin { $x = 0; $y = true; if ($x || $y) { print("ok"); } }
+EXPECT ok
+
+NAME bitshift
+PROG begin { @x = 1 << 10; @y = 1024 >> 9; }
+EXPECT @x: 1024
+EXPECT @y: 2
+
+NAME bitwise_not
+PROG begin { @x = ~10; }
+EXPECT @x: 18446744073709551605
+
+NAME discard expression
+PROG begin { _ = { print(1); 1 } }
+EXPECT 1
+EXPECT_REGEX_NONE .*WARNING: Return value discarded..*
+
+NAME probe return
+PROG begin { $a = 1; print($a); return $a; }
+EXPECT 1

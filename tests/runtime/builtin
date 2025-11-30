@@ -95,6 +95,14 @@ PROG uprobe:./testprogs/uprobe_symres_exited_process:test { print(func); exit();
 EXPECT test
 AFTER ./testprogs/disable_aslr ./testprogs/uprobe_symres_exited_process
 
+NAME func_wildcard
+PROG uprobe:./testprogs/uprobe_test:uprobeFunction* { print(func); }
+EXPECT uprobeFunction1
+EXPECT uprobeFunction2
+REQUIRES_FEATURE dwarf
+TIMEOUT 5
+BEFORE ./testprogs/uprobe_test
+
 NAME username
 PROG i:ms:1 { printf("SUCCESS %s\n", username); exit(); }
 EXPECT_REGEX SUCCESS .*
@@ -108,6 +116,14 @@ NAME begin probe
 PROG begin { printf("%s", probe); } end{printf("-%s\n", probe); }
 EXPECT_REGEX ^begin-end$
 AFTER ./testprogs/syscall nanosleep 1e8
+
+NAME probe_wildcard
+PROG uprobe:./testprogs/uprobe_test:uprobeFunction* { print(probe); }
+EXPECT uprobe:./testprogs/uprobe_test:uprobeFunction1
+EXPECT uprobe:./testprogs/uprobe_test:uprobeFunction2
+REQUIRES_FEATURE dwarf
+TIMEOUT 5
+BEFORE ./testprogs/uprobe_test
 
 NAME curtask
 PROG i:ms:1 { printf("SUCCESS %p\n", curtask); exit(); }
@@ -160,7 +176,7 @@ EXPECT ERROR: failed to open file '/does/not/exist/file': No such file or direct
 
 NAME sizeof
 PROG struct Foo { int x; char c; } begin { $x = 1; printf("%d %d %d %d %d\n", sizeof(struct Foo), sizeof((*(struct Foo*)0).x), sizeof((*(struct Foo*)0).c), sizeof(1 == 1), sizeof($x));  }
-EXPECT 8 4 1 1 8
+EXPECT 8 4 1 1 1
 
 NAME sizeof_ints
 PROG begin { printf("%d %d %d %d %d %d\n", sizeof(uint8), sizeof(int8), sizeof(uint16), sizeof(int16), sizeof(uint32), sizeof(int32));  }
@@ -176,9 +192,19 @@ PROG begin { printf("size=%d\n", sizeof(struct task_struct));  }
 EXPECT_REGEX ^size=
 REQUIRES_FEATURE btf
 
+NAME sizeof_btf_int
+PROG begin { print(sizeof(uint64_t));  }
+EXPECT 8
+REQUIRES_FEATURE btf
+
 NAME offsetof
 PROG struct Foo { int x; struct Bar { int x; } bar; } begin { printf("%ld %ld\n", offsetof(struct Foo, x), offsetof(struct Foo, bar.x));  }
 EXPECT_REGEX ^0 4$
+
+NAME offsetof_btf
+PROG begin { print(offsetof(qspinlock, tail)); }
+EXPECT_REGEX ^[0-9]+
+REQUIRES_FEATURE btf
 
 NAME print args in fentry
 PROG fentry:vfs_open { print(args); exit(); }

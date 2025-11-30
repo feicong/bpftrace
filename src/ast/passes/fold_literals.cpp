@@ -146,7 +146,7 @@ static Expression make_boolean(ASTContext &ast, T left, T right, Binop &op)
       LOG(BUG) << "binary operator is not valid: " << static_cast<int>(op.op);
   }
 
-  return ast.make_node<Boolean>(value, Location(op.loc));
+  return ast.make_node<Boolean>(op.loc, value);
 }
 
 std::optional<bool> LiteralFolder::compare_tuples(Tuple *left_tuple,
@@ -358,8 +358,7 @@ std::optional<Expression> LiteralFolder::visit(Cast &cast)
 {
   visit(cast.expr);
   if (cast.type().IsBoolTy() && cast.expr.is_literal()) {
-    return ast_.make_node<Boolean>(eval_bool(cast.expr),
-                                   Location(cast.expr.loc()));
+    return ast_.make_node<Boolean>(cast.expr.loc(), eval_bool(cast.expr));
   }
   return std::nullopt;
 }
@@ -369,14 +368,11 @@ std::optional<Expression> LiteralFolder::visit(Unop &op)
   visit(op.expr);
 
   if (auto *integer = op.expr.as<Integer>()) {
-    bool force_unsigned = !integer->type().IsSigned();
     if (op.op == Operator::BNOT) {
       // Still positive.
-      return ast_.make_node<Integer>(~integer->value,
-                                     Location(op.loc),
-                                     force_unsigned);
+      return ast_.make_node<Integer>(op.loc, ~integer->value);
     } else if (op.op == Operator::LNOT) {
-      return ast_.make_node<Boolean>(!integer->value, Location(op.loc));
+      return ast_.make_node<Boolean>(op.loc, !integer->value);
     } else if (op.op == Operator::MINUS) {
       // Ensure that it is representable as a negative value.
       if (integer->value >
@@ -390,34 +386,33 @@ std::optional<Expression> LiteralFolder::visit(Unop &op)
         return integer; // Drop the operation.
       } else if (integer->value <= 1) {
         return ast_.make_node<NegativeInteger>(
-            -static_cast<int64_t>(integer->value), Location(op.loc));
+            op.loc, -static_cast<int64_t>(integer->value));
       } else {
         int64_t value = -1;
         value -= static_cast<int64_t>(integer->value - 1);
-        return ast_.make_node<NegativeInteger>(value, Location(op.loc));
+        return ast_.make_node<NegativeInteger>(op.loc, value);
       }
     }
   } else if (auto *integer = op.expr.as<NegativeInteger>()) {
     if (op.op == Operator::BNOT) {
       // Always positive.
-      return ast_.make_node<Integer>(static_cast<uint64_t>(~integer->value),
-                                     Location(op.loc));
+      return ast_.make_node<Integer>(op.loc,
+                                     static_cast<uint64_t>(~integer->value));
     } else if (op.op == Operator::LNOT) {
-      return ast_.make_node<Boolean>(!integer->value, Location(op.loc));
+      return ast_.make_node<Boolean>(op.loc, !integer->value);
     } else if (op.op == Operator::MINUS) {
       // Ensure that it doesn't overflow. We do this by ensuring that is
       // representable as a positive number, casting, and then adding 1 to
       // the unsigned form.
       int64_t value = integer->value + 1;
       value = -value;
-      return ast_.make_node<Integer>(static_cast<uint64_t>(value) + 1,
-                                     Location(op.loc));
+      return ast_.make_node<Integer>(op.loc, static_cast<uint64_t>(value) + 1);
     }
   } else if (auto *boolean = op.expr.as<Boolean>()) {
     // Just supporting logical not for now but we could support other
     // operations like BNOT (e.g. ~false == -1) in the future.
     if (op.op == Operator::LNOT) {
-      return ast_.make_node<Boolean>(!boolean->value, Location(op.loc));
+      return ast_.make_node<Boolean>(op.loc, !boolean->value);
     }
   }
   return std::nullopt;
@@ -441,10 +436,9 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
     if (op.op == Operator::PLUS && integer) {
       if (integer->value >= static_cast<uint64_t>(str->value.size())) {
         op.addWarning() << "literal string will always be empty";
-        return ast_.make_node<String>("", Location(op.loc));
+        return ast_.make_node<String>(op.loc, "");
       }
-      return ast_.make_node<String>(str->value.substr(integer->value),
-                                    Location(op.loc));
+      return ast_.make_node<String>(op.loc, str->value.substr(integer->value));
     }
 
     auto *rb = other.as<Boolean>();
@@ -464,31 +458,27 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
 
     switch (op.op) {
       case Operator::EQ:
-        return ast_.make_node<Boolean>(str->value == rs->value,
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc, str->value == rs->value);
       case Operator::NE:
-        return ast_.make_node<Boolean>(str->value != rs->value,
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc, str->value != rs->value);
       case Operator::LE:
-        return ast_.make_node<Boolean>(str->value <= rs->value,
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc, str->value <= rs->value);
       case Operator::GE:
-        return ast_.make_node<Boolean>(str->value >= rs->value,
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc, str->value >= rs->value);
       case Operator::LT:
-        return ast_.make_node<Boolean>(str->value < rs->value,
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc, str->value < rs->value);
       case Operator::GT:
-        return ast_.make_node<Boolean>(str->value > rs->value,
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc, str->value > rs->value);
       case Operator::LAND:
-        return ast_.make_node<Boolean>(!str->value.empty() && rs->value.empty(),
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc,
+                                       !str->value.empty() &&
+                                           rs->value.empty());
       case Operator::LOR:
-        return ast_.make_node<Boolean>(!str->value.empty() || rs->value.empty(),
-                                       Location(op.loc));
+        return ast_.make_node<Boolean>(op.loc,
+                                       !str->value.empty() ||
+                                           rs->value.empty());
       case Operator::PLUS:
-        return ast_.make_node<String>(str->value + rs->value, Location(op.loc));
+        return ast_.make_node<String>(op.loc, str->value + rs->value);
       default:
         // What are they tring to do?
         op.addError() << "illegal literal operation with strings";
@@ -531,9 +521,9 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
     auto *right_tuple = op.right.as<Tuple>();
     auto same = compare_tuples(left_tuple, right_tuple);
     if (same) {
-      return ast_.make_node<Boolean>(*same ? op.op == Operator::EQ
-                                           : op.op == Operator::NE,
-                                     Location(op.loc));
+      return ast_.make_node<Boolean>(op.loc,
+                                     *same ? op.op == Operator::EQ
+                                           : op.op == Operator::NE);
     } else {
       // Can't compare here
       return std::nullopt;
@@ -546,12 +536,10 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
   auto *ls = op.left.as<NegativeInteger>();
   auto *ru = op.right.as<Integer>();
   auto *rs = op.right.as<NegativeInteger>();
-  bool force_unsigned = false;
 
   // Only allow operations when we can safely marshall to two of the same type.
   // Then `eval_binop` effectively handles all overflow/underflow calculations.
   if (lu && ru) {
-    force_unsigned = !lu->type().IsSigned() || !ru->type().IsSigned();
     if (is_comparison_op(op.op)) {
       return make_boolean(ast_, lu->value, ru->value, op);
     }
@@ -562,7 +550,6 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
     }
     result = eval_binop(ls->value, rs->value, op.op);
   } else if (lu && rs) {
-    force_unsigned = !lu->type().IsSigned();
     if (lu->value <= std::numeric_limits<int64_t>::max()) {
       if (is_comparison_op(op.op)) {
         return make_boolean(
@@ -571,7 +558,6 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
       result = eval_binop(static_cast<int64_t>(lu->value), rs->value, op.op);
     }
   } else if (ls && ru) {
-    force_unsigned = !ru->type().IsSigned();
     if (ru->value <= std::numeric_limits<int64_t>::max()) {
       if (is_comparison_op(op.op)) {
         return make_boolean(
@@ -593,9 +579,9 @@ std::optional<Expression> LiteralFolder::visit(Binop &op)
   return std::visit(
       [&](const auto &v) -> Expression {
         if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
-          return ast_.make_node<Integer>(v, Location(op.loc), force_unsigned);
+          return ast_.make_node<Integer>(op.loc, v);
         } else {
-          return ast_.make_node<NegativeInteger>(v, Location(op.loc));
+          return ast_.make_node<NegativeInteger>(op.loc, v);
         }
       },
       result.value());
@@ -627,8 +613,8 @@ std::optional<Expression> LiteralFolder::visit(IfExpr &if_expr)
         }
       } else {
         // At least simplify the conditional expression.
-        if_expr.cond = ast_.make_node<Boolean>(eval_bool(if_expr.cond),
-                                               Location(if_expr.cond.loc()));
+        if_expr.cond = ast_.make_node<Boolean>(if_expr.cond.loc(),
+                                               eval_bool(if_expr.cond));
       }
     }
   }
@@ -642,9 +628,7 @@ std::optional<Expression> LiteralFolder::visit(PositionalParameterCount &param)
     return std::nullopt;
   }
   // This is always an unsigned integer value.
-  return ast_.make_node<Integer>(bpftrace_->get().num_params(),
-                                 Location(param.loc),
-                                 /*force_unsigned=*/true);
+  return ast_.make_node<Integer>(param.loc, bpftrace_->get().num_params());
 }
 
 std::optional<Expression> LiteralFolder::visit(PositionalParameter &param)
@@ -659,23 +643,22 @@ std::optional<Expression> LiteralFolder::visit(PositionalParameter &param)
   if (val.empty()) {
     param.addWarning() << "Positional parameter $" << param.n
                        << " is empty or not provided. ";
-    return ast_.make_node<Integer>(static_cast<uint64_t>(0),
-                                   Location(param.loc));
+    return ast_.make_node<Integer>(param.loc, static_cast<uint64_t>(0));
   }
   if (val[0] == '-') {
     auto v = util::to_int(val);
     if (!v) {
       // Not parsed, treat it as a string.
-      return ast_.make_node<String>(val, Location(param.loc));
+      return ast_.make_node<String>(param.loc, val);
     }
-    return ast_.make_node<NegativeInteger>(*v, Location(param.loc));
+    return ast_.make_node<NegativeInteger>(param.loc, *v);
   } else {
     auto v = util::to_uint(val);
     if (!v) {
       // Not parsed, treat it as a string.
-      return ast_.make_node<String>(val, Location(param.loc));
+      return ast_.make_node<String>(param.loc, val);
     }
-    return ast_.make_node<Integer>(*v, Location(param.loc));
+    return ast_.make_node<Integer>(param.loc, *v);
   }
 }
 
@@ -693,7 +676,7 @@ std::optional<Expression> LiteralFolder::visit(Call &call)
         return std::nullopt; // Can't fold yet.
       }
       call.vargs[0] = ast_.make_node<String>(
-          bpftrace_->get().get_param(param->n), Location(param->loc));
+          param->loc, bpftrace_->get().get_param(param->n));
     } else if (auto *binop = call.vargs.at(0).as<Binop>()) {
       auto *param = binop->left.as<PositionalParameter>();
       if (param && binop->op == Operator::PLUS) {
@@ -701,7 +684,7 @@ std::optional<Expression> LiteralFolder::visit(Call &call)
           return std::nullopt; // Can't fold yet.
         }
         binop->left = ast_.make_node<String>(
-            bpftrace_->get().get_param(param->n), Location(param->loc));
+            param->loc, bpftrace_->get().get_param(param->n));
       }
     }
 
@@ -734,7 +717,7 @@ std::optional<Expression> LiteralFolder::visit(Call &call)
         return std::nullopt;
       }
     }
-    return ast_.make_node<String>(s, Location(call.loc));
+    return ast_.make_node<String>(call.loc, s);
   } else {
     if (!comptime) {
       // Visit normally; we are just simplifying literals.
@@ -771,9 +754,9 @@ std::optional<Expression> LiteralFolder::visit(Builtin &builtin)
         if (!ap->check_available(builtin.ident)) {
           auto probe_type = probetype(ap->provider);
           if (probe_type == ProbeType::special) {
-            return ast_.make_node<Integer>(1, Location(builtin.loc));
+            return ast_.make_node<Integer>(builtin.loc, 1);
           }
-          return ast_.make_node<Integer>(0, Location(builtin.loc));
+          return ast_.make_node<Integer>(builtin.loc, 0);
         }
       }
     }
@@ -808,14 +791,14 @@ std::optional<Expression> LiteralFolder::visit(ArrayAccess &acc)
         return std::nullopt;
       }
       const char *s = str->value.c_str();
-      return ast_.make_node<Integer>(static_cast<uint64_t>(s[index->value]),
-                                     Location(acc.loc));
+      return ast_.make_node<Integer>(acc.loc,
+                                     static_cast<uint64_t>(s[index->value]));
     }
   } else if (acc.expr.type().IsTupleTy()) {
     if (auto *index = acc.indexpr.as<Integer>()) {
-      return ast_.make_node<TupleAccess>(acc.expr,
-                                         static_cast<ssize_t>(index->value),
-                                         Location(acc.loc));
+      return ast_.make_node<TupleAccess>(acc.loc,
+                                         acc.expr,
+                                         static_cast<ssize_t>(index->value));
     } else {
       acc.addError()
           << "Array-style access for tuples only valid for integer literals";

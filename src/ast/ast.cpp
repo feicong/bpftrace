@@ -3,6 +3,7 @@
 
 #include "ast/ast.h"
 #include "ast/context.h"
+#include "ast/tracepoint_helpers.h"
 #include "attached_probe.h"
 #include "log.h"
 #include "util/int_parser.h"
@@ -171,9 +172,7 @@ AttachPoint *AttachPoint::create_expansion_copy(ASTContext &ctx,
   // Create a new node with the same raw tracepoint. We initialize all the
   // information about the attach point, and then override/reset values
   // depending on the specific probe type.
-  auto *ap = ctx.make_node<AttachPoint>(raw_input,
-                                        ignore_invalid,
-                                        Location(loc));
+  auto *ap = ctx.make_node<AttachPoint>(loc, raw_input, ignore_invalid);
   ap->provider = provider;
   ap->target = target;
   ap->lang = lang;
@@ -240,6 +239,7 @@ AttachPoint *AttachPoint::create_expansion_copy(ASTContext &ctx,
     case ProbeType::interval:
     case ProbeType::profile:
     case ProbeType::special:
+    case ProbeType::test:
     case ProbeType::benchmark:
     case ProbeType::iter:
     case ProbeType::invalid:
@@ -270,6 +270,7 @@ bool AttachPoint::check_available(const std::string &identifier) const
         return true;
       case ProbeType::invalid:
       case ProbeType::special:
+      case ProbeType::test:
       case ProbeType::benchmark:
       case ProbeType::tracepoint:
       case ProbeType::fentry:
@@ -278,7 +279,7 @@ bool AttachPoint::check_available(const std::string &identifier) const
       case ProbeType::rawtracepoint:
         return false;
     }
-  } else if (identifier == "uaddr") {
+  } else if (identifier == "__builtin_uaddr") {
     switch (type) {
       case ProbeType::usdt:
       case ProbeType::uretprobe:
@@ -286,6 +287,7 @@ bool AttachPoint::check_available(const std::string &identifier) const
         return true;
       case ProbeType::invalid:
       case ProbeType::special:
+      case ProbeType::test:
       case ProbeType::benchmark:
       case ProbeType::kprobe:
       case ProbeType::kretprobe:
@@ -314,6 +316,13 @@ bool AttachPoint::check_available(const std::string &identifier) const
 
 std::string AttachPoint::name() const
 {
+  // If there's an explicit name for this probe provided, then this
+  // is always used as the probe name.
+  if (user_provided_name.has_value()) {
+    return user_provided_name.value();
+  }
+
+  // Otherwise, construct from provider, target, etc.
   std::string n = provider;
   if (!target.empty())
     n += ":" + target;
@@ -339,9 +348,21 @@ std::string AttachPoint::name() const
   return n;
 }
 
-std::string Probe::args_typename() const
+std::optional<std::string> Probe::attachpoint_name() const
 {
-  return "struct " + orig_name + "_" + attach_points.front()->func + "_args";
+  if (attach_points.size() != 1) {
+    return std::nullopt;
+  }
+  return attach_points.front()->name();
+}
+
+std::optional<std::string> Probe::args_typename() const
+{
+  auto name = attachpoint_name();
+  if (!name) {
+    return std::nullopt;
+  }
+  return "struct " + *name + "_args";
 }
 
 int Probe::index() const

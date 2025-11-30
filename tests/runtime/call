@@ -111,6 +111,10 @@ NAME join_delim
 RUN {{BPFTRACE}} --unsafe -e 'i:ms:1 { system("echo '_A_'"); } t:syscalls:sys_enter_execve { join(args.argv, ","); exit();}'
 EXPECT _A_
 
+NAME join_multi_arg
+RUN {{BPFTRACE}} --unsafe -e 'i:ms:1 { system("echo 1 2 3 4 5 6"); } t:syscalls:sys_enter_execve { join(args.argv); exit();}'
+EXPECT 1 2 3 4 5 6
+
 NAME str
 PROG t:syscalls:sys_enter_execve { printf("P: %s\n", str(args.filename)); exit();}
 AFTER ./testprogs/syscall execve ./testprogs/true
@@ -130,6 +134,11 @@ EXPECT_REGEX P: /....\.\.
 
 NAME explicit string truncation
 PROG tracepoint:syscalls:sys_enter_execve / str(args.argv[0]) == "./testprogs/true" / { print(str(args.argv[1], 5)); exit(); }
+AFTER ./testprogs/true zztest
+EXPECT zzte
+
+NAME explicit string truncation with expression
+PROG tracepoint:syscalls:sys_enter_execve / str(args.argv[0]) == "./testprogs/true" / { $a = 1; print(str(args.argv[1], $a + 4)); exit(); }
 AFTER ./testprogs/true zztest
 EXPECT zzte
 
@@ -482,7 +491,11 @@ PROG i:ms:1 { cat("/%s%s%s%s/%s%s%s", "p", "r", "o", "c", "u", "p", "time"); exi
 EXPECT_REGEX [0-9]*.[0-9]* [0-9]*.[0-9]*
 
 NAME uaddr
-RUN {{BPFTRACE}} -e 'uprobe:testprogs/uprobe_test:uprobeFunction1 { printf("0x%lx -- 0x%lx\n", *uaddr("GLOBAL_A"), *uaddr("GLOBAL_C")); exit(); }' -c ./testprogs/uprobe_test
+RUN {{BPFTRACE}} -e 'uprobe:testprogs/uprobe_test:uprobeFunction1 { printf("0x%x -- 0x%x\n", *uaddr("GLOBAL_A"), *uaddr("GLOBAL_C")); exit(); }' -c ./testprogs/uprobe_test
+EXPECT 0x55555555 -- 0x33333333
+
+NAME uaddr pie elf
+RUN {{BPFTRACE}} -e 'uprobe:testprogs/uprobe_test-pie:uprobeFunction1 { printf("0x%x -- 0x%x\n", *uaddr("GLOBAL_A"), *uaddr("GLOBAL_C")); exit(); }' -c ./testprogs/uprobe_test-pie
 EXPECT 0x55555555 -- 0x33333333
 
 NAME ntop static ip
@@ -506,6 +519,10 @@ EXPECT IP: ::1
 NAME usym
 PROG i:ms:100 { @=usym(1); @a=@; exit(); }
 EXPECT @a: 0x1
+
+NAME usym as map key
+PROG begin { @[usym(1)] = count(); }
+EXPECT @[0x1]: 1
 
 NAME print_non_map
 PROG begin { $x = 5; print($x); exit() }
@@ -686,7 +703,7 @@ EXPECT 12
 TIMEOUT 1
 
 NAME bswap_int64_op
-RUN {{BPFTRACE}} -e 'begin { printf("%llx", bswap(0x12340000 + 0x5678));  }'
+RUN {{BPFTRACE}} -e 'begin { printf("%llx", bswap(0x12340000 + (uint64)0x5678));  }'
 EXPECT 7856341200000000
 TIMEOUT 1
 

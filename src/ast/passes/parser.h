@@ -2,6 +2,7 @@
 
 #include "ast/pass_manager.h"
 #include "ast/passes/ap_probe_expansion.h"
+#include "ast/passes/args_resolver.h"
 #include "ast/passes/attachpoint_passes.h"
 #include "ast/passes/builtins.h"
 #include "ast/passes/c_macro_expansion.h"
@@ -10,18 +11,18 @@
 #include "ast/passes/control_flow_analyser.h"
 #include "ast/passes/deprecated.h"
 #include "ast/passes/field_analyser.h"
+#include "ast/passes/fold_literals.h"
 #include "ast/passes/import_scripts.h"
 #include "ast/passes/macro_expansion.h"
 #include "ast/passes/map_sugar.h"
 #include "ast/passes/named_param.h"
 #include "ast/passes/pid_filter_pass.h"
-#include "ast/passes/args_resolver.h"
 #include "ast/passes/resolve_imports.h"
+#include "ast/passes/tracepoint_format_parser.h"
 #include "ast/passes/unstable_feature.h"
 #include "ast/passes/usdt_arguments.h"
 #include "btf.h"
 #include "driver.h"
-#include "tracepoint_format_parser.h"
 
 namespace bpftrace::ast {
 
@@ -44,7 +45,6 @@ inline std::vector<Pass> AllParsePasses(
   passes.emplace_back(CreateDeprecatedPass());
   passes.emplace_back(CreateParseAttachpointsPass());
   passes.emplace_back(CreateCheckAttachpointsPass());
-  passes.emplace_back(CreatePidFilterPass());
   passes.emplace_back(CreateUSDTImportPass());
   passes.emplace_back(CreateImportInternalScriptsPass());
   passes.emplace_back(CreateControlFlowPass());
@@ -55,14 +55,12 @@ inline std::vector<Pass> AllParsePasses(
   passes.emplace_back(CreateArgsResolverPass());
   passes.emplace_back(CreateFieldAnalyserPass());
   passes.emplace_back(CreateClangParsePass(std::move(extra_flags)));
-  // N.B. We need to run the clang parse pass before attempting to resolve
-  // the `args` for tracepoints but we need to resolve
-  // the `args` for other probe types before the clang parse pass
-  passes.emplace_back(CreateArgsResolverPass({ProbeType::tracepoint}));
+  passes.emplace_back(CreateFoldLiteralsPass());
   passes.emplace_back(CreateBuiltinsPass());
   passes.emplace_back(CreateCMacroExpansionPass());
   passes.emplace_back(CreateMapSugarPass());
   passes.emplace_back(CreateNamedParamsPass());
+  passes.emplace_back(CreatePidFilterPass());
   return passes;
 }
 

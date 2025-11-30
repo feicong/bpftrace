@@ -1,7 +1,6 @@
 #include "ast/passes/unstable_feature.h"
 #include "ast/passes/config_analyser.h"
-#include "ast/passes/parser.h"
-#include "ast/passes/printer.h"
+#include "driver.h"
 #include "mocks.h"
 #include "gtest/gtest.h"
 
@@ -28,8 +27,6 @@ void test(const std::string& input, const std::string& error = "")
                 .run();
 
   std::ostringstream out;
-  ast::Printer printer(out);
-  printer.visit(ast.root);
   ast.diagnostics().emit(out);
 
   if (error.empty()) {
@@ -53,24 +50,6 @@ TEST(unstable_feature, check_error)
              "this unstable "
              "feature, "
              "set the config flag to enable. unstable_map_decl=enable");
-  test_error("config = { unstable_macro=0 } macro add_one($x) { $x } begin { "
-             "@a[0] = 0; add_one(1); }",
-             "macros feature is not enabled by default. To enable this "
-             "unstable feature, "
-             "set the config flag to enable. unstable_macro=enable");
-  test_error(
-      "config = { unstable_macro=error } macro add_one($x) { $x } begin { "
-      "@a[0] = 0; add_one(1); }",
-      "macros feature is not enabled by default. To enable this unstable "
-      "feature, "
-      "set the config flag to enable. unstable_macro=enable");
-
-  test("config = { unstable_macro=warn } macro add_one($x) { $x } begin { "
-       "@a[0] = 0; add_one(1); }");
-  // Macros have to be called to get the error/warning
-  test("config = { unstable_macro=error } macro add_one($x) { $x } begin { "
-       "@a[0] = 0; }");
-
   test("config = { unstable_tseries=warn } begin { @ = tseries(4, 1s, 10); }");
   test_error(
       "config = { unstable_tseries=error } begin { @ = tseries(4, 1s, 10); }",

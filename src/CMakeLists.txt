@@ -52,7 +52,6 @@ add_library(libbpftrace STATIC
   build_info.cpp
   driver.cpp
   lockdown.cpp
-  tracepoint_format_parser.cpp
 )
 # So it's not "liblibbpftrace"
 set_target_properties(libbpftrace PROPERTIES PREFIX "")
@@ -90,6 +89,7 @@ add_custom_target(version_h
     -Dbpftrace_SOURCE_DIR=${CMAKE_SOURCE_DIR}
     -P ${CMAKE_SOURCE_DIR}/cmake/Version.cmake
 )
+add_dependencies(runtime version_h)
 add_dependencies(bpftrace version_h)
 add_dependencies(libbpftrace version_h)
 

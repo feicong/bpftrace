@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "ast/pass_manager.h"
+#include "util/result.h"
 
 // Taken from libbpf
 #define BTF_INFO_ENC(kind, kind_flag, vlen)                                    \
@@ -46,6 +47,10 @@ static const std::vector<std::string_view> RT_BTF_PREFIXES = { "__probestub_",
                                                                "__traceiter_" };
 
 class BPFtrace;
+
+// Prefix used to generate names for anonymous struct/unions. The
+// format is: BTF_ANON_STRUCT_PREFIX + <btfid> + "_" + <btfobjname>
+constexpr std::string_view BTF_ANON_STRUCT_PREFIX = "__bpftrace_btf_anon_";
 
 using FuncParamLists = std::map<std::string, std::vector<std::string>>;
 
@@ -106,13 +111,12 @@ public:
   FuncParamLists get_rawtracepoint_params(
       const std::set<std::string>& rawtracepoints) const;
 
-  std::shared_ptr<Struct> resolve_args(std::string_view func,
-                                       bool ret,
-                                       bool check_traceable,
-                                       bool skip_first_arg,
-                                       std::string& err);
-  std::shared_ptr<Struct> resolve_raw_tracepoint_args(std::string_view func,
-                                                      std::string& err);
+  Result<std::shared_ptr<Struct>> resolve_args(std::string_view func,
+                                               bool ret,
+                                               bool check_traceable,
+                                               bool skip_first_arg);
+  Result<std::shared_ptr<Struct>> resolve_raw_tracepoint_args(
+      std::string_view func);
   void resolve_fields(const SizedType& type);
 
   int get_btf_id(std::string_view func,
@@ -125,8 +129,6 @@ private:
   void resolve_fields(const BTFId& type_id,
                       std::shared_ptr<Struct> record,
                       __u32 start_offset);
-  const struct btf_type* btf_type_skip_modifiers(const struct btf_type* t,
-                                                 const struct btf* btf);
   BTF::BTFId find_id(std::string_view name,
                      std::optional<__u32> kind = std::nullopt) const;
   __s32 find_id_in_btf(struct btf* btf,
@@ -153,13 +155,16 @@ private:
   std::set<std::string> get_all_structs_from_btf(const struct btf* btf) const;
   std::unordered_set<std::string> get_all_iters_from_btf(
       const struct btf* btf) const;
-  // Similar to btf_type_skip_modifiers this returns the id of the first
-  // type that is not a BTF_KIND_TYPE_TAG while also populating the tags set
-  // with the tag/attribute names from the BTF_KIND_TYPE_TAG types it finds.
+  // This returns the id of the first type that is not a BTF_KIND_TYPE_TAG
+  // while also populating the tags set with the tag/attribute names
+  // from the BTF_KIND_TYPE_TAG types it finds.
   __u32 get_type_tags(std::unordered_set<std::string>& tags,
                       const BTFId& btf_id) const;
 
   __u32 start_id(const struct btf* btf) const;
+
+  BTFId parse_anon_btf_name(const std::string &name);
+  std::string create_anon_btf_name(BTFId &btf_id);
 
   struct btf* vmlinux_btf = nullptr;
   __u32 vmlinux_btf_size;

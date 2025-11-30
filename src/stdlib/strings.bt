@@ -14,17 +14,14 @@
 
 // Checks that this value is string-like.
 macro assert_str(exp) {
-  if comptime is_str(exp) {
-    true
-  } else if comptime is_array(exp) {
-    static_assert(typeinfo(exp[0]) == typeinfo(int8), "string-like arrays must contain a char-like type");
-    true
-  } else if comptime is_ptr(exp) {
-    static_assert(typeinfo(exp[0]) == typeinfo(int8), "string-like pointers must point to a char-like type");
-    true
-  } else {
-    static_assert(false, "string-like values must be either strings, arrays or pointers");
-    false
+  if comptime !is_str(exp) {
+   if comptime is_array(exp) {
+      static_assert(typeinfo(exp[0]) == typeinfo(int8), "string-like arrays must contain a char-like type");
+    } else if comptime is_ptr(exp) {
+      static_assert(typeinfo(exp[0]) == typeinfo(int8), "string-like pointers must point to a char-like type");
+    } else {
+      fail("string-like values must be either strings, arrays or pointers");
+    }
   }
 }
 
@@ -34,9 +31,9 @@ macro default_str_length() {
 }
 
 // Returns the length of a string-like object.
-// :variant int64 strlen(string exp)
-// :variant int64 strlen(int8 exp[])
-// :variant int64 strlen(int8 *exp)
+// :variant uint64 strlen(string exp)
+// :variant uint64 strlen(int8 exp[])
+// :variant uint64 strlen(int8 *exp)
 macro strlen($var) {
   assert_str($var);
   let $sz = (int64)0;
@@ -62,7 +59,7 @@ macro strlen(exp) {
 }
 
 macro __strnlen(ptr, max_size) {
-  __bpf_strnlen(ptr, (int64)max_size)
+  __bpf_strnlen(ptr, (size_t)max_size)
 }
 
 // Returns the "capacity" of a string-like object.
@@ -98,7 +95,7 @@ macro strstr($haystack, $needle) {
     // Special case: the needle is empty.
     0
   } else {
-    __bpf_strnstr(&$haystack, &$needle, (uint64)$haystack_size, (uint64)$needle_size)
+    __bpf_strnstr(&$haystack, &$needle, $haystack_size, $needle_size)
   }
 }
 macro strstr($haystack, needle) {
@@ -139,5 +136,25 @@ macro strerror(errno) {
   // strings exceed this size.
   static_assert(sizeof($v) == sizeof(*__strerror((int32)errno, &$v)), "$v is sized correctly");
   __strerror((int32)errno, &$v);
+  $v
+}
+
+// :variant string syscall_name(int nr_syscall)
+//
+// Convert syscall number to string.
+//
+// ```
+// #include <syscall.h>
+// begin {
+//   print(syscall_name(__NR_read)); // outputs "read"
+// }
+// ```
+macro syscall_name(n) {
+  let $v : string[64];
+  // Ensure that the size of the string is equal to the size of the returned
+  // buffer. On the C side, it will be a compilation error if any of the
+  // strings exceed this size.
+  static_assert(sizeof($v) == sizeof(*__syscall_name((int32)n, &$v)), "$v is sized correctly");
+  __syscall_name((int32)n, &$v);
   $v
 }

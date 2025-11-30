@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <compare>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -24,9 +25,11 @@ public:
     int column = 1;
   };
 
-  SourceLocation() = default;
+  SourceLocation() = default; // Allowed, but see operator+.
   SourceLocation(const SourceLocation &) = default;
   SourceLocation &operator=(const SourceLocation &other) = default;
+  SourceLocation(SourceLocation &&) = default;
+  SourceLocation &operator=(SourceLocation &&other) = default;
   SourceLocation(std::shared_ptr<ASTSource> source)
       : source_(std::move(source)) {};
 
@@ -55,38 +58,6 @@ public:
     return begin.column;
   };
 
-  // Return comments associated with this location.
-  std::string comments() const
-  {
-    if (!comments_) {
-      return "";
-    }
-    return comments_->str();
-  }
-
-  // Returns the vertical space above the location.
-  size_t vspace() const
-  {
-    return vspace_;
-  }
-
-  // Clears all current comments.
-  void reset_meta()
-  {
-    comments_ = nullptr;
-    vspace_ = 0;
-  }
-
-  // Adds a comment.
-  template <typename T>
-  void add_comment(const T &data)
-  {
-    if (!comments_) {
-      comments_ = std::make_shared<std::stringstream>();
-    }
-    (*comments_) << data;
-  }
-
   // Moves the cursor forward `lines` lines.
   void advance_lines(int lines = 1)
   {
@@ -96,18 +67,24 @@ public:
     end.line = begin.line;
   }
 
-  // Add vertical space.
-  void advance_vspace(int lines = 1)
-  {
-    vspace_ += lines;
-  }
-
   // Moves the cursor forward `count` columns.
   void advance_columns(int count)
   {
-    // Advance the from the end of the last token.
     begin.column = end.column;
     end.column += count;
+  }
+
+  // Move the cursor backwards.
+  void rewind_columns()
+  {
+    end.column -= 1;
+    begin.column -= 1;
+  }
+
+  // Trims the last character from this location.
+  void trim()
+  {
+    end.column -= 1;
   }
 
   // Resets the column.
@@ -121,17 +98,25 @@ public:
   Position end;
 
 private:
-  std::shared_ptr<std::stringstream> comments_;
   std::shared_ptr<ASTSource> source_;
-  int vspace_ = 0;
 
   friend class ASTContext;
   friend SourceLocation operator+(const SourceLocation &orig,
-                                  const SourceLocation &loc);
+                                  const SourceLocation &other);
 };
 
+SourceLocation operator+(const SourceLocation &orig,
+                         const SourceLocation &other);
+
 std::ostream &operator<<(std::ostream &out, const SourceLocation &loc);
-SourceLocation operator+(const SourceLocation &orig, const SourceLocation &loc);
+
+std::strong_ordering operator<=>(const SourceLocation::Position &lhs,
+                                 const SourceLocation::Position &rhs);
+std::strong_ordering operator<=>(const SourceLocation &lhs,
+                                 const SourceLocation &rhs);
+bool operator==(const SourceLocation::Position &lhs,
+                const SourceLocation::Position &rhs);
+bool operator==(const SourceLocation &lhs, const SourceLocation &rhs);
 
 class LocationChain;
 using Location = std::shared_ptr<LocationChain>;
@@ -150,7 +135,7 @@ public:
     const Location loc;
   };
 
-  LocationChain(const SourceLocation &loc) : current(loc) {};
+  LocationChain(SourceLocation loc) : current(std::move(loc)) {};
 
   // See above.
   std::string filename() const
@@ -172,14 +157,6 @@ public:
   unsigned int column() const
   {
     return current.column();
-  }
-  std::string comments() const
-  {
-    return current.comments();
-  }
-  size_t vspace() const
-  {
-    return current.vspace();
   }
 
   // This may be modified for a node, typically when copying. For example, when

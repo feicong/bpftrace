@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "ast/ast.h"
 #include "ast/passes/clang_build.h"
 #include "ast/passes/type_system.h"
 #include "data/data_source_btf.h"
@@ -8,14 +9,23 @@ namespace bpftrace::test::type_system {
 
 TEST(TypeSystemTest, basic)
 {
+  ast::ASTContext ast;
+
   // Use our synthetic BTF as the object.
-  ast::BitcodeModules modules;
-  modules.objects.emplace_back(reinterpret_cast<const char *>(btf_data),
-                               sizeof(btf_data));
+  ast::BitcodeModules bm;
+  bm.modules.emplace_back(ast::BitcodeModules::Result{
+      .module = nullptr,
+      .object = std::string(reinterpret_cast<const char *>(btf_data),
+                            sizeof(btf_data)),
+      .loc = nullptr,
+  });
 
   // Run the pass and extract the types.
-  auto ok =
-      ast::PassManager().put(modules).add(ast::CreateTypeSystemPass()).run();
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bm)
+                .add(ast::CreateTypeSystemPass())
+                .run();
   ASSERT_TRUE(bool(ok));
   auto types = ok->get<ast::TypeMetadata>();
 
@@ -48,6 +58,7 @@ TEST(TypeSystemTest, basic)
     "int[4]",
     "long unsigned int",
     "char[8]",
+    "char[16]",
     "void*[2]",
     "void*",
     "int[6]",
@@ -94,6 +105,16 @@ TEST(TypeSystemTest, basic)
     "void func_array_with_compound_data(struct ArrayWithCompoundData* arr)",
     "struct Arrays* (*)(struct Arrays* arr)",
     "struct Arrays* func_arrays(struct Arrays* arr)",
+    "AnonStructTypedef",
+    "AnonStructTypedef[8]",
+    "struct (anon)[2]",
+    "struct (anon)[4]",
+    "struct anon_structs",
+    "struct anon_structs*",
+    "AnonStructTypedef*",
+    "void func_anon_struct(struct anon_structs* AnonStruct, AnonStructTypedef*"
+    " AnonTypedef)",
+    "void (*)(struct anon_structs* AnonStruct, AnonStructTypedef* AnonTypedef)",
     "int main()",
     "void (*)(struct sock* sk, int how)",
     "void tcp_shutdown(struct sock* sk, int how)",

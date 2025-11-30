@@ -1,6 +1,5 @@
 #include "ast/passes/attachpoint_passes.h"
 #include "arch/arch.h"
-#include "ast/passes/printer.h"
 #include "btf_common.h"
 #include "driver.h"
 #include "mocks.h"
@@ -33,21 +32,53 @@ void test(const std::string& input,
                 .run();
 
   std::ostringstream out;
-  ast::Printer printer(out);
-  printer.visit(ast.root);
   ast.diagnostics().emit(out);
 
-  if (error.empty()) {
+  // Trim the prefix off the error, since it may come with a newline embedded
+  // which will cause the test fail.
+  std::string trimmed_error = error;
+  if (!error.empty()) {
+    trimmed_error = error.substr(error.find_first_not_of("\n"));
+  }
+
+  if (trimmed_error.empty()) {
     ASSERT_TRUE(ok && ast.diagnostics().ok()) << msg.str() << out.str();
   } else {
     ASSERT_FALSE(ok && ast.diagnostics().ok()) << msg.str() << out.str();
-    EXPECT_THAT(out.str(), HasSubstr(error)) << msg.str() << out.str();
+    EXPECT_THAT(out.str(), HasSubstr(trimmed_error)) << msg.str() << out.str();
   }
 }
 
 void test_error(const std::string& input, const std::string& error)
 {
   test(input, false, error);
+}
+
+void test_uprobe_lang(const std::string& input, const std::string& lang = "")
+{
+  auto mock_bpftrace = get_mock_bpftrace();
+  BPFtrace& bpftrace = *mock_bpftrace;
+
+  // Valid PID to ensure util function proceeds.
+  bpftrace.procmon_ = std::make_unique<MockProcMon>(getpid());
+  ast::ASTContext ast("stdin", input);
+
+  auto ok = ast::PassManager()
+                .put(ast)
+                .put(bpftrace)
+                .add(CreateParsePass())
+                .add(ast::CreateParseAttachpointsPass(false))
+                .run();
+
+  ASSERT_TRUE(ok && ast.diagnostics().ok());
+
+  auto* ap = ast.root->probes.at(0)->attach_points.at(0);
+
+  if (!lang.empty()) {
+    ASSERT_EQ(ap->lang, lang);
+  } else {
+    ASSERT_TRUE(ap->lang.empty());
+  }
 }
 
 TEST(attachpoint_parser, iter)
@@ -65,6 +96,12 @@ TEST(attachpoint_parser, iter)
   test("iter:task* { 1 }", true);
   test("iter:task:* { 1 }", true);
   test("iter:task, iter:task_file { 1 }", true);
+}
+
+TEST(attachpoint_parser, uprobe_lang)
+{
+  test_uprobe_lang("uprobe:main { 1 }");
+  test_uprobe_lang("uprobe:cpp:main { 1 }", "cpp");
 }
 
 } // namespace attachpoint_parser
@@ -93,15 +130,19 @@ void test(BPFtrace& bpftrace,
                 .run();
 
   std::ostringstream out;
-  ast::Printer printer(out);
-  printer.visit(ast.root);
   ast.diagnostics().emit(out);
 
-  if (error.empty()) {
+  // See above.
+  std::string trimmed_error = error;
+  if (!error.empty()) {
+    trimmed_error = error.substr(error.find_first_not_of("\n"));
+  }
+
+  if (trimmed_error.empty()) {
     ASSERT_TRUE(ok && ast.diagnostics().ok()) << msg.str() << out.str();
   } else {
     ASSERT_FALSE(ok && ast.diagnostics().ok()) << msg.str() << out.str();
-    EXPECT_THAT(out.str(), HasSubstr(error)) << msg.str() << out.str();
+    EXPECT_THAT(out.str(), HasSubstr(trimmed_error)) << msg.str() << out.str();
   }
 }
 
@@ -170,10 +211,10 @@ TEST(attachpoint_checker, usdt)
 TEST(attachpoint_checker, begin_end_probes)
 {
   test("begin { 1 }");
-  test_error("begin { 1 } begin { 2 }");
+  test("begin { 1 } begin { 2 }");
 
   test("end { 1 }");
-  test_error("end { 1 } end { 2 }");
+  test("end { 1 } end { 2 }");
 }
 
 TEST(attachpoint_checker, bench_probes)
@@ -185,9 +226,9 @@ bench: { 1 }
 ~~~~~~
 )");
   test_error("BENCH:a { 1 } BENCH:a { 2 }", R"(
-stdin:1:14-22: ERROR: "a" was used as the name for more than one BENCH probe
+stdin:1:15-22: ERROR: "a" was used as the name for more than one BENCH probe
 BENCH:a { 1 } BENCH:a { 2 }
-             ~~~~~~~~
+              ~~~~~~~
 stdin:1:1-8: ERROR: this is the other instance
 BENCH:a { 1 } BENCH:a { 2 }
 ~~~~~~~

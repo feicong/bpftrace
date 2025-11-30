@@ -22,7 +22,7 @@
 #include "ast/passes/clang_parser.h"
 #include "ast/passes/codegen_llvm.h"
 #include "ast/passes/control_flow_analyser.h"
-#include "ast/passes/fold_literals.h"
+#include "ast/passes/macro_expansion.h"
 #include "ast/passes/map_sugar.h"
 #include "ast/passes/named_param.h"
 #include "ast/passes/parser.h"
@@ -63,6 +63,7 @@ enum class TestMode {
   CODEGEN,
   COMPILER_BENCHMARK,
   BPF_BENCHMARK,
+  BPF_TEST,
 };
 
 enum class BuildMode {
@@ -73,22 +74,31 @@ enum class BuildMode {
 };
 
 enum Options {
-  INFO = 2000,
-  NO_WARNING,
-  TEST_MODE,
-  AOT,
-  HELP,
-  VERSION,
-  USDT_SEMAPHORE,
-  UNSAFE,
+  AOT = 2000,
+  BENCH, // Alias for --test-mode=bench.
   BTF,
-  INCLUDE,
-  EMIT_ELF,
-  EMIT_LLVM,
-  NO_FEATURE,
+  CMD,
   DEBUG,
   DRY_RUN,
+  EMIT_ELF,
+  EMIT_LLVM,
+  HELP,
+  INCLUDE,
+  INFO,
+  LIST,
+  NO_FEATURE,
+  NO_WARNING,
+  OUTPUT,
+  PID,
+  QUIET,
+  TEST, // Alias for --test-mode=test.
+  TEST_MODE,
+  UNSAFE,
+  USDT_SEMAPHORE,
+  VERBOSE,
   VERIFY_LLVM_IR,
+  VERSION,
+  WARNINGS,
 };
 
 constexpr auto FULL_SEARCH = "*:*";
@@ -106,31 +116,37 @@ void usage(std::ostream& out)
   out << "OPTIONS:" << std::endl;
   out << "    -B MODE        output buffering mode ('line', 'full', 'none')" << std::endl;
   out << "    -f FORMAT      output format ('text', 'json')" << std::endl;
-  out << "    -o file        redirect bpftrace output to file" << std::endl;
+  out << "    -o, --output FILE" << std::endl;
+  out << "                   redirect bpftrace output to FILE" << std::endl;
   out << "    -e 'program'   execute this program" << std::endl;
   out << "    -h, --help     show this help message" << std::endl;
   out << "    -I DIR         add the directory to the include search path" << std::endl;
   out << "    --include FILE add an #include file before preprocessing" << std::endl;
-  out << "    -l [search|filename]" << std::endl;
+  out << "    -l, --list [search|filename]" << std::endl;
   out << "                   list kernel probes or probes in a program" << std::endl;
-  out << "    -p PID         filter actions and enable USDT probes on PID" << std::endl;
-  out << "    -c 'CMD'       run CMD and enable USDT probes on resulting process" << std::endl;
+  out << "    -p, --pid PID  filter actions and enable USDT probes on PID" << std::endl;
+  out << "    -c, --cmd CMD  run CMD and enable USDT probes on resulting process" << std::endl;
   out << "    --no-feature FEATURE[,FEATURE]" << std::endl;
   out << "                   disable use of detected features" << std::endl;
   out << "    --usdt-file-activation" << std::endl;
   out << "                   activate usdt semaphores based on file path" << std::endl;
   out << "    --unsafe       allow unsafe/destructive functionality" << std::endl;
-  out << "    -q             keep messages quiet" << std::endl;
+  out << "    -q, --quiet    keep messages quiet" << std::endl;
   out << "    --info         Print information about kernel BPF support" << std::endl;
-  out << "    -k             emit a warning when probe read helpers return an error" << std::endl;
+  out << "    -k, --warnings emit a warning when probe read helpers return an error" << std::endl;
   out << "    -V, --version  bpftrace version" << std::endl;
   out << "    --no-warnings  disable all warning messages" << std::endl;
+  out << "    --test-mode MODE" << std::endl;
+  out << "                   used for benchmarking and testing; run bpftrace in MODE" << std::endl;
+  out << "                   ('codegen', 'compiler-bench', 'bench', 'test')" << std::endl;
+  out << "    --test         run all test: probes (same as --test-mode test)" << std::endl;
+  out << "    --bench        run all bench: probes (same as --test-mode bench)" << std::endl;
   out << std::endl;
   out << "TROUBLESHOOTING OPTIONS:" << std::endl;
-  out << "    -v                      verbose messages" << std::endl;
+  out << "    -v, --verbose           verbose messages" << std::endl;
   out << "    --dry-run               terminate execution right after attaching all the probes" << std::endl;
   out << "    --verify-llvm-ir        check that the generated LLVM IR is valid" << std::endl;
-  out << "    -d STAGE                debug info for various stages of bpftrace execution" << std::endl;
+  out << "    -d, --debug STAGE       debug info for various stages of bpftrace execution" << std::endl;
   out << "                            ('all', 'ast', 'codegen', 'codegen-opt', 'dis', 'libbpf', 'verifier')" << std::endl;
   out << "    --emit-elf FILE         (dry run) generate ELF file with bpf programs and write to FILE" << std::endl;
   out << "    --emit-llvm FILE        write LLVM IR to FILE.original.ll and FILE.optimized.ll" << std::endl;
@@ -324,7 +340,6 @@ struct Args {
 
 void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
 {
-  add(ast::CreateFoldLiteralsPass());
   add(ast::CreateClangBuildPass());
   add(ast::CreateTypeSystemPass());
   add(ast::CreateSemanticPass());
@@ -335,7 +350,6 @@ void CreateDynamicPasses(std::function<void(ast::Pass&& pass)> add)
 void CreateAotPasses(std::function<void(ast::Pass&& pass)> add)
 {
   add(ast::CreatePortabilityPass());
-  add(ast::CreateFoldLiteralsPass());
   add(ast::CreateClangBuildPass());
   add(ast::CreateTypeSystemPass());
   add(ast::CreateSemanticPass());
@@ -379,58 +393,22 @@ Args parse_args(int argc, char* argv[])
 
   const char* const short_options = "d:bB:f:e:hlp:vqc:Vo:I:k";
   option long_options[] = {
-    option{ .name = "help",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::HELP },
-    option{ .name = "version",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::VERSION },
-    option{ .name = "usdt-file-activation",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::USDT_SEMAPHORE },
-    option{ .name = "unsafe",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::UNSAFE },
-    option{ .name = "btf",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::BTF },
-    option{ .name = "include",
-            .has_arg = required_argument,
-            .flag = nullptr,
-            .val = Options::INCLUDE },
-    option{ .name = "info",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::INFO },
-    option{ .name = "emit-llvm",
-            .has_arg = required_argument,
-            .flag = nullptr,
-            .val = Options::EMIT_LLVM },
-    option{ .name = "emit-elf",
-            .has_arg = required_argument,
-            .flag = nullptr,
-            .val = Options::EMIT_ELF },
-    option{ .name = "no-warnings",
-            .has_arg = no_argument,
-            .flag = nullptr,
-            .val = Options::NO_WARNING },
-    option{ .name = "test-mode",
-            .has_arg = required_argument,
-            .flag = nullptr,
-            .val = Options::TEST_MODE },
     option{ .name = "aot",
             .has_arg = required_argument,
             .flag = nullptr,
             .val = Options::AOT },
-    option{ .name = "no-feature",
+    option{ .name = "bench",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::BENCH },
+    option{ .name = "btf",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::BTF },
+    option{ .name = "cmd",
             .has_arg = required_argument,
             .flag = nullptr,
-            .val = Options::NO_FEATURE },
+            .val = Options::CMD },
     option{ .name = "debug",
             .has_arg = required_argument,
             .flag = nullptr,
@@ -439,10 +417,82 @@ Args parse_args(int argc, char* argv[])
             .has_arg = no_argument,
             .flag = nullptr,
             .val = Options::DRY_RUN },
+    option{ .name = "emit-elf",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::EMIT_ELF },
+    option{ .name = "emit-llvm",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::EMIT_LLVM },
+    option{ .name = "help",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::HELP },
+    option{ .name = "include",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::INCLUDE },
+    option{ .name = "info",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::INFO },
+    option{ .name = "list",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::LIST },
+    option{ .name = "no-feature",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::NO_FEATURE },
+    option{ .name = "no-warnings",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::NO_WARNING },
+    option{ .name = "output",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::OUTPUT },
+    option{ .name = "pid",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::PID },
+    option{ .name = "quiet",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::QUIET },
+    option{ .name = "test",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::TEST },
+    option{ .name = "test-mode",
+            .has_arg = required_argument,
+            .flag = nullptr,
+            .val = Options::TEST_MODE },
+    option{ .name = "unsafe",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::UNSAFE },
+    option{ .name = "usdt-file-activation",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::USDT_SEMAPHORE },
+    option{ .name = "verbose",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::VERBOSE },
     option{ .name = "verify-llvm-ir",
             .has_arg = no_argument,
             .flag = nullptr,
             .val = Options::VERIFY_LLVM_IR },
+    option{ .name = "version",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::VERSION },
+    option{ .name = "warnings",
+            .has_arg = no_argument,
+            .flag = nullptr,
+            .val = Options::WARNINGS },
     option{ .name = nullptr, .has_arg = 0, .flag = nullptr, .val = 0 }, // Must
                                                                         // be
                                                                         // last
@@ -453,7 +503,7 @@ Args parse_args(int argc, char* argv[])
          -1) {
     switch (c) {
       case Options::INFO: // --info
-        check_is_root();
+        check_privileges();
         info(args.no_feature);
         exit(0);
         break;
@@ -465,7 +515,7 @@ Args parse_args(int argc, char* argv[])
         break;
       case Options::NO_WARNING: // --no-warnings
         if (args.warning_level == 2) {
-          LOG(ERROR) << "USAGE: -k conflicts with --no-warnings";
+          LOG(ERROR) << "USAGE: -k, --warnings conflicts with --no-warnings";
           exit(1);
         }
         DISABLE_LOG(WARNING);
@@ -478,11 +528,27 @@ Args parse_args(int argc, char* argv[])
           args.test_mode = TestMode::COMPILER_BENCHMARK;
         } else if (std::strcmp(optarg, "bench") == 0) {
           args.test_mode = TestMode::BPF_BENCHMARK;
+        } else if (std::strcmp(optarg, "test") == 0) {
+          args.test_mode = TestMode::BPF_TEST;
         } else {
-          LOG(ERROR) << "USAGE: --test can only be 'codegen', "
-                        "'compiler-bench', or 'bench'.";
+          LOG(ERROR) << "USAGE: --test-mode can only be 'codegen', "
+                        "'compiler-bench', 'bench' or 'test'.";
           exit(1);
         }
+        break;
+      case Options::TEST: // --test
+        if (args.test_mode != TestMode::NONE) {
+          LOG(ERROR) << "USAGE: --test conflicts with existing --test-mode";
+          exit(1);
+        }
+        args.test_mode = TestMode::BPF_TEST;
+        break;
+      case Options::BENCH: // --bench
+        if (args.test_mode != TestMode::NONE) {
+          LOG(ERROR) << "USAGE: --bench conflicts with existing --test-mode";
+          exit(1);
+        }
+        args.test_mode = TestMode::BPF_BENCHMARK;
         break;
       case Options::AOT: // --aot
         args.aot = optarg;
@@ -502,6 +568,7 @@ Args parse_args(int argc, char* argv[])
         args.verify_llvm_ir = true;
         break;
       case 'o':
+      case Options::OUTPUT:
         args.output_file = optarg;
         break;
       case 'd':
@@ -510,9 +577,11 @@ Args parse_args(int argc, char* argv[])
           exit(1);
         break;
       case 'q':
+      case Options::QUIET:
         bt_quiet = true;
         break;
       case 'v':
+      case Options::VERBOSE:
         ENABLE_LOG(V1);
         bt_verbose = true;
         break;
@@ -535,6 +604,7 @@ Args parse_args(int argc, char* argv[])
         args.script = optarg;
         break;
       case 'p':
+      case Options::PID:
         args.pid_str = optarg;
         break;
       case 'I':
@@ -544,9 +614,11 @@ Args parse_args(int argc, char* argv[])
         args.include_files.emplace_back(optarg);
         break;
       case 'l':
+      case Options::LIST:
         args.listing = true;
         break;
       case 'c':
+      case Options::CMD:
         args.cmd_str = optarg;
         break;
       case Options::USDT_SEMAPHORE:
@@ -567,6 +639,7 @@ Args parse_args(int argc, char* argv[])
         std::cout << "bpftrace " << BPFTRACE_VERSION << std::endl;
         exit(0);
       case 'k':
+      case Options::WARNINGS:
         if (args.warning_level == 2) {
           LOG(ERROR) << "USAGE: -kk has been deprecated. Use a single -k for "
                         "runtime warnings for errors in map "
@@ -574,7 +647,7 @@ Args parse_args(int argc, char* argv[])
           exit(1);
         }
         if (args.warning_level == 0) {
-          LOG(ERROR) << "USAGE: -k conflicts with --no-warnings";
+          LOG(ERROR) << "USAGE: -k, --warnings conflicts with --no-warnings";
           exit(1);
         }
         args.warning_level = 2;
@@ -674,15 +747,17 @@ bool is_colorize()
 static ast::ASTContext buildListProgram(const std::string& search)
 {
   ast::ASTContext ast("listing", search);
-  auto* ap = ast.make_node<ast::AttachPoint>(search, true, ast::Location());
-  auto* probe = ast.make_node<ast::Probe>(ast::AttachPointList({ ap }),
-                                          nullptr,
-                                          ast::Location());
-  ast.root = ast.make_node<ast::Program>(ast::CStatementList(),
+  auto* ap = ast.make_node<ast::AttachPoint>(ast::SourceLocation(),
+                                             search,
+                                             true);
+  auto* probe = ast.make_node<ast::Probe>(ast::SourceLocation(),
+                                          ast::AttachPointList({ ap }),
+                                          nullptr);
+  ast.root = ast.make_node<ast::Program>(ast::SourceLocation(),
+                                         ast::CStatementList(),
                                          nullptr,
                                          ast::ImportList(),
-                                         ast::RootStatements({ probe }),
-                                         ast::Location());
+                                         ast::RootStatements({ probe }));
   return ast;
 }
 
@@ -720,6 +795,7 @@ int main(int argc, char* argv[])
   bpftrace.warning_level_ = args.warning_level;
   bpftrace.boottime_ = get_boottime();
   bpftrace.delta_taitime_ = get_delta_taitime();
+  bpftrace.run_tests_ = args.test_mode == TestMode::BPF_TEST;
   bpftrace.run_benchmarks_ = args.test_mode == TestMode::BPF_BENCHMARK;
 
   if (!args.pid_str.empty()) {
@@ -761,7 +837,7 @@ int main(int argc, char* argv[])
 
   // Listing probes when there is no program.
   if (args.listing && args.script.empty() && args.filename.empty()) {
-    check_is_root();
+    check_privileges();
 
     if (args.search.find(".") != std::string::npos &&
         args.search.find_first_of(":*") == std::string::npos) {
@@ -778,6 +854,7 @@ int main(int argc, char* argv[])
     ast = buildListProgram(is_search_a_type ? FULL_SEARCH : args.search);
     ast::CDefinitions no_c_defs; // No external C definitions may be used.
     ast::TypeMetadata no_types;  // No external types may be used.
+    ast::MacroRegistry macro_registry; // No macros may be used.
 
     // Parse and expand all the attachpoints. We don't need to descend into
     // the actual driver here, since we know that the program is already
@@ -787,6 +864,7 @@ int main(int argc, char* argv[])
                         .put(bpftrace)
                         .put(no_c_defs)
                         .put(no_types)
+                        .put(macro_registry)
                         .add(ast::CreateParseAttachpointsPass(args.listing))
                         .add(ast::CreateCheckAttachpointsPass(args.listing))
                         .add(CreateParseBTFPass())
@@ -845,9 +923,9 @@ int main(int argc, char* argv[])
     bpftrace.add_param(param);
   }
 
-  // If we are not running anything, then we don't require root.
+  // If we are not running anything, then we don't require privileges.
   if (args.test_mode == TestMode::NONE) {
-    check_is_root();
+    check_privileges();
 
     auto lockdown_state = lockdown::detect();
     if (lockdown_state == lockdown::LockdownState::Confidentiality) {
@@ -874,9 +952,11 @@ int main(int argc, char* argv[])
   if (args.listing) {
     ast::CDefinitions no_c_defs; // See above.
     ast::TypeMetadata no_types;  // See above.
+    ast::MacroRegistry macro_registry; // See above.
     pm.add(CreateParsePass(bt_debug.contains(DebugStage::Parse)))
         .put(no_c_defs)
         .put(no_types)
+        .put(macro_registry)
         .add(ast::CreateParseAttachpointsPass(args.listing))
         .add(ast::CreateCheckAttachpointsPass(args.listing))
         .add(CreateParseBTFPass())

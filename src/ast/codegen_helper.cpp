@@ -19,22 +19,20 @@ namespace bpftrace::ast {
 // IRBuilderBPF::CreateWriteMapValueAllocation
 bool needAssignMapStatementAllocation(const AssignMapStatement &assignment)
 {
-  const auto &map = *assignment.map;
+  const auto &map = *assignment.map_access;
   const auto &expr_type = assignment.expr.type();
   if (shouldBeInBpfMemoryAlready(expr_type)) {
-    return !expr_type.IsSameSizeRecursive(map.value_type);
-  } else if (map.value_type.IsRecordTy() || map.value_type.IsArrayTy()) {
+    return false;
+  } else if (map.map->value_type.IsRecordTy() ||
+             map.map->value_type.IsArrayTy()) {
     return !expr_type.is_internal;
   }
   return true;
 }
 
-bool needMapKeyAllocation(const Map &map, const Expression &key_expr)
+bool needMapKeyAllocation(const Expression &key_expr)
 {
-  if (inBpfMemory(key_expr.type())) {
-    return !key_expr.type().IsSameSizeRecursive(map.key_type);
-  }
-  return true;
+  return !inBpfMemory(key_expr.type());
 }
 
 } // namespace bpftrace::ast

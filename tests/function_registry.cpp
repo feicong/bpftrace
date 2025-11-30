@@ -145,9 +145,9 @@ void TestFunctionRegistryPopulated::test(
     const Function *expected_result)
 {
   ast::ASTContext ast;
-  auto &call = *ast.make_node<ast::Call>(func_name,
-                                         ast::ExpressionList({}),
-                                         ast::Location());
+  auto &call = *ast.make_node<ast::Call>(ast::Location(),
+                                         func_name,
+                                         ast::ExpressionList({}));
   EXPECT_EQ(expected_result, reg_.get("", func_name, arg_types, call));
   EXPECT_TRUE(ast.diagnostics().ok());
 }
@@ -158,9 +158,9 @@ void TestFunctionRegistryPopulated::test(
     std::string_view expected_error)
 {
   ast::ASTContext ast;
-  auto &call = *ast.make_node<ast::Call>(func_name,
-                                         ast::ExpressionList({}),
-                                         ast::Location());
+  auto &call = *ast.make_node<ast::Call>(ast::Location(),
+                                         func_name,
+                                         ast::ExpressionList({}));
   EXPECT_EQ(nullptr, reg_.get("", func_name, arg_types, call));
   EXPECT_FALSE(ast.diagnostics().ok());
 
@@ -181,7 +181,7 @@ ERROR: Function not found: 'does_not_exist'
 TEST_F(TestFunctionRegistryPopulated, unique_wrong_args)
 {
   test("unique_int32", { CreateString(32) }, R"(
-ERROR: Cannot call function 'unique_int32' using argument types: (string)
+ERROR: Cannot call function 'unique_int32' using argument types: (string[32])
 HINT: Candidate function:
   unique_int32(int32)
 )");
@@ -281,16 +281,16 @@ TEST_F(TestFunctionRegistryPopulated, unique_tuple)
   test("unique_tuple", { tuple2 }, unique_tuple_);
 
   test("unique_tuple", { tuple3 }, R"(
-ERROR: Cannot call function 'unique_tuple' using argument types: ((int64,string))
+ERROR: Cannot call function 'unique_tuple' using argument types: ((int64,string[64]))
 HINT: Candidate function:
-  unique_tuple((int32,string))
+  unique_tuple((int32,string[64]))
 )");
 
   // Can't pass deconstructed tuple fields as multiple arguments
   test("unique_tuple", { CreateInt32(), CreateString(64) }, R"(
-ERROR: Cannot call function 'unique_tuple' using argument types: (int32, string)
+ERROR: Cannot call function 'unique_tuple' using argument types: (int32, string[64])
 HINT: Candidate function:
-  unique_tuple((int32,string))
+  unique_tuple((int32,string[64]))
 )");
 }
 
@@ -346,9 +346,9 @@ TEST(TestFunctionRegistry, add_namespaced)
   const auto *foo = reg.add(
       Function::Origin::Script, "ns", "foo", CreateNone(), {});
   ast::ASTContext ast;
-  auto &call = *ast.make_node<ast::Call>("foo",
-                                         ast::ExpressionList({}),
-                                         ast::Location());
+  auto &call = *ast.make_node<ast::Call>(ast::Location(),
+                                         "foo",
+                                         ast::ExpressionList({}));
   EXPECT_EQ(nullptr, reg.get("", "foo", {}, call));
   EXPECT_EQ(foo, reg.get("ns", "foo", {}, call));
 }

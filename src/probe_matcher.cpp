@@ -190,6 +190,7 @@ std::set<std::string> ProbeMatcher::get_matches_for_probetype(
       break;
     }
     case ProbeType::special:
+    case ProbeType::test:
     case ProbeType::benchmark:
       return { target + ":" };
     default:
@@ -337,7 +338,7 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_usdt(
     const std::string& target) const
 {
   std::string probes;
-  usdt_probe_list usdt_probes;
+  util::usdt_probe_list usdt_probes;
 
   if (pid.has_value())
     usdt_probes = USDTHelper::probes_for_pid(
@@ -579,6 +580,7 @@ std::set<std::string> ProbeMatcher::get_matches_for_ap(
       [[fallthrough]];
     }
     case ProbeType::special:
+    case ProbeType::test:
     case ProbeType::benchmark:
     case ProbeType::uprobe:
     case ProbeType::uretprobe:

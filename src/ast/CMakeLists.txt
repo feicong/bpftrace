@@ -2,7 +2,9 @@ add_library(ast_defs STATIC
   ast.cpp
   context.cpp
   helpers.cpp
+  integer_types.cpp
   location.cpp
+  tracepoint_helpers.cpp
 )
 add_dependencies(ast_defs parser)
 target_link_libraries(ast_defs util)
@@ -40,10 +42,10 @@ add_library(ast STATIC
   passes/probe_prune.cpp
   passes/resource_analyser.cpp
   passes/semantic_analyser.cpp
-  passes/simplify_types.cpp
   passes/codegen_llvm.cpp
   passes/resolve_imports.cpp
   passes/recursion_check.cpp
+  passes/tracepoint_format_parser.cpp
   passes/type_system.cpp
   passes/unstable_feature.cpp
   passes/usdt_arguments.cpp
